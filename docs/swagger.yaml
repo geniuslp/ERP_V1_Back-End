@@ -1,0 +1,3925 @@
+basePath: /api/v1
+definitions:
+  auth.TokenPair:
+    properties:
+      access_token:
+        type: string
+      expires_at:
+        type: integer
+      refresh_token:
+        type: string
+      token_type:
+        type: string
+    type: object
+  fiber.Map:
+    additionalProperties: true
+    type: object
+  models.AddAttachmentRequest:
+    properties:
+      file_name:
+        type: string
+      file_path:
+        type: string
+      file_size:
+        type: integer
+      file_type:
+        type: string
+    required:
+    - file_name
+    - file_path
+    type: object
+  models.ApprovalActionRequest:
+    properties:
+      action:
+        enum:
+        - APPROVE
+        - REJECT
+        - RETURN
+        - COMMENT
+        type: string
+      comments:
+        type: string
+    required:
+    - action
+    type: object
+  models.ApprovalLog:
+    properties:
+      action:
+        type: string
+      action_at:
+        type: string
+      action_by:
+        type: integer
+      action_by_name:
+        type: string
+      approval_id:
+        type: integer
+      comments:
+        type: string
+      doc_no:
+        type: string
+      doc_type:
+        type: string
+      log_id:
+        type: integer
+      new_status:
+        type: string
+      old_status:
+        type: string
+      step_no:
+        type: integer
+    type: object
+  models.ApprovalRequest:
+    properties:
+      amount:
+        type: number
+      approval_id:
+        type: integer
+      assigned_to:
+        type: integer
+      created_at:
+        type: string
+      doc_id:
+        type: integer
+      doc_no:
+        type: string
+      doc_type:
+        type: string
+      due_date:
+        type: string
+      requested_by:
+        type: integer
+      status:
+        type: string
+      step_name:
+        type: string
+      step_no:
+        type: integer
+    type: object
+  models.Brand:
+    properties:
+      brand_code:
+        type: string
+      brand_name:
+        type: string
+    type: object
+  models.ChangePasswordRequest:
+    properties:
+      new_password:
+        minLength: 8
+        type: string
+      old_password:
+        type: string
+    required:
+    - new_password
+    - old_password
+    type: object
+  models.CreateBrandRequest:
+    properties:
+      brand_code:
+        maxLength: 20
+        type: string
+      brand_name:
+        maxLength: 200
+        type: string
+    required:
+    - brand_code
+    - brand_name
+    type: object
+  models.CreateGRNLine:
+    properties:
+      mat_code:
+        type: string
+      po_line_id:
+        type: integer
+      qty_accepted:
+        minimum: 0
+        type: number
+      qty_received:
+        type: number
+      qty_rejected:
+        minimum: 0
+        type: number
+      quality_remarks:
+        type: string
+      zone_id:
+        type: integer
+    required:
+    - mat_code
+    - po_line_id
+    - qty_received
+    type: object
+  models.CreateGRNRequest:
+    properties:
+      delivery_note:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.CreateGRNLine'
+        minItems: 1
+        type: array
+      po_id:
+        type: integer
+      remarks:
+        type: string
+      warehouse_code:
+        type: string
+    required:
+    - lines
+    - po_id
+    - warehouse_code
+    type: object
+  models.CreateGroupRequest:
+    properties:
+      group_code:
+        maxLength: 20
+        type: string
+      group_name:
+        maxLength: 200
+        type: string
+      is_active:
+        type: boolean
+    required:
+    - group_code
+    - group_name
+    type: object
+  models.CreateLocationReq:
+    properties:
+      is_active:
+        type: boolean
+      location_code:
+        type: string
+      location_name:
+        type: string
+      location_type:
+        type: string
+      parent_id:
+        type: integer
+    type: object
+  models.CreateLocationRequest:
+    properties:
+      location_code:
+        maxLength: 20
+        type: string
+      location_name:
+        maxLength: 200
+        type: string
+      location_type:
+        enum:
+        - department
+        - project
+        - site
+        type: string
+      parent_code:
+        type: string
+    required:
+    - location_code
+    - location_name
+    - location_type
+    type: object
+  models.CreateMatNameRequest:
+    properties:
+      mat_name_code:
+        maxLength: 20
+        type: string
+      mat_name_en:
+        type: string
+      mat_name_th:
+        maxLength: 500
+        type: string
+      subgroup_code:
+        maxLength: 20
+        type: string
+    required:
+    - mat_name_code
+    - mat_name_th
+    - subgroup_code
+    type: object
+  models.CreateMaterialCodeRequest:
+    properties:
+      brand_code:
+        maxLength: 20
+        type: string
+      group_code:
+        maxLength: 20
+        type: string
+      mat_name_code:
+        maxLength: 20
+        type: string
+      spec_code:
+        maxLength: 20
+        type: string
+      subgroup_code:
+        maxLength: 20
+        type: string
+      unit_code:
+        maxLength: 20
+        type: string
+    required:
+    - brand_code
+    - group_code
+    - mat_name_code
+    - spec_code
+    - subgroup_code
+    - unit_code
+    type: object
+  models.CreateMaterialRequest:
+    properties:
+      brand_code:
+        maxLength: 20
+        type: string
+      brand_name:
+        maxLength: 200
+        type: string
+      group_code:
+        maxLength: 20
+        type: string
+      mat_name_code:
+        maxLength: 20
+        type: string
+      mat_name_th:
+        maxLength: 500
+        type: string
+      spec_code:
+        maxLength: 20
+        type: string
+      spec_description:
+        maxLength: 500
+        type: string
+      subgroup_code:
+        maxLength: 20
+        type: string
+      subgroup_name:
+        maxLength: 200
+        type: string
+      unit_code:
+        maxLength: 20
+        type: string
+      unit_name:
+        maxLength: 200
+        type: string
+    required:
+    - brand_code
+    - brand_name
+    - group_code
+    - mat_name_code
+    - mat_name_th
+    - spec_code
+    - spec_description
+    - subgroup_code
+    - subgroup_name
+    - unit_code
+    - unit_name
+    type: object
+  models.CreatePOLine:
+    properties:
+      mat_code:
+        type: string
+      pr_line_id:
+        type: integer
+      qty_ordered:
+        type: number
+      remarks:
+        type: string
+      unit_price:
+        minimum: 0
+        type: number
+    required:
+    - mat_code
+    - qty_ordered
+    - unit_price
+    type: object
+  models.CreatePORequest:
+    properties:
+      currency:
+        type: string
+      expected_date:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.CreatePOLine'
+        minItems: 1
+        type: array
+      payment_terms:
+        type: string
+      pr_id:
+        type: integer
+      remarks:
+        type: string
+      rfq_id:
+        type: integer
+      supplier_code:
+        type: string
+      warehouse_code:
+        type: string
+    required:
+    - currency
+    - lines
+    - supplier_code
+    - warehouse_code
+    type: object
+  models.CreatePRLine:
+    properties:
+      line_no:
+        type: integer
+      mat_code:
+        type: string
+      qty_requested:
+        type: number
+    required:
+    - mat_code
+    - qty_requested
+    type: object
+  models.CreatePRRequest:
+    properties:
+      attachments:
+        items:
+          $ref: '#/definitions/models.AddAttachmentRequest'
+        type: array
+      created_by:
+        type: integer
+      lines:
+        items:
+          $ref: '#/definitions/models.CreatePRLine'
+        minItems: 1
+        type: array
+      location_code:
+        type: string
+      pr_date:
+        type: string
+      pr_no:
+        type: string
+      project_code:
+        type: string
+      remarks:
+        type: string
+      requested_by:
+        type: integer
+      required_date:
+        type: string
+      status:
+        type: string
+    required:
+    - created_by
+    - lines
+    - location_code
+    - pr_date
+    - pr_no
+    - requested_by
+    type: object
+  models.CreateProjectReq:
+    properties:
+      end_date:
+        type: string
+      location_code:
+        type: string
+      project_code:
+        type: string
+      project_name:
+        type: string
+      start_date:
+        type: string
+      status:
+        type: string
+    type: object
+  models.CreateSpecSizeRequest:
+    properties:
+      mat_name_code:
+        maxLength: 20
+        type: string
+      spec_code:
+        maxLength: 20
+        type: string
+      spec_description:
+        maxLength: 500
+        type: string
+    required:
+    - mat_name_code
+    - spec_code
+    - spec_description
+    type: object
+  models.CreateSubgroupRequest:
+    properties:
+      group_code:
+        maxLength: 20
+        type: string
+      subgroup_code:
+        maxLength: 20
+        type: string
+      subgroup_name:
+        maxLength: 200
+        type: string
+    required:
+    - group_code
+    - subgroup_code
+    - subgroup_name
+    type: object
+  models.CreateSupplierReq:
+    properties:
+      address:
+        type: string
+      contact_email:
+        type: string
+      contact_name:
+        type: string
+      contact_phone:
+        type: string
+      is_active:
+        type: boolean
+      payment_terms:
+        type: string
+      supplier_code:
+        type: string
+      supplier_name:
+        type: string
+      tax_id:
+        type: string
+    type: object
+  models.CreateSupplierRequest:
+    properties:
+      address:
+        type: string
+      contact_email:
+        type: string
+      contact_name:
+        type: string
+      contact_phone:
+        type: string
+      payment_terms:
+        type: string
+      supplier_code:
+        maxLength: 20
+        type: string
+      supplier_name:
+        maxLength: 200
+        type: string
+      tax_id:
+        type: string
+    required:
+    - supplier_code
+    - supplier_name
+    type: object
+  models.CreateTransactionRequest:
+    properties:
+      from_warehouse:
+        type: string
+      from_zone_id:
+        type: integer
+      location_code:
+        type: string
+      mat_code:
+        type: string
+      qty:
+        type: number
+      reason:
+        type: string
+      to_warehouse:
+        type: string
+      to_zone_id:
+        type: integer
+      txn_date:
+        type: string
+      txn_type:
+        enum:
+        - ISSUE
+        - RETURN
+        - TRANSFER_OUT
+        - TRANSFER_IN
+        - ADJUST_PLUS
+        - ADJUST_MINUS
+        - BORROW_OUT
+        - BORROW_RETURN
+        type: string
+    required:
+    - mat_code
+    - qty
+    - txn_type
+    type: object
+  models.CreateUnitRequest:
+    properties:
+      unit_code:
+        maxLength: 20
+        type: string
+      unit_name:
+        maxLength: 200
+        type: string
+    required:
+    - unit_code
+    - unit_name
+    type: object
+  models.CreateUserRequest:
+    properties:
+      department:
+        type: string
+      email:
+        type: string
+      employee_code:
+        type: string
+      full_name:
+        maxLength: 200
+        type: string
+      location_code:
+        type: string
+      password:
+        minLength: 6
+        type: string
+      role_codes:
+        items:
+          type: string
+        type: array
+      username:
+        maxLength: 50
+        type: string
+    required:
+    - full_name
+    - password
+    - username
+    type: object
+  models.CreateWarehouseReq:
+    properties:
+      address:
+        type: string
+      is_active:
+        type: boolean
+      warehouse_code:
+        type: string
+      warehouse_name:
+        type: string
+    type: object
+  models.CreateWarehouseRequest:
+    properties:
+      address:
+        type: string
+      warehouse_code:
+        maxLength: 20
+        type: string
+      warehouse_name:
+        maxLength: 200
+        type: string
+    required:
+    - warehouse_code
+    - warehouse_name
+    type: object
+  models.CreateZoneReq:
+    properties:
+      warehouse_id:
+        type: integer
+      zone_code:
+        type: string
+      zone_name:
+        type: string
+      zone_type:
+        type: string
+    type: object
+  models.InventoryTransaction:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      from_warehouse:
+        type: string
+      location_code:
+        type: string
+      mat_code:
+        type: string
+      qty:
+        type: number
+      reason:
+        type: string
+      ref_doc_no:
+        type: string
+      ref_doc_type:
+        type: string
+      to_warehouse:
+        type: string
+      txn_date:
+        type: string
+      txn_id:
+        type: integer
+      txn_no:
+        type: string
+      txn_type:
+        type: string
+    type: object
+  models.Location:
+    properties:
+      created_at:
+        type: string
+      is_active:
+        type: boolean
+      location_code:
+        type: string
+      location_name:
+        type: string
+      location_type:
+        description: department | project | site
+        type: string
+      parent_code:
+        type: string
+    type: object
+  models.LocationFull:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      location_code:
+        type: string
+      location_name:
+        type: string
+      location_type:
+        type: string
+      parent_id:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  models.LoginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  models.MatGroup:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      group_code:
+        type: string
+      group_name:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  models.MatName:
+    properties:
+      mat_name_code:
+        type: string
+      mat_name_en:
+        type: string
+      mat_name_th:
+        type: string
+      subgroup_code:
+        type: string
+    type: object
+  models.MaterialCode:
+    properties:
+      brand_code:
+        type: string
+      created_at:
+        type: string
+      group_code:
+        type: string
+      is_active:
+        type: boolean
+      mat_code:
+        type: string
+      mat_name_code:
+        type: string
+      spec_code:
+        type: string
+      subgroup_code:
+        type: string
+      unit_code:
+        type: string
+    type: object
+  models.MaterialFull:
+    properties:
+      brand_name:
+        type: string
+      group_name:
+        type: string
+      is_active:
+        type: boolean
+      mat_code:
+        type: string
+      mat_name_en:
+        type: string
+      mat_name_th:
+        type: string
+      spec_description:
+        type: string
+      subgroup_name:
+        type: string
+      unit_name:
+        type: string
+    type: object
+  models.POLine:
+    properties:
+      amount:
+        type: number
+      line_id:
+        type: integer
+      line_no:
+        type: integer
+      mat_code:
+        type: string
+      po_id:
+        type: integer
+      pr_line_id:
+        type: integer
+      qty_ordered:
+        type: number
+      qty_received:
+        type: number
+      remarks:
+        type: string
+      status:
+        type: string
+      unit_price:
+        type: number
+    type: object
+  models.PRAttachment:
+    properties:
+      file_name:
+        type: string
+      file_path:
+        type: string
+      file_size:
+        type: integer
+      file_type:
+        type: string
+      id:
+        type: integer
+      pr_id:
+        type: integer
+      uploaded_at:
+        type: string
+      uploaded_by:
+        type: integer
+    type: object
+  models.PRLine:
+    properties:
+      line_id:
+        type: integer
+      line_no:
+        type: integer
+      mat_code:
+        type: string
+      pr_id:
+        type: integer
+      qty_requested:
+        type: number
+      qty_reserved:
+        type: number
+      qty_to_order:
+        type: number
+      remarks:
+        type: string
+      status:
+        type: string
+    type: object
+  models.PaginatedResponse:
+    properties:
+      data: {}
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+      total_pages:
+        type: integer
+    type: object
+  models.ProjectFull:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      end_date:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      location_code:
+        type: string
+      project_code:
+        type: string
+      project_name:
+        type: string
+      start_date:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  models.PurchaseOrder:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      currency:
+        type: string
+      expected_date:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.POLine'
+        type: array
+      net_amount:
+        type: number
+      payment_terms:
+        type: string
+      po_date:
+        type: string
+      po_id:
+        type: integer
+      po_no:
+        type: string
+      pr_id:
+        type: integer
+      remarks:
+        type: string
+      rfq_id:
+        type: integer
+      status:
+        type: string
+      supplier_code:
+        type: string
+      total_amount:
+        type: number
+      updated_at:
+        type: string
+      vat_amount:
+        type: number
+      warehouse_code:
+        type: string
+    type: object
+  models.PurchaseRequest:
+    properties:
+      created_at:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.PRLine'
+        type: array
+      location_code:
+        type: string
+      pr_date:
+        type: string
+      pr_id:
+        type: integer
+      pr_no:
+        type: string
+      priority:
+        type: string
+      remarks:
+        type: string
+      requested_by:
+        type: integer
+      required_date:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+      warehouse_code:
+        type: string
+    type: object
+  models.RefreshRequest:
+    properties:
+      refresh_token:
+        type: string
+    required:
+    - refresh_token
+    type: object
+  models.SpecSize:
+    properties:
+      mat_name_code:
+        type: string
+      spec_code:
+        type: string
+      spec_description:
+        type: string
+    type: object
+  models.StorageZone:
+    properties:
+      warehouse_code:
+        type: string
+      zone_code:
+        type: string
+      zone_id:
+        type: integer
+      zone_name:
+        type: string
+      zone_type:
+        description: rack | shelf | bin | area
+        type: string
+    type: object
+  models.StorageZoneFull:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      id:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+      warehouse_id:
+        type: integer
+      zone_code:
+        type: string
+      zone_name:
+        type: string
+      zone_type:
+        type: string
+    type: object
+  models.Subgroup:
+    properties:
+      group_code:
+        type: string
+      subgroup_code:
+        type: string
+      subgroup_name:
+        type: string
+    type: object
+  models.Supplier:
+    properties:
+      address:
+        type: string
+      contact_email:
+        type: string
+      contact_name:
+        type: string
+      contact_phone:
+        type: string
+      created_at:
+        type: string
+      is_active:
+        type: boolean
+      payment_terms:
+        type: string
+      supplier_code:
+        type: string
+      supplier_name:
+        type: string
+      tax_id:
+        type: string
+    type: object
+  models.SupplierFull:
+    properties:
+      address:
+        type: string
+      contact_email:
+        type: string
+      contact_name:
+        type: string
+      contact_phone:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      payment_terms:
+        type: string
+      supplier_code:
+        type: string
+      supplier_name:
+        type: string
+      tax_id:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  models.Unit:
+    properties:
+      unit_code:
+        type: string
+      unit_name:
+        type: string
+    type: object
+  models.UpdateGroupRequest:
+    properties:
+      group_name:
+        maxLength: 200
+        type: string
+    required:
+    - group_name
+    type: object
+  models.UpdateLocationReq:
+    properties:
+      is_active:
+        type: boolean
+      location_code:
+        type: string
+      location_name:
+        type: string
+      location_type:
+        type: string
+      parent_id:
+        type: integer
+    type: object
+  models.UpdateMaterialCodeRequest:
+    properties:
+      is_active:
+        type: boolean
+    type: object
+  models.UpdateMaterialRequest:
+    properties:
+      brand_name:
+        maxLength: 200
+        type: string
+      is_active:
+        type: boolean
+      mat_name_th:
+        maxLength: 500
+        type: string
+      spec_description:
+        maxLength: 500
+        type: string
+      subgroup_name:
+        maxLength: 200
+        type: string
+      unit_name:
+        maxLength: 200
+        type: string
+    required:
+    - brand_name
+    - mat_name_th
+    - spec_description
+    - subgroup_name
+    - unit_name
+    type: object
+  models.UpdateProjectReq:
+    properties:
+      end_date:
+        type: string
+      is_active:
+        type: boolean
+      location_code:
+        type: string
+      project_code:
+        type: string
+      project_name:
+        type: string
+      start_date:
+        type: string
+      status:
+        type: string
+    type: object
+  models.UpdateSupplierReq:
+    properties:
+      address:
+        type: string
+      contact_email:
+        type: string
+      contact_name:
+        type: string
+      contact_phone:
+        type: string
+      payment_terms:
+        type: string
+      supplier_name:
+        type: string
+      tax_id:
+        type: string
+    type: object
+  models.UpdateUserRequest:
+    properties:
+      department:
+        type: string
+      email:
+        type: string
+      employee_code:
+        type: string
+      full_name:
+        maxLength: 200
+        type: string
+      location_code:
+        type: string
+    required:
+    - full_name
+    type: object
+  models.UpdateWarehouseReq:
+    properties:
+      address:
+        type: string
+      warehouse_name:
+        type: string
+    type: object
+  models.UpdateZoneReq:
+    properties:
+      zone_name:
+        type: string
+      zone_type:
+        type: string
+    type: object
+  models.User:
+    properties:
+      created_at:
+        type: string
+      department:
+        type: string
+      email:
+        type: string
+      employee_code:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      location_code:
+        type: string
+      roles:
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  models.Warehouse:
+    properties:
+      address:
+        type: string
+      created_at:
+        type: string
+      is_active:
+        type: boolean
+      warehouse_code:
+        type: string
+      warehouse_name:
+        type: string
+    type: object
+  models.WarehouseFull:
+    properties:
+      address:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+      warehouse_code:
+        type: string
+      warehouse_name:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@erp.local
+    name: ERP Support
+  description: ERP System API — PR/PO/Store Management with full Approval workflow
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: ERP API
+  version: "2.0"
+paths:
+  /approvals/audit:
+    get:
+      parameters:
+      - description: table name filter
+        in: query
+        name: table_name
+        type: string
+      - description: record ID
+        in: query
+        name: record_id
+        type: integer
+      - default: 1
+        description: page
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: Get general ERP audit log
+      tags:
+      - Approvals
+  /approvals/logs:
+    get:
+      parameters:
+      - description: PR|PO|GRN
+        in: query
+        name: doc_type
+        required: true
+        type: string
+      - description: document ID
+        in: query
+        name: doc_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.ApprovalLog'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Get approval history for a document
+      tags:
+      - Approvals
+  /approvals/pending:
+    get:
+      parameters:
+      - description: filter by doc_type (PR|PO|GRN)
+        in: query
+        name: doc_type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.ApprovalRequest'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List pending approvals for current user
+      tags:
+      - Approvals
+  /auth/change-password:
+    post:
+      consumes:
+      - application/json
+      description: Change the current user's password
+      parameters:
+      - description: Passwords
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ChangePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Change password
+      tags:
+      - Auth
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate and receive JWT token pair
+      parameters:
+      - description: Credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/auth.TokenPair'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Login
+      tags:
+      - Auth
+  /auth/me:
+    get:
+      description: Get the authenticated user's profile and roles
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.User'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Current user profile
+      tags:
+      - Auth
+  /auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Get new access token using refresh token
+      parameters:
+      - description: Refresh token
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.RefreshRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/auth.TokenPair'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Refresh token
+      tags:
+      - Auth
+  /grn:
+    get:
+      parameters:
+      - description: PO ID filter
+        in: query
+        name: po_id
+        type: integer
+      - description: status filter
+        in: query
+        name: status
+        type: string
+      - default: 1
+        description: page
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List GRNs
+      tags:
+      - GRN
+    post:
+      consumes:
+      - application/json
+      description: Record goods received against a PO, triggers inventory update on
+        confirmation
+      parameters:
+      - description: GRN data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateGRNRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create Goods Receipt Note
+      tags:
+      - GRN
+  /grn/{id}/confirm:
+    post:
+      description: Confirms GRN and automatically creates inventory_transaction (GRN_IN)
+      parameters:
+      - description: GRN ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Confirm GRN and post to inventory
+      tags:
+      - GRN
+  /groups:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List all material groups
+      tags:
+      - Groups
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Group data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateGroupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.MatGroup'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create material group
+      tags:
+      - Groups
+  /groups/{code}:
+    delete:
+      parameters:
+      - description: Group Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete material group (soft delete)
+      tags:
+      - Groups
+    get:
+      parameters:
+      - description: Group Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MatGroup'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get material group by code
+      tags:
+      - Groups
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Group Code
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: Group data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateGroupRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MatGroup'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update material group
+      tags:
+      - Groups
+  /inventory:
+    get:
+      description: Returns stock levels per material per warehouse with status
+      parameters:
+      - description: warehouse_code filter
+        in: query
+        name: warehouse
+        type: string
+      - description: material code filter
+        in: query
+        name: mat_code
+        type: string
+      - description: stock_status filter (OK|LOW|CRITICAL)
+        in: query
+        name: status
+        type: string
+      - default: 1
+        description: page
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List inventory balances
+      tags:
+      - Inventory
+  /inventory/transactions:
+    get:
+      parameters:
+      - description: material code
+        in: query
+        name: mat_code
+        type: string
+      - description: warehouse code
+        in: query
+        name: warehouse
+        type: string
+      - description: transaction type
+        in: query
+        name: txn_type
+        type: string
+      - description: date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - default: 1
+        description: page
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List inventory transactions
+      tags:
+      - Inventory
+    post:
+      consumes:
+      - application/json
+      description: Record a stock movement (issue, return, transfer, adjustment, borrow)
+      parameters:
+      - description: Transaction
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateTransactionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.InventoryTransaction'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create inventory transaction
+      tags:
+      - Inventory
+  /master/allMaterial:
+    get:
+      parameters:
+      - description: Search keyword (mat_code, mat_name, spec_description, brand_name)
+        in: query
+        name: q
+        type: string
+      - description: Filter by subgroup ID
+        in: query
+        name: subgroup_id
+        type: integer
+      - description: Filter by mat_name ID
+        in: query
+        name: mat_name_id
+        type: integer
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get all active materials with detail (paginated)
+      tags:
+      - Master
+  /master/groups:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.MatGroup'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List material groups
+      tags:
+      - Master
+  /master/locations:
+    get:
+      parameters:
+      - description: location_type filter
+        in: query
+        name: type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Location'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List locations (departments/projects)
+      tags:
+      - Master
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Location data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateLocationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.Location'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create location
+      tags:
+      - Master
+  /master/locations/{id}:
+    delete:
+      parameters:
+      - description: Location ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete location
+      tags:
+      - Master
+    get:
+      parameters:
+      - description: Location ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.LocationFull'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get location by ID
+      tags:
+      - Master
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Location ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateLocationReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.LocationFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update location
+      tags:
+      - Master
+  /master/mat-names:
+    get:
+      parameters:
+      - description: Subgroup ID
+        in: query
+        name: subgroup_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fiber.Map'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List mat_names by subgroup_id
+      tags:
+      - Master
+  /master/materials:
+    get:
+      parameters:
+      - description: search keyword
+        in: query
+        name: q
+        type: string
+      - description: group_code filter
+        in: query
+        name: group
+        type: string
+      - description: active only
+        in: query
+        name: active
+        type: boolean
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List materials (full view)
+      tags:
+      - Master
+    post:
+      consumes:
+      - application/json
+      description: 'INSERT order (FK parent-first): unit → group → subgroup → mat_name
+        → spec_size → brand → material_code'
+      parameters:
+      - description: Material data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateMaterialRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create a single material (full transaction)
+      tags:
+      - Master
+  /master/materials/{code}:
+    get:
+      parameters:
+      - description: material code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MaterialFull'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get material by code
+      tags:
+      - Master
+    put:
+      consumes:
+      - application/json
+      description: Updates subgroup_name, mat_name_th, spec_description, brand_name,
+        unit_name and is_active in one transaction. Codes (and mat_code) are not changed.
+      parameters:
+      - description: mat_code
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateMaterialRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update material names (full transaction)
+      tags:
+      - Master
+  /master/materials/bulk:
+    post:
+      consumes:
+      - application/json
+      description: Accepts an array of materials. Uses in-memory cache to skip duplicate
+        FK lookups, then inserts all material_code rows in a single UNNEST statement.
+      parameters:
+      - description: Array of material data
+        in: body
+        name: body
+        required: true
+        schema:
+          items:
+            $ref: '#/definitions/models.CreateMaterialRequest'
+          type: array
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Bulk create materials (cache + UNNEST optimized)
+      tags:
+      - Master
+  /master/projects:
+    get:
+      parameters:
+      - description: Filter by status (ACTIVE|INACTIVE|CLOSED)
+        in: query
+        name: status
+        type: string
+      - description: Search project_code or project_name
+        in: query
+        name: q
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List all active projects
+      tags:
+      - Master
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Project data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateProjectReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.ProjectFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create project
+      tags:
+      - Master
+  /master/projects/{id}:
+    delete:
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete project
+      tags:
+      - Master
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateProjectReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.ProjectFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update project
+      tags:
+      - Master
+  /master/subgroups:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fiber.Map'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List active subgroups
+      tags:
+      - Master
+  /master/suppliers:
+    get:
+      parameters:
+      - description: search by name or code
+        in: query
+        name: q
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List all suppliers
+      tags:
+      - Master
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Supplier data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateSupplierReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.SupplierFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create supplier
+      tags:
+      - Master
+  /master/suppliers/{code}:
+    delete:
+      parameters:
+      - description: Supplier Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete supplier
+      tags:
+      - Master
+    get:
+      parameters:
+      - description: Supplier Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.SupplierFull'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get supplier by code
+      tags:
+      - Master
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Supplier Code
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateSupplierReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.SupplierFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update supplier
+      tags:
+      - Master
+  /master/units:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Unit'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List units of measure
+      tags:
+      - Master
+  /master/warehouses:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List all warehouses
+      tags:
+      - Master
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Warehouse data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateWarehouseReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.WarehouseFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create warehouse
+      tags:
+      - Master
+  /master/warehouses/{code}:
+    delete:
+      parameters:
+      - description: Warehouse Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete warehouse
+      tags:
+      - Master
+    get:
+      parameters:
+      - description: Warehouse Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.WarehouseFull'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get warehouse by code
+      tags:
+      - Master
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Warehouse Code
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateWarehouseReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.WarehouseFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update warehouse
+      tags:
+      - Master
+  /master/warehouses/{code}/zones:
+    get:
+      parameters:
+      - description: warehouse_code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.StorageZone'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List storage zones for a warehouse
+      tags:
+      - Master
+  /master/zones:
+    get:
+      parameters:
+      - description: Filter by warehouse_id
+        in: query
+        name: warehouse_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List storage zones
+      tags:
+      - Master
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Zone data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateZoneReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.StorageZoneFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create storage zone
+      tags:
+      - Master
+  /master/zones/{id}:
+    delete:
+      parameters:
+      - description: Zone ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete storage zone (hard delete — no is_active column)
+      tags:
+      - Master
+    get:
+      parameters:
+      - description: Zone ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.StorageZoneFull'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get storage zone by id
+      tags:
+      - Master
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Zone ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateZoneReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.StorageZoneFull'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update storage zone
+      tags:
+      - Master
+  /matcode/brands:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List brands
+      tags:
+      - MaterialCode
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Brand data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateBrandRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Brand'
+      security:
+      - BearerAuth: []
+      summary: Create or update brand (UPSERT)
+      tags:
+      - MaterialCode
+  /matcode/brands/{code}:
+    delete:
+      parameters:
+      - description: Brand Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete brand
+      tags:
+      - MaterialCode
+    get:
+      parameters:
+      - description: Brand Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Brand'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get brand by code
+      tags:
+      - MaterialCode
+  /matcode/codes:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List all material codes
+      tags:
+      - MaterialCode
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Material code data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateMaterialCodeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.MaterialCode'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create material code (auto-generates mat_code)
+      tags:
+      - MaterialCode
+  /matcode/codes/{code}:
+    delete:
+      parameters:
+      - description: Mat Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete material code
+      tags:
+      - MaterialCode
+    get:
+      parameters:
+      - description: Mat Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MaterialCode'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get material code by mat_code
+      tags:
+      - MaterialCode
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Mat Code
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateMaterialCodeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update material code (is_active only)
+      tags:
+      - MaterialCode
+  /matcode/matnames:
+    get:
+      parameters:
+      - description: subgroup_code filter
+        in: query
+        name: subgroup
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List material names (filter by subgroup_code)
+      tags:
+      - MaterialCode
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: MatName data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateMatNameRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MatName'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create or update material name (UPSERT)
+      tags:
+      - MaterialCode
+  /matcode/matnames/{subgroup}/{code}:
+    delete:
+      parameters:
+      - description: Subgroup Code
+        in: path
+        name: subgroup
+        required: true
+        type: string
+      - description: MatName Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete material name
+      tags:
+      - MaterialCode
+    get:
+      parameters:
+      - description: Subgroup Code
+        in: path
+        name: subgroup
+        required: true
+        type: string
+      - description: MatName Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MatName'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get material name by subgroup_code and mat_name_code
+      tags:
+      - MaterialCode
+  /matcode/specs:
+    get:
+      parameters:
+      - description: mat_name_code filter
+        in: query
+        name: matname
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List spec sizes (filter by mat_name_code)
+      tags:
+      - MaterialCode
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: SpecSize data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateSpecSizeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.SpecSize'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create or update spec size (UPSERT)
+      tags:
+      - MaterialCode
+  /matcode/specs/{matname}/{code}:
+    delete:
+      parameters:
+      - description: MatName Code
+        in: path
+        name: matname
+        required: true
+        type: string
+      - description: Spec Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete spec size
+      tags:
+      - MaterialCode
+    get:
+      parameters:
+      - description: MatName Code
+        in: path
+        name: matname
+        required: true
+        type: string
+      - description: Spec Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.SpecSize'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get spec size by mat_name_code and spec_code
+      tags:
+      - MaterialCode
+  /matcode/subgroups:
+    get:
+      parameters:
+      - description: group_code filter
+        in: query
+        name: group
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List subgroups (filter by group_code)
+      tags:
+      - MaterialCode
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Subgroup data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateSubgroupRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Subgroup'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create or update subgroup (UPSERT)
+      tags:
+      - MaterialCode
+  /matcode/subgroups/{code}:
+    delete:
+      parameters:
+      - description: Subgroup Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete subgroup
+      tags:
+      - MaterialCode
+    get:
+      parameters:
+      - description: Subgroup Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Subgroup'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get subgroup by code
+      tags:
+      - MaterialCode
+  /matcode/units:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List units of measure
+      tags:
+      - MaterialCode
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Unit data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateUnitRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Unit'
+      security:
+      - BearerAuth: []
+      summary: Create or update unit (UPSERT)
+      tags:
+      - MaterialCode
+  /matcode/units/{code}:
+    delete:
+      parameters:
+      - description: Unit Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete unit
+      tags:
+      - MaterialCode
+    get:
+      parameters:
+      - description: Unit Code
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Unit'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get unit by code
+      tags:
+      - MaterialCode
+  /po:
+    get:
+      parameters:
+      - description: status filter
+        in: query
+        name: status
+        type: string
+      - description: supplier_code filter
+        in: query
+        name: supplier
+        type: string
+      - default: 1
+        description: page
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page_size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List purchase orders
+      tags:
+      - Purchase Order
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: PO data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreatePORequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create purchase order
+      tags:
+      - Purchase Order
+  /po/{id}:
+    get:
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PurchaseOrder'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get purchase order by ID
+      tags:
+      - Purchase Order
+  /po/{id}/approve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: action
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ApprovalActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve or reject PO (Manager/Director/MD)
+      tags:
+      - Purchase Order
+  /po/{id}/logs:
+    get:
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fiber.Map'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Get PO status history
+      tags:
+      - Purchase Order
+  /po/{id}/send:
+    post:
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Send PO to supplier
+      tags:
+      - Purchase Order
+  /pr:
+    get:
+      parameters:
+      - description: status filter
+        in: query
+        name: status
+        type: string
+      - default: 1
+        description: page
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: limit
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List purchase requests
+      tags:
+      - Purchase Request
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: PR data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreatePRRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create purchase request
+      tags:
+      - Purchase Request
+  /pr/{id}:
+    get:
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get PR detail with lines and attachments
+      tags:
+      - Purchase Request
+  /pr/{id}/approve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: action
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ApprovalActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve or reject PR (Senior Team Project)
+      tags:
+      - Purchase Request
+    put:
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve a purchase request
+      tags:
+      - Purchase Request
+  /pr/{id}/attachments:
+    get:
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.PRAttachment'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List attachments for a PR
+      tags:
+      - Attachments
+    post:
+      consumes:
+      - application/json
+      description: Link an already-uploaded file to a purchase request
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Attachment metadata
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.AddAttachmentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Add attachment record to PR
+      tags:
+      - Attachments
+  /pr/{id}/attachments/{attach_id}:
+    delete:
+      description: Removes the database record and deletes the file from disk
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Attachment ID
+        in: path
+        name: attach_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a PR attachment
+      tags:
+      - Attachments
+  /pr/{id}/logs:
+    get:
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fiber.Map'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Get PR status history
+      tags:
+      - Purchase Request
+  /pr/{id}/reject:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Rejection reason
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reject a purchase request
+      tags:
+      - Purchase Request
+  /pr/{id}/submit:
+    post:
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Submit PR for approval
+      tags:
+      - Purchase Request
+  /pr/next-number:
+    get:
+      description: Returns the next available PR number for the current month (Buddhist
+        year format)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get next PR number
+      tags:
+      - Purchase Request
+  /upload/pr:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload multipart file; returns stored path to use when saving the
+        attachment record
+      parameters:
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Upload a file for PR attachment
+      tags:
+      - Attachments
+  /users:
+    post:
+      consumes:
+      - application/json
+      description: Create a new user account, optionally assigning roles
+      parameters:
+      - description: User data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create user
+      tags:
+      - Users
+  /users/{id}:
+    delete:
+      description: Soft delete user by setting is_active = false
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete user
+      tags:
+      - Users
+    get:
+      description: Get a single user by ID
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get user by ID
+      tags:
+      - Users
+    put:
+      consumes:
+      - application/json
+      description: Update user profile information
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: User data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update user
+      tags:
+      - Users
+  /users/allUser:
+    get:
+      description: Get all users
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List users
+      tags:
+      - Users
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer {token}"
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
