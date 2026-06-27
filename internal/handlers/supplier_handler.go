@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 
 	"erp-api/internal/middleware"
 	"erp-api/internal/models"
@@ -199,4 +200,90 @@ func (h *SupplierHandler) DeleteSupplier(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "supplier not found")
 	}
 	return c.JSON(fiber.Map{"success": true, "message": "supplier deleted"})
+}
+
+// BulkCreateSupplier godoc
+// @Summary      Bulk create suppliers
+// @Description  Inserts multiple suppliers in a single UNNEST statement. is_active defaults to true at DB level.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object  true  "{ \"items\": [ { \"supplier_code\": \"SUP001\", \"supplier_name\": \"...\" } ] }"
+// @Success      201   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Router       /master/suppliers/bulk [post]
+func (h *SupplierHandler) BulkCreateSupplier(c *fiber.Ctx) error {
+	type Item struct {
+		SupplierCode string  `json:"supplier_code"`
+		SupplierName string  `json:"supplier_name"`
+		TaxID        *string `json:"tax_id"`
+		Address      *string `json:"address"`
+		ContactName  *string `json:"contact_name"`
+		ContactPhone *string `json:"contact_phone"`
+		ContactEmail *string `json:"contact_email"`
+		PaymentTerms *string `json:"payment_terms"`
+	}
+	var body struct {
+		Items []Item `json:"items"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if len(body.Items) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "items is empty")
+	}
+
+	codes := make([]string, 0, len(body.Items))
+	names := make([]string, 0, len(body.Items))
+	taxIDs := make([]*string, 0, len(body.Items))
+	addresses := make([]*string, 0, len(body.Items))
+	contactNames := make([]*string, 0, len(body.Items))
+	contactPhones := make([]*string, 0, len(body.Items))
+	contactEmails := make([]*string, 0, len(body.Items))
+	paymentTermsList := make([]*string, 0, len(body.Items))
+
+	for i, item := range body.Items {
+		if item.SupplierCode == "" {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("item[%d]: supplier_code is required", i))
+		}
+		if item.SupplierName == "" {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("item[%d]: supplier_name is required", i))
+		}
+		codes = append(codes, item.SupplierCode)
+		names = append(names, item.SupplierName)
+		taxIDs = append(taxIDs, item.TaxID)
+		addresses = append(addresses, item.Address)
+		contactNames = append(contactNames, item.ContactName)
+		contactPhones = append(contactPhones, item.ContactPhone)
+		contactEmails = append(contactEmails, item.ContactEmail)
+		paymentTermsList = append(paymentTermsList, item.PaymentTerms)
+	}
+
+	claims := middleware.GetClaims(c)
+
+	tag, err := h.db.Exec(context.Background(), `
+		INSERT INTO supplier
+			(supplier_code, supplier_name, tax_id, address,
+			 contact_name, contact_phone, contact_email, payment_terms,
+			 created_by, updated_by)
+		SELECT UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[]),
+		       UNNEST($5::text[]), UNNEST($6::text[]), UNNEST($7::text[]), UNNEST($8::text[]),
+		       $9, $9
+		ON CONFLICT (supplier_code) DO NOTHING`,
+		codes, names, taxIDs, addresses,
+		contactNames, contactPhones, contactEmails, paymentTermsList,
+		claims.UserID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	imported := int(tag.RowsAffected())
+	duplicates := len(body.Items) - imported
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"success":    true,
+		"imported":   imported,
+		"duplicates": duplicates,
+	})
 }

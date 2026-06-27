@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -348,6 +349,149 @@ func (h *PRHandler) NextNumber(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data":    fiber.Map{"next_number": next},
+	})
+}
+
+// LinesWithPOStatus godoc
+// @Summary      Get PR lines enriched with PO claim status
+// @Description  Returns purchase_request_line rows for the PR with the quantity already claimed by purchase orders, which PO numbers claimed each line, and qty_remaining = qty_requested - qty_ordered. Pass exclude_po_id when editing an existing PO so its own claim is left out of referenced_pos.
+// @Tags         Purchase Request
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id             path   int  true   "PR ID"
+// @Param        exclude_po_id  query  int  false  "Exclude this PO's lines from referenced_pos (edit-PO flow)"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Router       /pr/{id}/lines-with-po-status [get]
+func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
+	prID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid PR id")
+	}
+
+	var excludePOID *int64
+	if v := c.Query("exclude_po_id"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid exclude_po_id")
+		}
+		excludePOID = &id
+	}
+
+	ctx := context.Background()
+
+	var prNo, prStatus string
+	if err := h.db.QueryRow(ctx, `SELECT pr_no, status FROM purchase_request WHERE id=$1`, prID).Scan(&prNo, &prStatus); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR %d not found", prID))
+	}
+	if prStatus != "APPROVED" && prStatus != "PARTIALLY_FILLED" {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR status must be APPROVED or PARTIALLY_FILLED, got %s", prStatus))
+	}
+
+	rows, err := h.db.Query(ctx, `
+    SELECT
+        base.id, base.line_no, base.mat_code, base.mat_name, base.unit_name,
+        base.qty_requested, base.qty_reserved, base.qty_ordered, base.qty_remaining,
+        base.status, base.referenced_pos,
+        ph.last_price,
+        ph.last_price_date,
+        COALESCE(ph.price_history, '[]'::json) AS price_history
+    FROM (
+        SELECT
+            prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
+            prl.qty_requested, prl.qty_reserved, prl.qty_ordered,
+            (prl.qty_requested - prl.qty_ordered) AS qty_remaining,
+            prl.status,
+            COALESCE(
+                JSON_AGG(
+                    JSON_BUILD_OBJECT('po_id', po.id, 'po_no', po.po_no, 'qty', pol.qty_ordered)
+                ) FILTER (WHERE pol.id IS NOT NULL),
+                '[]'
+            ) AS referenced_pos
+        FROM purchase_request_line prl
+        JOIN material_code mc ON mc.mat_code = prl.mat_code
+        JOIN mat_name mn       ON mn.id = mc.mat_name_id
+        JOIN unit u            ON u.id = mc.unit_id
+        LEFT JOIN purchase_order_line pol
+               ON pol.pr_line_id = prl.id
+              AND pol.status != 'CANCELLED'
+              AND ($2::bigint IS NULL OR pol.po_id != $2)
+        LEFT JOIN purchase_order po ON po.id = pol.po_id
+        WHERE prl.pr_id = $1
+        GROUP BY prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
+                 prl.qty_requested, prl.qty_reserved, prl.qty_ordered, prl.status
+    ) base
+    LEFT JOIN LATERAL (
+        SELECT
+		
+            (ARRAY_AGG(hist.unit_price ORDER BY hist.po_date DESC))[1] AS last_price,
+            (ARRAY_AGG(hist.po_date    ORDER BY hist.po_date DESC))[1] AS last_price_date,
+            JSON_AGG(
+                JSON_BUILD_OBJECT(
+                    'price',         hist.unit_price,
+                    'date',          hist.po_date,
+                    'qty',           hist.qty_ordered,
+                    'supplier_name', hist.supplier_name,
+                    'po_no',         hist.po_no
+                ) ORDER BY hist.po_date DESC
+            ) AS price_history
+        FROM (
+            SELECT
+                pol.unit_price,
+                po.po_date,
+                pol.qty_ordered,
+                s.supplier_name,
+                po.po_no
+            FROM purchase_order_line pol
+            JOIN purchase_order po ON po.id = pol.po_id
+            JOIN supplier s        ON s.supplier_code = po.supplier_code
+            WHERE pol.mat_code = base.mat_code
+              AND pol.status != 'CANCELLED'
+              AND po.status   IN ('APPROVED','SENT','PARTIALLY_RECEIVED','RECEIVED')
+              AND pol.unit_price > 0
+            ORDER BY po.po_date DESC
+            LIMIT 10
+        ) hist
+    ) ph ON TRUE
+    ORDER BY base.line_no`, prID, excludePOID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "query error: "+err.Error())
+	}
+	defer rows.Close()
+
+	lines := make([]models.PRLineWithPOStatus, 0)
+	for rows.Next() {
+		var l models.PRLineWithPOStatus
+		var refJSON []byte
+		var lastPrice *float64
+		var lastPriceDate *time.Time
+		var priceHistJSON []byte
+		if err := rows.Scan(&l.PRLineID, &l.LineNo, &l.MatCode, &l.MatName, &l.Unit,
+			&l.QtyRequested, &l.QtyReserved, &l.QtyOrdered, &l.QtyRemaining, &l.LineStatus, &refJSON,
+			&lastPrice, &lastPriceDate, &priceHistJSON); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "scan error: "+err.Error())
+		}
+		l.ReferencedPOs = []models.ReferencedPO{}
+		if err := json.Unmarshal(refJSON, &l.ReferencedPOs); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "decode error: "+err.Error())
+		}
+		l.LastPrice = lastPrice
+		if lastPriceDate != nil {
+			s := lastPriceDate.Format("2006-01-02")
+			l.LastPriceDate = &s
+		}
+		l.PriceHistory = []models.PriceHistoryItem{}
+		_ = json.Unmarshal(priceHistJSON, &l.PriceHistory)
+		lines = append(lines, l)
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": models.PRLinesWithPOStatusResponse{
+			PRNo:     prNo,
+			PRStatus: prStatus,
+			Lines:    lines,
+		},
 	})
 }
 

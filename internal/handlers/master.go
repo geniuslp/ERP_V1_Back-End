@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/xuri/excelize/v2"
 )
 
 type MasterHandler struct {
@@ -135,6 +137,75 @@ func (h *MasterHandler) GetMaterial(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "material not found")
 	}
 	return c.JSON(fiber.Map{"success": true, "data": m})
+}
+
+// SearchMaterials godoc
+// @Summary      Type-ahead material search
+// @Description  Search active materials by mat_code or mat_name for the Create PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable). Prefix matches on mat_code rank first.
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        q      query  string  true   "search term (matches mat_code or mat_name)"
+// @Param        limit  query  int     false  "max results, default 20, cap 50"
+// @Success      200    {object}  fiber.Map
+// @Failure      500    {object}  fiber.Map
+// @Router       /materials/search [get]
+func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
+	q := strings.TrimSpace(c.Query("q"))
+	if q == "" {
+		return c.JSON(fiber.Map{"success": true, "data": []models.MaterialSearchItem{}})
+	}
+
+	limit := c.QueryInt("limit", 20)
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	rows, err := h.db.Query(context.Background(), `
+    SELECT
+        mc.mat_code,
+        mn.mat_name,
+        u.unit_name AS unit,
+        lp.last_price
+    FROM material_code mc
+    JOIN mat_name mn ON mn.id = mc.mat_name_id
+    JOIN unit u      ON u.id  = mc.unit_id
+    LEFT JOIN LATERAL (
+        SELECT pol.unit_price AS last_price
+        FROM purchase_order_line pol
+        JOIN purchase_order po ON po.id = pol.po_id
+        WHERE pol.mat_code = mc.mat_code
+          AND pol.status != 'CANCELLED'
+          AND po.status IN ('APPROVED','SENT','PARTIALLY_RECEIVED','RECEIVED')
+          AND pol.unit_price > 0
+        ORDER BY po.po_date DESC
+        LIMIT 1
+    ) lp ON TRUE
+    WHERE mc.is_active = true
+      AND (mc.mat_code ILIKE '%' || $1 || '%'
+           OR mn.mat_name ILIKE '%' || $1 || '%')
+    ORDER BY
+        (mc.mat_code ILIKE $1 || '%') DESC,
+        mn.mat_name ASC
+    LIMIT $2`, q, limit)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "query error: "+err.Error())
+	}
+	defer rows.Close()
+
+	items := make([]models.MaterialSearchItem, 0, limit)
+	for rows.Next() {
+		var m models.MaterialSearchItem
+		if err := rows.Scan(&m.MatCode, &m.MatName, &m.Unit, &m.LastPrice); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "scan error: "+err.Error())
+		}
+		items = append(items, m)
+	}
+
+	return c.JSON(fiber.Map{"success": true, "data": items})
 }
 
 // GetAllMaterial godoc
@@ -807,41 +878,25 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 		unitIDs = append(unitIDs, r.unitID)
 	}
 
-	// ── Check duplicate against DB ────────────────────────────────────────
-	dupRows, err := tx.Query(ctx,
-		`SELECT mat_code FROM material_code WHERE mat_code = ANY($1)`, matCodes,
-	)
-	if err != nil {
-		log.Println("❌ dupCheck:", err)
-		return err
-	}
-	defer dupRows.Close()
-
-	var dups []string
-	for dupRows.Next() {
-		var code string
-		if err = dupRows.Scan(&code); err != nil {
-			log.Println("❌ dupScan:", err)
-			return err
-		}
-		dups = append(dups, code)
-	}
-	if len(dups) > 0 {
-		return fiber.NewError(fiber.StatusConflict,
-			fmt.Sprintf("material code already exists: %s", strings.Join(dups, ", ")))
-	}
-
-	// ── Bulk insert ───────────────────────────────────────────────────────
+	// ── Bulk upsert ───────────────────────────────────────────────────────
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO material_code
 		  (mat_code, group_id, subgroup_id, mat_name_id, spec_id, brand_id, unit_id, is_active, created_at, updated_at)
 		SELECT UNNEST($1::text[]),
 		       UNNEST($2::bigint[]), UNNEST($3::bigint[]), UNNEST($4::bigint[]),
 		       UNNEST($5::bigint[]), UNNEST($6::bigint[]), UNNEST($7::bigint[]),
-		       true, NOW(), NOW()`,
+		       true, NOW(), NOW()
+		ON CONFLICT (mat_code) DO UPDATE SET
+		    group_id    = EXCLUDED.group_id,
+		    subgroup_id = EXCLUDED.subgroup_id,
+		    mat_name_id = EXCLUDED.mat_name_id,
+		    spec_id     = EXCLUDED.spec_id,
+		    brand_id    = EXCLUDED.brand_id,
+		    unit_id     = EXCLUDED.unit_id,
+		    updated_at  = NOW()`,
 		matCodes, groupIDs, subgroupIDs, matNameIDs, specIDs, brandIDs, unitIDs,
 	); err != nil {
-		log.Println("❌ bulk insert:", err)
+		log.Println("❌ bulk upsert:", err)
 		return err
 	}
 
@@ -854,7 +909,7 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 		"success":   true,
 		"mat_codes": matCodes,
 		"count":     len(matCodes),
-		"message":   "materials created",
+		"message":   "materials created or updated",
 	})
 }
 
@@ -951,6 +1006,91 @@ func (h *MasterHandler) UpdateMaterial(c *fiber.Ctx) error {
 		"mat_code": matCode,
 		"message":  "material updated",
 	})
+}
+
+// ExportMaterials godoc
+// @Summary      Export all active materials as Excel
+// @Description  Downloads an xlsx file with all active materials joined across group/subgroup/mat_name/spec/brand/unit
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+// @Success      200  {file}    binary
+// @Failure      500  {object}  fiber.Map
+// @Router       /master/materials/export [get]
+func (h *MasterHandler) ExportMaterials(c *fiber.Ctx) error {
+	ctx := context.Background()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			mc.mat_code,
+			mg.group_code,
+			sg.subgroup_code,
+			mn.mat_name,
+			COALESCE(ss.spec_description, '') AS spec_description,
+			COALESCE(b.brand_name, '')        AS brand_name,
+			u.unit_code,
+			u.unit_name
+		FROM material_code mc
+		JOIN mat_group  mg ON mg.id = mc.group_id
+		JOIN subgroup   sg ON sg.id = mc.subgroup_id
+		JOIN mat_name   mn ON mn.id = mc.mat_name_id
+		LEFT JOIN spec_size ss ON ss.id = mc.spec_id
+		LEFT JOIN brand     b  ON b.id  = mc.brand_id
+		JOIN unit           u  ON u.id  = mc.unit_id
+		WHERE mc.is_active = true
+		ORDER BY mc.mat_code`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	f := excelize.NewFile()
+	defer f.Close()
+
+	const sheet = "Materials"
+	f.SetSheetName("Sheet1", sheet)
+
+	boldStyle, err := f.NewStyle(&excelize.Style{Font: &excelize.Font{Bold: true}})
+	if err != nil {
+		return err
+	}
+
+	headers := []string{"mat_code", "group_code", "subgroup_code", "mat_name", "spec_description", "brand_name", "unit_code", "unit_name"}
+	colWidths := []float64{35, 15, 18, 40, 45, 25, 12, 20}
+	for i, h := range headers {
+		col := string(rune('A' + i))
+		cell := col + "1"
+		f.SetCellValue(sheet, cell, h)
+		f.SetCellStyle(sheet, cell, cell, boldStyle)
+		f.SetColWidth(sheet, col, col, colWidths[i])
+	}
+
+	rowIdx := 2
+	for rows.Next() {
+		var matCode, groupCode, subgroupCode, matName, specDesc, brandName, unitCode, unitName string
+		if err := rows.Scan(&matCode, &groupCode, &subgroupCode, &matName, &specDesc, &brandName, &unitCode, &unitName); err != nil {
+			return err
+		}
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIdx), matCode)
+		f.SetCellValue(sheet, fmt.Sprintf("B%d", rowIdx), groupCode)
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", rowIdx), subgroupCode)
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", rowIdx), matName)
+		f.SetCellValue(sheet, fmt.Sprintf("E%d", rowIdx), specDesc)
+		f.SetCellValue(sheet, fmt.Sprintf("F%d", rowIdx), brandName)
+		f.SetCellValue(sheet, fmt.Sprintf("G%d", rowIdx), unitCode)
+		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIdx), unitName)
+		rowIdx++
+	}
+
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		return err
+	}
+
+	filename := "materials_" + time.Now().Format("20060102") + ".xlsx"
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Set("Content-Disposition", "attachment; filename="+filename)
+	return c.Send(buf.Bytes())
 }
 
 func max(a, b int) int {

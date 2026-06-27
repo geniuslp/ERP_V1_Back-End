@@ -1325,6 +1325,37 @@ const docTemplate = `{
                 }
             }
         },
+        "/master/materials/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Downloads an xlsx file with all active materials joined across group/subgroup/mat_name/spec/brand/unit",
+                "produces": [
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Export all active materials as Excel",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/materials/{code}": {
             "get": {
                 "security": [
@@ -1712,6 +1743,51 @@ const docTemplate = `{
                     },
                     "409": {
                         "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/suppliers/bulk": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Inserts multiple suppliers in a single UNNEST statement. is_active defaults to true at DB level.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Bulk create suppliers",
+                "parameters": [
+                    {
+                        "description": "{ \\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -3262,7 +3338,53 @@ const docTemplate = `{
                 }
             }
         },
-        "/po": {
+        "/materials/search": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Search active materials by mat_code or mat_name for the Create PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable). Prefix matches on mat_code rank first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Type-ahead material search",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "search term (matches mat_code or mat_name)",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max results, default 20, cap 50",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/memo": {
             "get": {
                 "security": [
                     {
@@ -3273,33 +3395,43 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Purchase Order"
+                    "Memo"
                 ],
-                "summary": "List purchase orders",
+                "summary": "รายการ Memo ทั้งหมด",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "status filter",
-                        "name": "status",
+                        "description": "ค้นหา memo_no / title",
+                        "name": "search",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "supplier_code filter",
-                        "name": "supplier",
+                        "description": "กรอง project",
+                        "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "วันที่เริ่ม (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "วันที่สิ้นสุด (YYYY-MM-DD)",
+                        "name": "date_to",
                         "in": "query"
                     },
                     {
                         "type": "integer",
-                        "default": 1,
-                        "description": "page",
+                        "description": "หน้า (default 1)",
                         "name": "page",
                         "in": "query"
                     },
                     {
                         "type": "integer",
-                        "default": 20,
-                        "description": "page_size",
+                        "description": "จำนวนต่อหน้า (default 20)",
                         "name": "page_size",
                         "in": "query"
                     }
@@ -3319,6 +3451,274 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "สร้าง Memo ใหม่",
+                "parameters": [
+                    {
+                        "description": "ข้อมูล Memo",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateMemoRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.Memo"
+                        }
+                    }
+                }
+            }
+        },
+        "/memo/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "ดูรายละเอียด Memo",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Memo ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Memo"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "แก้ไข Memo",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Memo ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "ข้อมูล Memo",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateMemoRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Memo"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "ลบ Memo",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Memo ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/memo/{id}/approve": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "อนุมัติหรือปฏิเสธ Memo",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Memo ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "action: APPROVE or REJECT",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.ApprovalActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/memo/{id}/submit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "ส่ง Memo ขออนุมัติ (DRAFT → PENDING_APPROVAL)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Memo ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "List purchase orders with filter and pagination",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "status filter",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "limit",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be APPROVED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3369,7 +3769,7 @@ const docTemplate = `{
                 "tags": [
                     "Purchase Order"
                 ],
-                "summary": "Get purchase order by ID",
+                "summary": "Get full PO detail including lines with material info",
                 "parameters": [
                     {
                         "type": "integer",
@@ -3383,7 +3783,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.PurchaseOrder"
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     },
                     "404": {
@@ -3396,6 +3796,49 @@ const docTemplate = `{
             }
         },
         "/po/{id}/approve": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Approve a purchase order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
             "post": {
                 "security": [
                     {
@@ -3440,6 +3883,168 @@ const docTemplate = `{
                 }
             }
         },
+        "/po/{id}/cancel": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Cancel an approved purchase order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/{id}/lines": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Inserts purchase_order_line rows. For lines that reference a pr_line_id, increments purchase_request_line.qty_ordered and re-evaluates the parent PR status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Add lines to an existing purchase order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Lines to add",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.AddPOLinesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/{id}/lines/{line_id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates the free-text description on an existing purchase_order_line. Empty string clears it (stored as NULL). Max 1000 chars.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Update a PO line description",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "PO line ID",
+                        "name": "line_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to update",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdatePOLineRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/{id}/logs": {
             "get": {
                 "security": [
@@ -3471,6 +4076,63 @@ const docTemplate = `{
                             "items": {
                                 "$ref": "#/definitions/fiber.Map"
                             }
+                        }
+                    }
+                }
+            }
+        },
+        "/po/{id}/reject": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Reject a purchase order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Rejection reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -3887,6 +4549,52 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/pr/{id}/lines-with-po-status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns purchase_request_line rows for the PR with the quantity already claimed by purchase orders, which PO numbers claimed each line, and qty_remaining = qty_requested - qty_ordered. Pass exclude_po_id when editing an existing PO so its own claim is left out of referenced_pos.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Request"
+                ],
+                "summary": "Get PR lines enriched with PO claim status",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PR ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Exclude this PO's lines from referenced_pos (edit-PO flow)",
+                        "name": "exclude_po_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -4335,6 +5043,21 @@ const docTemplate = `{
                 }
             }
         },
+        "models.AddPOLinesRequest": {
+            "type": "object",
+            "required": [
+                "lines"
+            ],
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/models.CreatePOLine"
+                    }
+                }
+            }
+        },
         "models.ApprovalActionRequest": {
             "type": "object",
             "required": [
@@ -4736,6 +5459,29 @@ const docTemplate = `{
                 }
             }
         },
+        "models.CreateMemoRequest": {
+            "type": "object",
+            "properties": {
+                "department": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.MemoLineRequest"
+                    }
+                },
+                "note": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
         "models.CreatePOLine": {
             "type": "object",
             "required": [
@@ -4744,6 +5490,9 @@ const docTemplate = `{
                 "unit_price"
             ],
             "properties": {
+                "description": {
+                    "type": "string"
+                },
                 "mat_code": {
                     "type": "string"
                 },
@@ -4765,7 +5514,6 @@ const docTemplate = `{
         "models.CreatePORequest": {
             "type": "object",
             "required": [
-                "currency",
                 "lines",
                 "supplier_code",
                 "warehouse_code"
@@ -4795,6 +5543,13 @@ const docTemplate = `{
                 },
                 "rfq_id": {
                     "type": "integer"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "DRAFT",
+                        "PENDING_APPROVAL"
+                    ]
                 },
                 "supplier_code": {
                     "type": "string"
@@ -4851,6 +5606,9 @@ const docTemplate = `{
                 },
                 "location_code": {
                     "type": "string"
+                },
+                "memo_id": {
+                    "type": "integer"
                 },
                 "pr_date": {
                     "type": "string"
@@ -5401,11 +6159,123 @@ const docTemplate = `{
                 }
             }
         },
+        "models.Memo": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "department": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.MemoLine"
+                    }
+                },
+                "memo_no": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "project_name": {
+                    "type": "string"
+                },
+                "requested_by": {
+                    "type": "integer"
+                },
+                "requested_by_name": {
+                    "description": "populated via JOIN (ไม่ได้เก็บใน table)",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.MemoLine": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "estimated_price": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "line_amount": {
+                    "type": "number"
+                },
+                "line_no": {
+                    "type": "integer"
+                },
+                "memo_id": {
+                    "type": "integer"
+                },
+                "quantity": {
+                    "type": "number"
+                },
+                "remark": {
+                    "type": "string"
+                },
+                "unit": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MemoLineRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "estimated_price": {
+                    "type": "number"
+                },
+                "line_no": {
+                    "type": "integer"
+                },
+                "quantity": {
+                    "type": "number"
+                },
+                "remark": {
+                    "type": "string"
+                },
+                "unit": {
+                    "type": "string"
+                }
+            }
+        },
         "models.POLine": {
             "type": "object",
             "properties": {
                 "amount": {
                     "type": "number"
+                },
+                "description": {
+                    "type": "string"
                 },
                 "line_id": {
                     "type": "integer"
@@ -5482,6 +6352,9 @@ const docTemplate = `{
                 },
                 "pr_id": {
                     "type": "integer"
+                },
+                "qty_ordered": {
+                    "type": "number"
                 },
                 "qty_requested": {
                     "type": "number"
@@ -5637,6 +6510,15 @@ const docTemplate = `{
                     }
                 },
                 "location_code": {
+                    "type": "string"
+                },
+                "memo_id": {
+                    "type": "integer"
+                },
+                "memo_no": {
+                    "type": "string"
+                },
+                "memo_title": {
                     "type": "string"
                 },
                 "pr_date": {
@@ -5928,6 +6810,37 @@ const docTemplate = `{
                 "unit_name": {
                     "type": "string",
                     "maxLength": 200
+                }
+            }
+        },
+        "models.UpdateMemoRequest": {
+            "type": "object",
+            "properties": {
+                "department": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.MemoLineRequest"
+                    }
+                },
+                "note": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.UpdatePOLineRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
                 }
             }
         },

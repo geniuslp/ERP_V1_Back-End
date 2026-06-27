@@ -31,6 +31,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	matRepo := repository.NewMaterialRepo(db)
 	matSvc := service.NewMaterialService(matRepo)
 	matH := handlers.NewMaterialCodeHandler(matSvc)
+	memoH := handlers.NewMemoHandler(db)
 
 	api := app.Group("/api/v1")
 
@@ -54,9 +55,13 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/materials", masterH.ListMaterials)
 	master.Post("/materials", masterH.CreateMaterial)
 	master.Post("/materials/bulk", masterH.BulkCreateMaterial)
+	master.Get("/materials/export", jwt, masterH.ExportMaterials)
 	master.Put("/materials/:code", masterH.UpdateMaterial)
 	master.Get("/materials/:code", masterH.GetMaterial)
 	master.Get("/allMaterial", masterH.GetAllMaterial)
+
+	// Material type-ahead search (Create PO combobox)
+	api.Get("/materials/search", masterH.SearchMaterials)
 	master.Get("/subgroups", masterH.ListSubgroups)
 	master.Get("/mat-names", masterH.ListMatNames)
 	master.Get("/locations", locationH.ListLocations)
@@ -72,8 +77,10 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/warehouses", masterH.ListWarehouses)
 	master.Post("/warehouses", masterH.CreateWarehouse)
 	master.Get("/warehouses/:code/zones", masterH.ListZones)
+	supplierH := handlers.NewSupplierHandler(db)
 	master.Get("/suppliers", masterH.ListSuppliers)
 	master.Post("/suppliers", masterH.CreateSupplier)
+	master.Post("/suppliers/bulk", supplierH.BulkCreateSupplier)
 
 	// Inventory
 	inv := api.Group("/inventory")
@@ -95,6 +102,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	pr.Post("/:id/submit", prH.Submit)
 	pr.Post("/:id/approve", middleware.RequireRole("SENIOR_TEAM", "MANAGER", "DIRECTOR", "MD", "ADMIN"), prH.Approve)
 	pr.Get("/:id/logs", prH.GetLogs)
+	pr.Get("/:id/lines-with-po-status", prH.LinesWithPOStatus)
 	pr.Post("/:id/attachments", attachH.Add)
 	pr.Get("/:id/attachments", attachH.List)
 	pr.Delete("/:id/attachments/:attach_id", attachH.Delete)
@@ -103,12 +111,24 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	// Purchase Order
 	po := api.Group("/po")
-	po.Get("/", poH.List)
+	po.Use(jwt)
 	po.Post("/", poH.Create)
-	po.Get("/:id", poH.Get)
 	po.Post("/:id/approve", middleware.RequireRole("MANAGER", "DIRECTOR", "MD", "ADMIN"), poH.Approve)
 	po.Post("/:id/send", poH.Send)
+	po.Post("/:id/lines", poH.AddLines)
+	po.Put("/:id/lines/:line_id", poH.UpdateLine)
 	po.Get("/:id/logs", poH.GetLogs)
+	RegisterPOApprovalRoutes(po, db)
+
+	// Memo
+	memo := api.Group("/memo", jwt)
+	memo.Get("/", memoH.List)
+	memo.Post("/", memoH.Create)
+	memo.Get("/:id", memoH.GetByID)
+	memo.Put("/:id", memoH.Update)
+	memo.Delete("/:id", memoH.Delete)
+	memo.Post("/:id/submit", memoH.Submit)
+	memo.Post("/:id/approve", middleware.RequireRole("SENIOR_TEAM", "MANAGER", "ADMIN"), memoH.Approve)
 
 	// GRN
 	grn := api.Group("/grn")

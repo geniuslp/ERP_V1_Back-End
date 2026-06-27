@@ -539,6 +539,14 @@ type MaterialFull struct {
 	IsActive        bool    `json:"is_active"`
 }
 
+// MaterialSearchItem is one result of the type-ahead material search (Create PO combobox).
+type MaterialSearchItem struct {
+	MatCode   string   `json:"mat_code"`
+	MatName   string   `json:"mat_name"`
+	Unit      string   `json:"unit"`
+	LastPrice *float64 `json:"last_price"` // nullable
+}
+
 type MaterialDetail struct {
 	GroupCode       string  `json:"group_code"`
 	SubgroupCode    string  `json:"subgroup_code"`
@@ -616,6 +624,9 @@ type PurchaseRequest struct {
 	Remarks       *string   `json:"remarks,omitempty" db:"remarks"`
 	CreatedAt     time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
+	MemoID        *int64    `json:"memo_id,omitempty" db:"memo_id"`
+	MemoNo        *string   `json:"memo_no,omitempty"`
+	MemoTitle     *string   `json:"memo_title,omitempty"`
 	Lines         []PRLine  `json:"lines,omitempty"`
 }
 
@@ -627,8 +638,53 @@ type PRLine struct {
 	QtyRequested float64 `json:"qty_requested" db:"qty_requested"`
 	QtyReserved  float64 `json:"qty_reserved" db:"qty_reserved"`
 	QtyToOrder   float64 `json:"qty_to_order" db:"qty_to_order"`
+	QtyOrdered   float64 `json:"qty_ordered" db:"qty_ordered"`
 	Remarks      *string `json:"remarks,omitempty" db:"remarks"`
 	Status       string  `json:"status" db:"status"`
+}
+
+// ReferencedPO is a PO claim against a PR line, returned in PRLineWithPOStatus.referenced_pos.
+type ReferencedPO struct {
+	POID int64   `json:"po_id"`
+	PONo string  `json:"po_no"`
+	Qty  float64 `json:"qty"`
+}
+
+// PriceHistoryItem is one past purchase of a mat_code, returned in PRLineWithPOStatus.price_history.
+type PriceHistoryItem struct {
+	Price        float64 `json:"price"`
+	Date         string  `json:"date"` // "2006-01-02"
+	Qty          float64 `json:"qty"`
+	SupplierName string  `json:"supplier_name"`
+	PONo         string  `json:"po_no"`
+	SourcePRNo   *string `json:"source_pr_no"`  // nullable: PO not linked to a PR
+	ProjectCode  *string `json:"project_code"`  // nullable
+	ProjectName  *string `json:"project_name"`  // nullable
+}
+
+// PRLineWithPOStatus is a purchase_request_line row enriched with PO claim status.
+type PRLineWithPOStatus struct {
+	PRLineID      int64          `json:"pr_line_id"`
+	LineNo        int            `json:"line_no"`
+	MatCode       string         `json:"mat_code"`
+	MatName       string         `json:"mat_name"`
+	Unit          string         `json:"unit"`
+	QtyRequested  float64        `json:"qty_requested"`
+	QtyReserved   float64        `json:"qty_reserved"`
+	QtyOrdered    float64        `json:"qty_ordered"`
+	QtyRemaining  float64        `json:"qty_remaining"`
+	LineStatus    string         `json:"line_status"`
+	ReferencedPOs []ReferencedPO `json:"referenced_pos"`
+
+	LastPrice     *float64           `json:"last_price"`      // nullable: no history
+	LastPriceDate *string            `json:"last_price_date"` // nullable, "2006-01-02"
+	PriceHistory  []PriceHistoryItem `json:"price_history"`
+}
+
+type PRLinesWithPOStatusResponse struct {
+	PRNo     string               `json:"pr_no"`
+	PRStatus string               `json:"pr_status"`
+	Lines    []PRLineWithPOStatus `json:"lines"`
 }
 
 type CreatePRRequest struct {
@@ -638,6 +694,7 @@ type CreatePRRequest struct {
 	LocationCode string                 `json:"location_code" validate:"required"`
 	RequiredDate *string                `json:"required_date,omitempty"`
 	ProjectCode  *string                `json:"project_code,omitempty"`
+	MemoID       *int64                 `json:"memo_id,omitempty"`
 	Status       string                 `json:"status"`
 	Remarks      *string                `json:"remarks,omitempty"`
 	CreatedBy    int64                  `json:"created_by" validate:"required"`
@@ -685,6 +742,7 @@ type POLine struct {
 	QtyReceived float64 `json:"qty_received" db:"qty_received"`
 	UnitPrice   float64 `json:"unit_price" db:"unit_price"`
 	Amount      float64 `json:"amount" db:"amount"`
+	Description *string `json:"description,omitempty" db:"description"`
 	Remarks     *string `json:"remarks,omitempty" db:"remarks"`
 	Status      string  `json:"status" db:"status"`
 }
@@ -694,10 +752,11 @@ type CreatePORequest struct {
 	PRID          *int64         `json:"pr_id,omitempty"`
 	RFQID         *int64         `json:"rfq_id,omitempty"`
 	WarehouseCode string         `json:"warehouse_code" validate:"required"`
-	Currency      string         `json:"currency" validate:"required"`
+	Currency      string         `json:"currency"`
 	ExpectedDate  *string        `json:"expected_date,omitempty"`
 	PaymentTerms  *string        `json:"payment_terms,omitempty"`
 	Remarks       *string        `json:"remarks,omitempty"`
+	Status        string         `json:"status" validate:"omitempty,oneof=DRAFT PENDING_APPROVAL"`
 	Lines         []CreatePOLine `json:"lines" validate:"required,min=1,dive"`
 }
 
@@ -706,7 +765,16 @@ type CreatePOLine struct {
 	PRLineID   *int64  `json:"pr_line_id,omitempty"`
 	QtyOrdered float64 `json:"qty_ordered" validate:"required,gt=0"`
 	UnitPrice  float64 `json:"unit_price" validate:"required,gte=0"`
+	Description *string `json:"description,omitempty"`
 	Remarks    *string `json:"remarks,omitempty"`
+}
+
+type AddPOLinesRequest struct {
+	Lines []CreatePOLine `json:"lines" validate:"required,min=1,dive"`
+}
+
+type UpdatePOLineRequest struct {
+	Description *string `json:"description"`
 }
 
 // ─── GRN ─────────────────────────────────────────────────────────────────────
@@ -830,6 +898,69 @@ type PaginatedResponse struct {
 	Page       int         `json:"page"`
 	PageSize   int         `json:"page_size"`
 	TotalPages int         `json:"total_pages"`
+}
+
+// ─── Memo ──────────────────────────────────────────────────────────────────
+
+type Memo struct {
+	ID           int64     `json:"id"`
+	MemoNo       string    `json:"memo_no"`
+	Title        string    `json:"title"`
+	ProjectCode  *string   `json:"project_code"`
+	RequestedBy  int64     `json:"requested_by"`
+	Department   *string   `json:"department"`
+	Note         *string   `json:"note"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	CreatedBy    *int64    `json:"created_by"`
+	UpdatedBy    *int64    `json:"updated_by"`
+
+	// populated via JOIN (ไม่ได้เก็บใน table)
+	RequestedByName string     `json:"requested_by_name,omitempty"`
+	ProjectName     *string    `json:"project_name,omitempty"`
+	Lines           []MemoLine `json:"lines,omitempty"`
+}
+
+type MemoLine struct {
+	ID             int64   `json:"id"`
+	MemoID         int64   `json:"memo_id"`
+	LineNo         int     `json:"line_no"`
+	Description    string  `json:"description"`
+	Unit           string  `json:"unit"`
+	Quantity       float64 `json:"quantity"`
+	EstimatedPrice float64 `json:"estimated_price"`
+	LineAmount     float64 `json:"line_amount"`
+	Remark         *string `json:"remark"`
+}
+
+type CreateMemoRequest struct {
+	Title        string            `json:"title"`
+	ProjectCode  *string           `json:"project_code"`
+	Department   *string           `json:"department"`
+	Note         *string           `json:"note"`
+	Lines        []MemoLineRequest `json:"lines"`
+}
+
+type MemoLineRequest struct {
+	LineNo         int     `json:"line_no"`
+	Description    string  `json:"description"`
+	Unit           string  `json:"unit"`
+	Quantity       float64 `json:"quantity"`
+	EstimatedPrice float64 `json:"estimated_price"`
+	Remark         *string `json:"remark"`
+}
+
+type UpdateMemoRequest = CreateMemoRequest
+
+type MemoListFilter struct {
+	Search      string `query:"search"`
+	ProjectCode string `query:"project_code"`
+	DateFrom    string `query:"date_from"`
+	DateTo      string `query:"date_to"`
+	Status      string `query:"status"`
+	Page        int    `query:"page"`
+	PageSize    int    `query:"page_size"`
 }
 
 type StatusUpdateRequest struct {

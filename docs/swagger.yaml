@@ -28,6 +28,16 @@ definitions:
     - file_name
     - file_path
     type: object
+  models.AddPOLinesRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/models.CreatePOLine'
+        minItems: 1
+        type: array
+    required:
+    - lines
+    type: object
   models.ApprovalActionRequest:
     properties:
       action:
@@ -311,8 +321,25 @@ definitions:
     - unit_code
     - unit_name
     type: object
+  models.CreateMemoRequest:
+    properties:
+      department:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.MemoLineRequest'
+        type: array
+      note:
+        type: string
+      project_code:
+        type: string
+      title:
+        type: string
+    type: object
   models.CreatePOLine:
     properties:
+      description:
+        type: string
       mat_code:
         type: string
       pr_line_id:
@@ -348,12 +375,16 @@ definitions:
         type: string
       rfq_id:
         type: integer
+      status:
+        enum:
+        - DRAFT
+        - PENDING_APPROVAL
+        type: string
       supplier_code:
         type: string
       warehouse_code:
         type: string
     required:
-    - currency
     - lines
     - supplier_code
     - warehouse_code
@@ -385,6 +416,8 @@ definitions:
         type: array
       location_code:
         type: string
+      memo_id:
+        type: integer
       pr_date:
         type: string
       pr_no:
@@ -763,10 +796,84 @@ definitions:
       unit_name:
         type: string
     type: object
+  models.Memo:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      department:
+        type: string
+      id:
+        type: integer
+      lines:
+        items:
+          $ref: '#/definitions/models.MemoLine'
+        type: array
+      memo_no:
+        type: string
+      note:
+        type: string
+      project_code:
+        type: string
+      project_name:
+        type: string
+      requested_by:
+        type: integer
+      requested_by_name:
+        description: populated via JOIN (ไม่ได้เก็บใน table)
+        type: string
+      status:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  models.MemoLine:
+    properties:
+      description:
+        type: string
+      estimated_price:
+        type: number
+      id:
+        type: integer
+      line_amount:
+        type: number
+      line_no:
+        type: integer
+      memo_id:
+        type: integer
+      quantity:
+        type: number
+      remark:
+        type: string
+      unit:
+        type: string
+    type: object
+  models.MemoLineRequest:
+    properties:
+      description:
+        type: string
+      estimated_price:
+        type: number
+      line_no:
+        type: integer
+      quantity:
+        type: number
+      remark:
+        type: string
+      unit:
+        type: string
+    type: object
   models.POLine:
     properties:
       amount:
         type: number
+      description:
+        type: string
       line_id:
         type: integer
       line_no:
@@ -817,6 +924,8 @@ definitions:
         type: string
       pr_id:
         type: integer
+      qty_ordered:
+        type: number
       qty_requested:
         type: number
       qty_reserved:
@@ -919,6 +1028,12 @@ definitions:
           $ref: '#/definitions/models.PRLine'
         type: array
       location_code:
+        type: string
+      memo_id:
+        type: integer
+      memo_no:
+        type: string
+      memo_title:
         type: string
       pr_date:
         type: string
@@ -1113,6 +1228,26 @@ definitions:
     - spec_description
     - subgroup_name
     - unit_name
+    type: object
+  models.UpdateMemoRequest:
+    properties:
+      department:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.MemoLineRequest'
+        type: array
+      note:
+        type: string
+      project_code:
+        type: string
+      title:
+        type: string
+    type: object
+  models.UpdatePOLineRequest:
+    properties:
+      description:
+        type: string
     type: object
   models.UpdateProjectReq:
     properties:
@@ -2133,6 +2268,26 @@ paths:
       summary: Bulk create materials (cache + UNNEST optimized)
       tags:
       - Master
+  /master/materials/export:
+    get:
+      description: Downloads an xlsx file with all active materials joined across
+        group/subgroup/mat_name/spec/brand/unit
+      produces:
+      - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Export all active materials as Excel
+      tags:
+      - Master
   /master/projects:
     get:
       parameters:
@@ -2398,6 +2553,35 @@ paths:
       security:
       - BearerAuth: []
       summary: Update supplier
+      tags:
+      - Master
+  /master/suppliers/bulk:
+    post:
+      consumes:
+      - application/json
+      description: Inserts multiple suppliers in a single UNNEST statement. is_active
+        defaults to true at DB level.
+      parameters:
+      - description: '{ \'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Bulk create suppliers
       tags:
       - Master
   /master/units:
@@ -3271,24 +3455,61 @@ paths:
       summary: Get unit by code
       tags:
       - MaterialCode
-  /po:
+  /materials/search:
+    get:
+      description: Search active materials by mat_code or mat_name for the Create
+        PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable).
+        Prefix matches on mat_code rank first.
+      parameters:
+      - description: search term (matches mat_code or mat_name)
+        in: query
+        name: q
+        required: true
+        type: string
+      - description: max results, default 20, cap 50
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Type-ahead material search
+      tags:
+      - Master
+  /memo:
     get:
       parameters:
-      - description: status filter
+      - description: ค้นหา memo_no / title
         in: query
-        name: status
+        name: search
         type: string
-      - description: supplier_code filter
+      - description: กรอง project
         in: query
-        name: supplier
+        name: project_code
         type: string
-      - default: 1
-        description: page
+      - description: วันที่เริ่ม (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: วันที่สิ้นสุด (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: หน้า (default 1)
         in: query
         name: page
         type: integer
-      - default: 20
-        description: page_size
+      - description: จำนวนต่อหน้า (default 20)
         in: query
         name: page_size
         type: integer
@@ -3301,12 +3522,181 @@ paths:
             $ref: '#/definitions/models.PaginatedResponse'
       security:
       - BearerAuth: []
-      summary: List purchase orders
+      summary: รายการ Memo ทั้งหมด
+      tags:
+      - Memo
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: ข้อมูล Memo
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateMemoRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.Memo'
+      security:
+      - BearerAuth: []
+      summary: สร้าง Memo ใหม่
+      tags:
+      - Memo
+  /memo/{id}:
+    delete:
+      parameters:
+      - description: Memo ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ลบ Memo
+      tags:
+      - Memo
+    get:
+      parameters:
+      - description: Memo ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Memo'
+      security:
+      - BearerAuth: []
+      summary: ดูรายละเอียด Memo
+      tags:
+      - Memo
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Memo ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: ข้อมูล Memo
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateMemoRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Memo'
+      security:
+      - BearerAuth: []
+      summary: แก้ไข Memo
+      tags:
+      - Memo
+  /memo/{id}/approve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Memo ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 'action: APPROVE or REJECT'
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ApprovalActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: อนุมัติหรือปฏิเสธ Memo
+      tags:
+      - Memo
+  /memo/{id}/submit:
+    post:
+      parameters:
+      - description: Memo ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ส่ง Memo ขออนุมัติ (DRAFT → PENDING_APPROVAL)
+      tags:
+      - Memo
+  /po:
+    get:
+      parameters:
+      - description: status filter
+        in: query
+        name: status
+        type: string
+      - default: 1
+        description: page
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: limit
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List purchase orders with filter and pagination
       tags:
       - Purchase Order
     post:
       consumes:
       - application/json
+      description: Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the
+        referenced PR must be APPROVED and any pr_line_id must belong to it. Line
+        totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL
+        opens a step-1 approval_request.
       parameters:
       - description: PO data
         in: body
@@ -3344,14 +3734,14 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.PurchaseOrder'
+            $ref: '#/definitions/fiber.Map'
         "404":
           description: Not Found
           schema:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Get purchase order by ID
+      summary: Get full PO detail including lines with material info
       tags:
       - Purchase Order
   /po/{id}/approve:
@@ -3382,6 +3772,140 @@ paths:
       summary: Approve or reject PO (Manager/Director/MD)
       tags:
       - Purchase Order
+    put:
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve a purchase order
+      tags:
+      - Purchase Order
+  /po/{id}/cancel:
+    put:
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cancel an approved purchase order
+      tags:
+      - Purchase Order
+  /po/{id}/lines:
+    post:
+      consumes:
+      - application/json
+      description: Inserts purchase_order_line rows. For lines that reference a pr_line_id,
+        increments purchase_request_line.qty_ordered and re-evaluates the parent PR
+        status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT
+        ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking.
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Lines to add
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.AddPOLinesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Add lines to an existing purchase order
+      tags:
+      - Purchase Order
+  /po/{id}/lines/{line_id}:
+    put:
+      consumes:
+      - application/json
+      description: Updates the free-text description on an existing purchase_order_line.
+        Empty string clears it (stored as NULL). Max 1000 chars.
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: PO line ID
+        in: path
+        name: line_id
+        required: true
+        type: integer
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdatePOLineRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a PO line description
+      tags:
+      - Purchase Order
   /po/{id}/logs:
     get:
       parameters:
@@ -3402,6 +3926,42 @@ paths:
       security:
       - BearerAuth: []
       summary: Get PO status history
+      tags:
+      - Purchase Order
+  /po/{id}/reject:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Rejection reason
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reject a purchase order
       tags:
       - Purchase Order
   /po/{id}/send:
@@ -3650,6 +4210,38 @@ paths:
       summary: Delete a PR attachment
       tags:
       - Attachments
+  /pr/{id}/lines-with-po-status:
+    get:
+      description: Returns purchase_request_line rows for the PR with the quantity
+        already claimed by purchase orders, which PO numbers claimed each line, and
+        qty_remaining = qty_requested - qty_ordered. Pass exclude_po_id when editing
+        an existing PO so its own claim is left out of referenced_pos.
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Exclude this PO's lines from referenced_pos (edit-PO flow)
+        in: query
+        name: exclude_po_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get PR lines enriched with PO claim status
+      tags:
+      - Purchase Request
   /pr/{id}/logs:
     get:
       parameters:
