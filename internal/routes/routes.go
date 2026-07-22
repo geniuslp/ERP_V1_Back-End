@@ -24,6 +24,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	prH := handlers.NewPRHandler(db)
 	poH := handlers.NewPOHandler(db)
 	grnH := handlers.NewGRNHandler(db)
+	goodsReceiptH := handlers.NewGoodsReceiptHandler(db)
 	approvalH := handlers.NewApprovalHandler(db)
 	usersH := handlers.NewUsersHandler(db, cfg)
 	groupH := handlers.NewGroupHandler(db)
@@ -32,6 +33,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	matSvc := service.NewMaterialService(matRepo)
 	matH := handlers.NewMaterialCodeHandler(matSvc)
 	memoH := handlers.NewMemoHandler(db)
+	costCodeH := handlers.NewCostCodeHandler(db)
 
 	api := app.Group("/api/v1")
 
@@ -41,8 +43,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	auth.Post("/refresh", authH.RefreshToken)
 
 	// ── Protected ───────────────────────────────────────────────────────────
-	// jwt := middleware.JWTProtected(cfg) // TODO: re-enable for production
-	jwt := middleware.DevBypass()
+	jwt := middleware.JWTProtected(cfg)
 
 	// Auth
 	auth.Get("/me", jwt, authH.Me)
@@ -50,15 +51,33 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	// Master data
 	master := api.Group("/master")
+	master.Use(jwt)
 	master.Get("/groups", masterH.ListGroups)
 	master.Get("/units", masterH.ListUnits)
+	master.Get("/roles", masterH.ListRoles)
+	master.Get("/eligible-approvers", masterH.ListEligibleApprovers)
 	master.Get("/materials", masterH.ListMaterials)
 	master.Post("/materials", masterH.CreateMaterial)
 	master.Post("/materials/bulk", masterH.BulkCreateMaterial)
 	master.Get("/materials/export", jwt, masterH.ExportMaterials)
+	master.Get("/materials/stats", masterH.GetMaterialStats)
 	master.Put("/materials/:code", masterH.UpdateMaterial)
 	master.Get("/materials/:code", masterH.GetMaterial)
 	master.Get("/allMaterial", masterH.GetAllMaterial)
+
+	// Cost Code hierarchy (subject → job → group → subgroup)
+	// Cost Code is selected per PR line item (purchase_request_line.cost_subgroup_id),
+	// not assigned to a material — there is no material↔cost-code linking endpoint.
+	master.Get("/cost-code/subjects", costCodeH.ListSubjects)
+	master.Get("/cost-code/jobs", costCodeH.ListJobs)
+	master.Get("/cost-code/groups", costCodeH.ListGroupsByJob)
+	master.Get("/cost-code/subgroups", costCodeH.ListSubgroupsByGroup)
+	master.Get("/cost-code/full", costCodeH.ListFull)
+	master.Get("/cost-code/options", costCodeH.GetCostCodeOptions)
+	master.Get("/cost-code/export", costCodeH.ExportCostCode)
+	master.Post("/cost-code/import", costCodeH.ImportCostCode)
+	master.Get("/cost-code/list", costCodeH.ListCostCode)
+	master.Get("/cost-code/stats", costCodeH.GetCostCodeStats)
 
 	// Material type-ahead search (Create PO combobox)
 	api.Get("/materials/search", masterH.SearchMaterials)
@@ -70,16 +89,20 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Put("/locations/:id", locationH.UpdateLocation)
 	master.Delete("/locations/:id", locationH.DeleteLocation)
 
-	master.Get("/projects", projectH.ListProjects)
-	master.Post("/projects", projectH.CreateProject)
-	master.Put("/projects/:id", projectH.UpdateProject)
-	master.Delete("/projects/:id", projectH.DeleteProject)
+	master.Get("/projects", projectH.List)
+	master.Get("/projects/:id", projectH.GetByID)
+	master.Post("/projects", projectH.Create)
+	master.Put("/projects/:id", projectH.Update)
+	master.Delete("/projects/:id", projectH.SoftDelete)
 	master.Get("/warehouses", masterH.ListWarehouses)
 	master.Post("/warehouses", masterH.CreateWarehouse)
 	master.Get("/warehouses/:code/zones", masterH.ListZones)
 	supplierH := handlers.NewSupplierHandler(db)
-	master.Get("/suppliers", masterH.ListSuppliers)
-	master.Post("/suppliers", masterH.CreateSupplier)
+	master.Get("/suppliers", supplierH.ListSuppliers)
+	master.Get("/suppliers/:code", supplierH.GetSupplier)
+	master.Post("/suppliers", supplierH.CreateSupplier)
+	master.Put("/suppliers/:code", supplierH.UpdateSupplier)
+	master.Delete("/suppliers/:code", supplierH.DeleteSupplier)
 	master.Post("/suppliers/bulk", supplierH.BulkCreateSupplier)
 
 	// Inventory
@@ -91,6 +114,8 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// File upload
 	upload := api.Group("/upload")
 	upload.Post("/pr", attachH.UploadPRFile)
+	upload.Post("/memo", attachH.UploadMemoFile)
+	upload.Post("/po", attachH.UploadPOFile)
 
 	// Purchase Request
 	pr := api.Group("/pr")
@@ -100,7 +125,6 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	pr.Get("/next-number", prH.NextNumber)
 	pr.Post("/", prH.Create)
 	pr.Post("/:id/submit", prH.Submit)
-	pr.Post("/:id/approve", middleware.RequireRole("SENIOR_TEAM", "MANAGER", "DIRECTOR", "MD", "ADMIN"), prH.Approve)
 	pr.Get("/:id/logs", prH.GetLogs)
 	pr.Get("/:id/lines-with-po-status", prH.LinesWithPOStatus)
 	pr.Post("/:id/attachments", attachH.Add)
@@ -112,12 +136,20 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Purchase Order
 	po := api.Group("/po")
 	po.Use(jwt)
+	po.Get("/next-number", poH.NextPONumber)
+	po.Get("/search", goodsReceiptH.SearchApprovedPO)
 	po.Post("/", poH.Create)
-	po.Post("/:id/approve", middleware.RequireRole("MANAGER", "DIRECTOR", "MD", "ADMIN"), poH.Approve)
+	po.Put("/:id", poH.Update)
+	po.Post("/:id/approve", middleware.RequireRole("MANAGER", "DIRECTOR", "MD", "ADMIN_CENTER"), poH.Approve)
+	po.Put("/:id/edit-approved", poH.EditApprovedPO)
 	po.Post("/:id/send", poH.Send)
 	po.Post("/:id/lines", poH.AddLines)
 	po.Put("/:id/lines/:line_id", poH.UpdateLine)
 	po.Get("/:id/logs", poH.GetLogs)
+	po.Get("/:id/print-data", poH.PrintData)
+	po.Post("/:id/attachments", attachH.AddPO)
+	po.Get("/:id/attachments", attachH.ListPO)
+	po.Delete("/:id/attachments/:attach_id", attachH.DeletePO)
 	RegisterPOApprovalRoutes(po, db)
 
 	// Memo
@@ -128,13 +160,17 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	memo.Put("/:id", memoH.Update)
 	memo.Delete("/:id", memoH.Delete)
 	memo.Post("/:id/submit", memoH.Submit)
-	memo.Post("/:id/approve", middleware.RequireRole("SENIOR_TEAM", "MANAGER", "ADMIN"), memoH.Approve)
+	memo.Post("/:id/approve", memoH.Approve)
+	memo.Patch("/:id/cancel", memoH.Cancel)
 
 	// GRN
 	grn := api.Group("/grn")
 	grn.Get("/", grnH.List)
 	grn.Post("/", grnH.Create)
 	grn.Post("/:id/confirm", grnH.Confirm)
+	grn.Get("/history", jwt, goodsReceiptH.History)
+	grn.Post("/receive", jwt, goodsReceiptH.Receive)
+	grn.Post("/:id/score", jwt, goodsReceiptH.Score)
 
 	// Approvals & Audit
 	approvals := api.Group("/approvals")
@@ -142,13 +178,28 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	approvals.Get("/logs", approvalH.Logs)
 	approvals.Get("/audit", approvalH.AuditLogs)
 
+	// Approval Request — my-status (backs Approve/Reject button gating on the frontend)
+	approvalReq := api.Group("/approval-request", jwt)
+	approvalReq.Get("/:docType/:docId/my-status", approvalH.MyApprovalStatus)
+
+	// Generic, config-driven Approve/Reject (approval_doc_types-based). New doc type =
+	// approval_doc_types + approval_config rows, zero new Go code. Currently configured for
+	// PO and MEMO; supersedes po_approval.go/memo.go's Approve for those two doc types, but
+	// the old handlers are left registered and unused-by-frontend for now (rollback safety).
+	genericApprovalH := handlers.NewGenericApprovalHandler(db)
+	genericApproval := api.Group("/approval", jwt)
+	genericApproval.Put("/:docType/:docId/approve", genericApprovalH.Approve)
+	genericApproval.Put("/:docType/:docId/reject", genericApprovalH.Reject)
+
 	// Users
 	users := api.Group("/users")
+	users.Use(jwt)
 	users.Get("/allUser", usersH.List)
 	users.Get("/:id", usersH.Get)
-	users.Post("/", middleware.RequireRole("ADMIN"), usersH.Create)
-	users.Put("/:id", middleware.RequireRole("ADMIN"), usersH.Update)
-	users.Delete("/:id", middleware.RequireRole("ADMIN"), usersH.Delete)
+	users.Post("/", middleware.RequireRole("ADMIN_CENTER"), usersH.Create)
+	users.Put("/:id", middleware.RequireRole("ADMIN_CENTER"), usersH.Update)
+	users.Put("/:id/password", middleware.RequireRole("ADMIN_CENTER"), usersH.ResetPassword)
+	users.Delete("/:id", middleware.RequireRole("ADMIN_CENTER"), usersH.Delete)
 
 	// Material Code Management (unit → group → subgroup → mat_name → spec → brand → material_code)
 	mc := api.Group("/matcode")
@@ -190,6 +241,110 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	groups.Post("/", groupH.CreateGroup)
 	groups.Put("/:code", groupH.UpdateGroup)
 	groups.Delete("/:code", groupH.DeleteGroup)
+
+	// Stock Management
+	stockItemH := handlers.NewStockItemHandler(db)
+	stockInvH := handlers.NewStockInventoryHandler(db)
+	stockTxnH := handlers.NewStockTransactionHandler(db)
+	stockBorrowH := handlers.NewStockBorrowHandler(db)
+	stockResH := handlers.NewStockReservationHandler(db)
+
+	stock := api.Group("/stock", jwt)
+
+	// Item Master
+	stock.Get("/categories", stockItemH.ListCategories)
+	stock.Get("/items", stockItemH.List)
+	stock.Get("/lookup", stockItemH.Lookup)
+	stock.Post("/items", stockItemH.Create)
+	stock.Post("/items/import", stockItemH.ImportExcel)
+	stock.Get("/items/:id", stockItemH.GetByID)
+	stock.Put("/items/:id", stockItemH.Update)
+	stock.Delete("/items/:id", stockItemH.SoftDelete)
+
+	// Inventory
+	stock.Get("/inventory", stockInvH.List)
+	stock.Post("/inventory/adjust", stockInvH.AdjustStock)
+	stock.Post("/inventory/batch-lookup", stockInvH.BatchLookup)
+	stock.Post("/inventory/transfer", stockInvH.Transfer)
+
+	// Transactions
+	stock.Get("/transactions", stockTxnH.List)
+	stock.Post("/transactions", stockTxnH.Create)
+
+	// Borrow & Return
+	stock.Get("/borrow", stockBorrowH.List)
+	stock.Post("/borrow", stockBorrowH.Create)
+	stock.Get("/borrow/scan/:item_code", stockBorrowH.ScanQR)
+	stock.Get("/borrow/:id", stockBorrowH.GetByID)
+	stock.Post("/borrow/:id/submit", stockBorrowH.Submit)
+	stock.Post("/borrow/:id/approve", middleware.RequireRole("MANAGER", "ADMIN_CENTER"), stockBorrowH.Approve)
+	stock.Post("/borrow/:id/receive", stockBorrowH.Receive)
+	stock.Post("/borrow/:id/return", stockBorrowH.Return)
+
+	// Reservation
+	stock.Get("/reservations", stockResH.List)
+	stock.Post("/reservations", stockResH.Create)
+	stock.Post("/reservations/:id/cancel", stockResH.Cancel)
+
+	// Role-Menu Permissions
+	roleMenuH := handlers.NewRoleMenuPermissionHandler(db)
+	roleMenu := api.Group("/role-menu-permissions")
+	roleMenu.Get("/", roleMenuH.List)
+	roleMenu.Post("/batch", roleMenuH.BatchUpsert)
+
+	menusRoute := api.Group("/menus")
+	menusRoute.Get("/", roleMenuH.ListMenus)
+
+	// Approval Doc Types
+	docTypeH := handlers.NewApprovalDocTypeHandler(db)
+	docTypes := api.Group("/approval-doc-types")
+	docTypes.Get("/", docTypeH.List)
+	docTypes.Post("/", docTypeH.Create)
+	docTypes.Patch("/:id", docTypeH.Toggle)
+
+	// Approval Roles
+	approvalRoleH := handlers.NewApprovalRoleHandler(db)
+	approvalRoles := api.Group("/roles")
+	approvalRoles.Get("/", approvalRoleH.List)
+	approvalRoles.Post("/", approvalRoleH.Create)
+	approvalRoles.Patch("/:id", approvalRoleH.Toggle)
+	approvalRoles.Delete("/:id", approvalRoleH.Delete)
+
+	// Approval Config
+	approvalCfgH := handlers.NewApprovalConfigHandler(db)
+	approvalCfg := api.Group("/approval-config")
+	approvalCfg.Get("/", approvalCfgH.List)
+	approvalCfg.Patch("/:id", approvalCfgH.Toggle)
+	approvalCfg.Delete("/:id", approvalCfgH.Delete)
+	approvalCfg.Post("/batch", approvalCfgH.BatchUpdate)
+
+	// Approval Delegation (extra approvers, additive on top of role-based approval_config)
+	approvalDelegationH := handlers.NewApprovalDelegationHandler(db)
+	approvalDelegation := api.Group("/approval-delegation")
+	approvalDelegation.Get("/", approvalDelegationH.List)
+	approvalDelegation.Post("/", approvalDelegationH.Create)
+	approvalDelegation.Delete("/:id", approvalDelegationH.Delete)
+
+	// Departments
+	deptH := handlers.NewDepartmentHandler(db)
+	api.Get("/departments", deptH.List)
+
+	// Dept-Menu Permissions
+	deptPermH := handlers.NewDeptMenuPermissionHandler(db)
+	deptPerm := api.Group("/dept-menu-permissions")
+	deptPerm.Get("/", deptPermH.List)
+	deptPerm.Post("/batch", deptPermH.BatchUpsert)
+
+	// User-Menu Permissions
+	userPermH := handlers.NewUserMenuPermissionHandler(db)
+	userPerm := api.Group("/user-menu-permissions")
+	userPerm.Post("/batch", userPermH.BatchUpsert)
+	userPerm.Delete("/", userPermH.DeleteByUser)
+
+	// Effective Permissions
+	effectiveH := handlers.NewEffectivePermissionHandler(db)
+	api.Get("/permissions/effective", effectiveH.GetEffective)
+
 	// Health check
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "erp-api"})

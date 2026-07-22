@@ -1,0 +1,1 @@
+ALTER TABLE stock_item ADD COLUMN IF NOT EXISTS cost_code VARCHAR(50);

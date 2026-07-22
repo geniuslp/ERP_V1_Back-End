@@ -17,6 +17,587 @@
     "host": "localhost:8080",
     "basePath": "/api/v1",
     "paths": {
+        "/approval-config": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Config"
+                ],
+                "summary": "List approval configs",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval-config/batch": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Config"
+                ],
+                "summary": "Batch create/delete approval config steps",
+                "parameters": [
+                    {
+                        "description": "create array and delete id array",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval-config/{id}": {
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Config"
+                ],
+                "summary": "Delete approval config",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Config"
+                ],
+                "summary": "Toggle approval config active status",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "is_active",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval-delegation": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Delegation"
+                ],
+                "summary": "List extra approvers",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by doc type",
+                        "name": "doc_type",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Delegation"
+                ],
+                "summary": "Add an extra approver (additive, on top of role-based approvers)",
+                "parameters": [
+                    {
+                        "description": "Extra approver payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.approvalDelegationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval-delegation/{id}": {
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Delegation"
+                ],
+                "summary": "Remove an extra approver",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Extra approver row ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval-doc-types": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Doc Types"
+                ],
+                "summary": "List approval document types",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Doc Types"
+                ],
+                "summary": "Create approval document type",
+                "parameters": [
+                    {
+                        "description": "doc_type, doc_label, is_active",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval-doc-types/{id}": {
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approval Doc Types"
+                ],
+                "summary": "Toggle approval document type active status",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "is_active",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval-request/{docType}/{docId}/my-status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Backs Approve/Reject button gating on the frontend. Eligibility = role-based approver\n(approval_config + user_roles) OR extra approver (approval_delegation), for the doc's\ncurrent PENDING approval_request row.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approvals"
+                ],
+                "summary": "Check whether the current user is an eligible approver for a document's current step",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Document type, e.g. MEMO, BORROW, or PO",
+                        "name": "docType",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Document ID",
+                        "name": "docId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval/{docType}/{docId}/approve": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approvals"
+                ],
+                "summary": "Approve a document (generic, config-driven)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Document type, e.g. PO or MEMO",
+                        "name": "docType",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Document ID",
+                        "name": "docId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional comments",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval/{docType}/{docId}/reject": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approvals"
+                ],
+                "summary": "Reject a document (generic, config-driven)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Document type, e.g. PO or MEMO",
+                        "name": "docType",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Document ID",
+                        "name": "docId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional comments",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/approvals/audit": {
             "get": {
                 "security": [
@@ -315,6 +896,101 @@
                 }
             }
         },
+        "/departments": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Departments"
+                ],
+                "summary": "List departments",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/dept-menu-permissions": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Dept-Menu Permissions"
+                ],
+                "summary": "List department menu permissions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/dept-menu-permissions/batch": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Dept-Menu Permissions"
+                ],
+                "summary": "Batch upsert department menu permissions",
+                "parameters": [
+                    {
+                        "description": "permissions array",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/grn": {
             "get": {
                 "security": [
@@ -410,6 +1086,101 @@
                 }
             }
         },
+        "/grn/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "GoodsReceipt"
+                ],
+                "summary": "Paginated GRN history with optional supplier/date filters",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by supplier code",
+                        "name": "supplier_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter grn_date \u003e= (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter grn_date \u003c= (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/grn/receive": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Writes grn/grn_line, increments stock_item.qty, logs stock_transaction (IN), updates purchase_order_line/purchase_order status",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "GoodsReceipt"
+                ],
+                "summary": "Create Goods Receipt (single full receive) against an APPROVED PO",
+                "parameters": [
+                    {
+                        "description": "Goods receipt request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/grn/{id}/confirm": {
             "post": {
                 "security": [
@@ -432,6 +1203,51 @@
                         "name": "id",
                         "in": "path",
                         "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/grn/{id}/score": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "GoodsReceipt"
+                ],
+                "summary": "Score a confirmed goods receipt and mark it POSTED",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "GRN ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Score request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
                     }
                 ],
                 "responses": {
@@ -874,6 +1690,362 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Rows are sorted by cost_subgroup.id ASC, preserving the exact row order of the original import file (subgroup, group, job, and subject tables were TRUNCATE...RESTART IDENTITY'd and re-imported in file order this session, so id order == file order). รหัสรวม (combined code) uses the same subject_code+job_code+group_code+subgroup_code concatenation as costCodeFullQuery / ListFull / ListCostCode — no separator, same rule everywhere in this codebase.",
+                "produces": [
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Export the full cost-code hierarchy (subject/job/group/subgroup) to Excel",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/full": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Full joined cost-code list with computed cost_code string",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/groups": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "List cost groups filtered by job_id",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "job_id filter",
+                        "name": "job_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/import": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Accepts an array of rows. Uses in-memory cache to skip duplicate FK lookups, then upserts each level of the hierarchy. subgroup rows with empty subgroup_name are skipped.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Bulk import cost-code hierarchy (subject/job/group/subgroup)",
+                "parameters": [
+                    {
+                        "description": "Array of cost-code rows",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handlers.CostCodeImportRow"
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/jobs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "List cost jobs filtered by subject_id",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "subject_id filter",
+                        "name": "subject_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/list": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Get all cost codes with detail (paginated)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search keyword (any code/name field)",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/options": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active cost_subgroup.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Flat list of active cost codes for a PR-line Cost Code dropdown",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Cost-code stats (total, active)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/subgroups": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "List cost subgroups filtered by group_id",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "group_id filter",
+                        "name": "group_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/subjects": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "List cost subjects",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/eligible-approvers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's \"ผู้อนุมัติ\" field) so only users actually eligible to approve that doc_type are offered.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "List users eligible to approve a given doc_type",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Document type, e.g. MEMO",
+                        "name": "doc_type",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -1350,6 +2522,30 @@
                 }
             }
         },
+        "/master/materials/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Material code stats (total, active, duplicate combinations)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/materials/{code}": {
             "get": {
                 "security": [
@@ -1458,18 +2654,36 @@
                 "tags": [
                     "Master"
                 ],
-                "summary": "List all active projects",
+                "summary": "List projects",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Filter by status (ACTIVE|INACTIVE|CLOSED)",
+                        "description": "search project_code / project_name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "filter status",
                         "name": "status",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Search project_code or project_name",
-                        "name": "q",
+                        "description": "filter is_active",
+                        "name": "is_active",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page_size",
+                        "name": "page_size",
                         "in": "query"
                     }
                 ],
@@ -1477,13 +2691,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
+                            "$ref": "#/definitions/models.PaginatedResponse"
                         }
                     }
                 }
@@ -1538,6 +2746,43 @@
             }
         },
         "/master/projects/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Get project by id",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.ProjectFull"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
             "put": {
                 "security": [
                     {
@@ -1624,6 +2869,44 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/roles": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "List roles (optionally filtered by department)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "filter roles by department",
+                        "name": "dept_code",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -3418,6 +4701,12 @@
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)",
+                        "name": "my_approvals",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "หน้า (default 1)",
                         "name": "page",
@@ -3628,6 +4917,69 @@
                 }
             }
         },
+        "/memo/{id}/cancel": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Cancels a memo. Allowed when status is DRAFT, REJECTED, or PENDING_APPROVAL.\nDRAFT/REJECTED can be cancelled by the owner (requested_by). PENDING_APPROVAL\ncan be cancelled by an eligible approver (same eligibility check as Approve/Reject).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "Cancel a memo",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Memo ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional cancel reason",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/models.CancelMemoRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/memo/{id}/submit": {
             "post": {
                 "security": [
@@ -3661,6 +5013,71 @@
                 }
             }
         },
+        "/menus": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Role-Menu Permissions"
+                ],
+                "summary": "List menus as parent/child tree",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/permissions/effective": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Permissions"
+                ],
+                "summary": "Get effective permissions for a user (dept + role + user layers)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "user_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po": {
             "get": {
                 "security": [
@@ -3680,6 +5097,30 @@
                         "type": "string",
                         "description": "status filter",
                         "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "when true, only POs created by the current user",
+                        "name": "my",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "partial match on PO number",
+                        "name": "po_no",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "partial match on supplier name, or exact/partial supplier code",
+                        "name": "supplier",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "partial match on creator's full name",
+                        "name": "created_by_name",
                         "in": "query"
                     },
                     {
@@ -3712,7 +5153,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be APPROVED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request.",
+                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3750,6 +5191,70 @@
                 }
             }
         },
+        "/po/next-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Read-only preview of the next po_no, computed the same way as POST /po's real generation. This is NOT reserved — it's not written or locked anywhere, so two users previewing at the same time may see the same value; only whoever actually saves first gets it, since POST /po recomputes fresh inside its own transaction at save time. Purely cosmetic for the create-page hint.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Preview the next PO number",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/search": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "GoodsReceipt"
+                ],
+                "summary": "Search APPROVED/PARTIALLY_RECEIVED Purchase Orders by partial po_no match",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "PO number keyword (partial match)",
+                        "name": "po_no",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/{id}": {
             "get": {
                 "security": [
@@ -3776,6 +5281,62 @@
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Replaces header fields and all lines of a PO that is still in DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved for APPROVED POs; other statuses cannot be edited). Line totals and the PO total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code auto-fill rules as POST /po.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Update a DRAFT purchase order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "PO data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreatePORequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -3877,6 +5438,145 @@
                 }
             }
         },
+        "/po/{id}/attachments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Attachments"
+                ],
+                "summary": "List attachments for a PO",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.POAttachment"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Link an already-uploaded file to a purchase order",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Attachments"
+                ],
+                "summary": "Add attachment record to PO",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Attachment metadata",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.AddAttachmentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/{id}/attachments/{attach_id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes the database record and deletes the file from disk",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Attachments"
+                ],
+                "summary": "Delete a PO attachment",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Attachment ID",
+                        "name": "attach_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/{id}/cancel": {
             "put": {
                 "security": [
@@ -3898,6 +5598,64 @@
                         "name": "id",
                         "in": "path",
                         "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/{id}/edit-approved": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Allows editing a PO with status=APPROVED, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Edit an already-approved PO (requires reason, triggers re-approval)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Updated PO data + reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.EditApprovedPORequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -4075,6 +5833,46 @@
                 }
             }
         },
+        "/po/{id}/print-data": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Aggregates purchase_order, purchase_order_line, supplier, project, location and purchase_request into the shape consumed by the PurchaseOrderPrint frontend component. \"job\", \"contractDelivery\" and \"quotationNo\" are literal \"***\" placeholders — those fields don't exist in the schema yet.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Get print-ready data for a purchase order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/{id}/reject": {
             "put": {
                 "security": [
@@ -4172,6 +5970,7 @@
                         "BearerAuth": []
                     }
                 ],
+                "description": "available_for_po=true additionally restricts to status=COMPLETED PRs that still\nhave at least one line not fully referenced by existing PO(s) — for the \"select\nPR to create PO from\" picker only. Omit it for any other PR listing (PR status/\nhistory pages), which must keep showing every PR regardless of reference status.",
                 "produces": [
                     "application/json"
                 ],
@@ -4184,6 +5983,12 @@
                         "type": "string",
                         "description": "status filter",
                         "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true = only COMPLETED PRs with remaining unreferenced qty on at least one line",
+                        "name": "available_for_po",
                         "in": "query"
                     },
                     {
@@ -4310,100 +6115,6 @@
                     },
                     "404": {
                         "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    }
-                }
-            }
-        },
-        "/pr/{id}/approve": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Purchase Request"
-                ],
-                "summary": "Approve a purchase request",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "PR ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Purchase Request"
-                ],
-                "summary": "Approve or reject PR (Senior Team Project)",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "PR ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "action",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/models.ApprovalActionRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -4632,15 +6343,12 @@
                 }
             }
         },
-        "/pr/{id}/reject": {
-            "put": {
+        "/pr/{id}/submit": {
+            "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
-                ],
-                "consumes": [
-                    "application/json"
                 ],
                 "produces": [
                     "application/json"
@@ -4648,7 +6356,7 @@
                 "tags": [
                     "Purchase Request"
                 ],
-                "summary": "Reject a purchase request",
+                "summary": "Submit PR (no approval required — goes straight to COMPLETED)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -4656,9 +6364,64 @@
                         "name": "id",
                         "in": "path",
                         "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
                     },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/role-menu-permissions": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Role-Menu Permissions"
+                ],
+                "summary": "List role menu permissions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/role-menu-permissions/batch": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Role-Menu Permissions"
+                ],
+                "summary": "Batch upsert role menu permissions",
+                "parameters": [
                     {
-                        "description": "Rejection reason",
+                        "description": "permissions array",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -4680,8 +6443,110 @@
                             "$ref": "#/definitions/fiber.Map"
                         }
                     },
-                    "403": {
-                        "description": "Forbidden",
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/roles": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Roles"
+                ],
+                "summary": "List roles",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Roles"
+                ],
+                "summary": "Create role",
+                "parameters": [
+                    {
+                        "description": "role_name, description",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/roles/{id}": {
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Roles"
+                ],
+                "summary": "Delete role (rejected if referenced by approval configs)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Role ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -4691,11 +6556,378 @@
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Roles"
+                ],
+                "summary": "Toggle role active status",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Role ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "is_active",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
                     }
                 }
             }
         },
-        "/pr/{id}/submit": {
+        "/stock/borrow": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "รายการ Borrow Request",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "สร้าง Borrow Request",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateBorrowRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/borrow/scan/{item_code}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Scan QR Code เพื่อดูข้อมูล Item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item code or QR code",
+                        "name": "item_code",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/borrow/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "ดู Borrow Request ตาม ID",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Borrow ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/borrow/{id}/approve": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Approve / Reject Borrow Request",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Borrow ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.BorrowApprovalRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/borrow/{id}/receive": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "รับ Items จาก Borrow (scan QR)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Borrow ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.BorrowReceiveRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/borrow/{id}/return": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "คืน Items จาก Borrow (scan QR)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Borrow ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.BorrowReturnRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/borrow/{id}/submit": {
             "post": {
                 "security": [
                     {
@@ -4706,15 +6938,792 @@
                     "application/json"
                 ],
                 "tags": [
-                    "Purchase Request"
+                    "Stock"
                 ],
-                "summary": "Submit PR for approval",
+                "summary": "Submit Borrow Request",
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "PR ID",
+                        "description": "Borrow ID",
                         "name": "id",
                         "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/categories": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "รายการ Stock Category",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/inventory": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "รายการ Stock Inventory",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Warehouse code",
+                        "name": "warehouse_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Location code",
+                        "name": "location_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Low stock only",
+                        "name": "low_stock_only",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/inventory/adjust": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "ปรับ Stock (ADJUST_PLUS / ADJUST_MINUS)",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.AdjustStockRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/inventory/batch-lookup": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Get total stock quantity for multiple material codes",
+                "parameters": [
+                    {
+                        "description": "list of codes",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.BatchStockLookupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/inventory/transfer": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "โอน Stock ระหว่าง Location",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.TransferStockRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "รายการ Stock Item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RETURNABLE|CONSUMABLE",
+                        "name": "item_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "true|false",
+                        "name": "is_active",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "สร้าง Stock Item",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateStockItemRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/items/import": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Import Stock Items จาก Excel",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "Excel file",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/items/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "ดู Stock Item ตาม ID",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "แก้ไข Stock Item",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateStockItemRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "ลบ Stock Item (soft delete)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/lookup": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "หา stock qty_on_hand จาก mat_code (สำหรับหน้า PO)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Material code",
+                        "name": "mat_code",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/reservations": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "รายการ Stock Reservation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "item_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "สร้าง Stock Reservation",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateReservationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/reservations/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "ยกเลิก Stock Reservation",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Reservation ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/transactions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "รายการ Stock Transaction",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Transaction type",
+                        "name": "txn_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "สร้าง Stock Transaction",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateStockTransactionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/upload/memo": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upload multipart file; returns stored path to use when saving the memo attachment record",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Attachments"
+                ],
+                "summary": "Upload a file for Memo attachment",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "File to upload",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/upload/po": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upload multipart file; returns stored path to use when saving the attachment record",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Attachments"
+                ],
+                "summary": "Upload a file for PO attachment",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "File to upload",
+                        "name": "file",
+                        "in": "formData",
                         "required": true
                     }
                 ],
@@ -4770,6 +7779,88 @@
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/user-menu-permissions": {
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User-Menu Permissions"
+                ],
+                "summary": "Delete all menu permissions for a user",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "user_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/user-menu-permissions/batch": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User-Menu Permissions"
+                ],
+                "summary": "Batch upsert user menu permissions",
+                "parameters": [
+                    {
+                        "description": "user_id and permissions array",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -4992,6 +8083,64 @@
                     }
                 }
             }
+        },
+        "/users/{id}/password": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin sets a new password for another user, no old password required",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Reset user password (admin)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New password",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.ResetPasswordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -5015,6 +8164,49 @@
         "fiber.Map": {
             "type": "object",
             "additionalProperties": true
+        },
+        "handlers.CostCodeImportRow": {
+            "type": "object",
+            "properties": {
+                "group_code": {
+                    "type": "string"
+                },
+                "group_name": {
+                    "type": "string"
+                },
+                "job_code": {
+                    "type": "string"
+                },
+                "job_name": {
+                    "type": "string"
+                },
+                "subgroup_code": {
+                    "type": "string"
+                },
+                "subgroup_name": {
+                    "type": "string"
+                },
+                "subject_code": {
+                    "type": "string"
+                },
+                "subject_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.approvalDelegationRequest": {
+            "type": "object",
+            "properties": {
+                "doc_type": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "integer"
+                }
+            }
         },
         "models.AddAttachmentRequest": {
             "type": "object",
@@ -5049,6 +8241,26 @@
                     "items": {
                         "$ref": "#/definitions/models.CreatePOLine"
                     }
+                }
+            }
+        },
+        "models.AdjustStockRequest": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "integer"
+                },
+                "location_code": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "txn_type": {
+                    "type": "string"
                 }
             }
         },
@@ -5154,6 +8366,115 @@
                 }
             }
         },
+        "models.AttachmentRef": {
+            "type": "object",
+            "properties": {
+                "file_name": {
+                    "type": "string"
+                },
+                "file_path": {
+                    "type": "string"
+                },
+                "file_size": {
+                    "type": "integer"
+                },
+                "file_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.BatchStockLookupRequest": {
+            "type": "object",
+            "properties": {
+                "codes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "models.BorrowApprovalRequest": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "comments": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.BorrowLineReq": {
+            "type": "object",
+            "properties": {
+                "line_no": {
+                    "type": "integer"
+                },
+                "location_code": {
+                    "type": "string"
+                },
+                "qty_requested": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "stock_item_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.BorrowReceiveLine": {
+            "type": "object",
+            "properties": {
+                "borrow_line_id": {
+                    "type": "integer"
+                },
+                "condition_out": {
+                    "type": "string"
+                },
+                "qty_borrowed": {
+                    "type": "number"
+                }
+            }
+        },
+        "models.BorrowReceiveRequest": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BorrowReceiveLine"
+                    }
+                }
+            }
+        },
+        "models.BorrowReturnLine": {
+            "type": "object",
+            "properties": {
+                "borrow_line_id": {
+                    "type": "integer"
+                },
+                "condition_in": {
+                    "type": "string"
+                },
+                "qty_returned": {
+                    "type": "number"
+                }
+            }
+        },
+        "models.BorrowReturnRequest": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BorrowReturnLine"
+                    }
+                }
+            }
+        },
         "models.Brand": {
             "type": "object",
             "properties": {
@@ -5161,6 +8482,14 @@
                     "type": "string"
                 },
                 "brand_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CancelMemoRequest": {
+            "type": "object",
+            "properties": {
+                "comments": {
                     "type": "string"
                 }
             }
@@ -5177,6 +8506,26 @@
                     "minLength": 8
                 },
                 "old_password": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CreateBorrowRequest": {
+            "type": "object",
+            "properties": {
+                "expected_return": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BorrowLineReq"
+                    }
+                },
+                "purpose": {
+                    "type": "string"
+                },
+                "remarks": {
                     "type": "string"
                 }
             }
@@ -5456,6 +8805,15 @@
         "models.CreateMemoRequest": {
             "type": "object",
             "properties": {
+                "approver_id": {
+                    "type": "integer"
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.AttachmentRef"
+                    }
+                },
                 "department": {
                     "type": "string"
                 },
@@ -5469,6 +8827,13 @@
                     "type": "string"
                 },
                 "project_code": {
+                    "type": "string"
+                },
+                "requested_by": {
+                    "type": "integer"
+                },
+                "status": {
+                    "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",
                     "type": "string"
                 },
                 "title": {
@@ -5486,6 +8851,13 @@
             "properties": {
                 "description": {
                     "type": "string"
+                },
+                "disc_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
                 },
                 "mat_code": {
                     "type": "string"
@@ -5509,10 +8881,13 @@
             "type": "object",
             "required": [
                 "lines",
-                "supplier_code",
-                "warehouse_code"
+                "location_text",
+                "supplier_code"
             ],
             "properties": {
+                "approver_id": {
+                    "type": "integer"
+                },
                 "currency": {
                     "type": "string"
                 },
@@ -5526,14 +8901,26 @@
                         "$ref": "#/definitions/models.CreatePOLine"
                     }
                 },
+                "location_text": {
+                    "type": "string"
+                },
                 "payment_terms": {
                     "type": "string"
                 },
                 "pr_id": {
                     "type": "integer"
                 },
+                "project_code": {
+                    "type": "string"
+                },
+                "ref": {
+                    "type": "string"
+                },
                 "remarks": {
                     "type": "string"
+                },
+                "requested_by": {
+                    "type": "integer"
                 },
                 "rfq_id": {
                     "type": "integer"
@@ -5560,6 +8947,9 @@
                 "qty_requested"
             ],
             "properties": {
+                "cost_subgroup_id": {
+                    "type": "integer"
+                },
                 "line_no": {
                     "type": "integer"
                 },
@@ -5576,7 +8966,7 @@
             "required": [
                 "created_by",
                 "lines",
-                "location_code",
+                "location_text",
                 "pr_date",
                 "pr_no",
                 "requested_by"
@@ -5598,7 +8988,7 @@
                         "$ref": "#/definitions/models.CreatePRLine"
                     }
                 },
-                "location_code": {
+                "location_text": {
                     "type": "string"
                 },
                 "memo_id": {
@@ -5624,17 +9014,29 @@
                 },
                 "status": {
                     "type": "string"
+                },
+                "warehouse_code": {
+                    "type": "string"
                 }
             }
         },
         "models.CreateProjectReq": {
             "type": "object",
             "properties": {
+                "budget_amount": {
+                    "type": "number"
+                },
+                "consultant_name": {
+                    "type": "string"
+                },
                 "end_date": {
                     "type": "string"
                 },
                 "location_code": {
                     "type": "string"
+                },
+                "owner_id": {
+                    "type": "integer"
                 },
                 "project_code": {
                     "type": "string"
@@ -5647,6 +9049,26 @@
                 },
                 "status": {
                     "type": "string"
+                }
+            }
+        },
+        "models.CreateReservationRequest": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "integer"
+                },
+                "location_code": {
+                    "type": "string"
+                },
+                "needed_by": {
+                    "type": "string"
+                },
+                "purpose": {
+                    "type": "string"
+                },
+                "qty_reserved": {
+                    "type": "number"
                 }
             }
         },
@@ -5669,6 +9091,58 @@
                 "spec_description": {
                     "type": "string",
                     "maxLength": 500
+                }
+            }
+        },
+        "models.CreateStockItemRequest": {
+            "type": "object",
+            "properties": {
+                "category_id": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "item_name": {
+                    "type": "string"
+                },
+                "item_type": {
+                    "type": "string"
+                },
+                "mat_code": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "unit": {
+                    "type": "string"
+                },
+                "unit_cost": {
+                    "type": "number"
+                }
+            }
+        },
+        "models.CreateStockTransactionRequest": {
+            "type": "object",
+            "properties": {
+                "from_location": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "integer"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "to_location": {
+                    "type": "string"
+                },
+                "txn_type": {
+                    "type": "string"
                 }
             }
         },
@@ -5922,6 +9396,54 @@
                 }
             }
         },
+        "models.EditApprovedPORequest": {
+            "type": "object",
+            "required": [
+                "lines",
+                "location_text",
+                "reason",
+                "supplier_code"
+            ],
+            "properties": {
+                "currency": {
+                    "type": "string"
+                },
+                "expected_date": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/models.CreatePOLine"
+                    }
+                },
+                "location_text": {
+                    "type": "string"
+                },
+                "payment_terms": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "requested_by": {
+                    "type": "integer"
+                },
+                "supplier_code": {
+                    "type": "string"
+                },
+                "warehouse_code": {
+                    "type": "string"
+                }
+            }
+        },
         "models.InventoryTransaction": {
             "type": "object",
             "properties": {
@@ -6156,6 +9678,18 @@
         "models.Memo": {
             "type": "object",
             "properties": {
+                "approver_id": {
+                    "type": "integer"
+                },
+                "approver_name": {
+                    "type": "string"
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.MemoAttachment"
+                    }
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -6207,20 +9741,43 @@
                 }
             }
         },
+        "models.MemoAttachment": {
+            "type": "object",
+            "properties": {
+                "file_name": {
+                    "type": "string"
+                },
+                "file_path": {
+                    "type": "string"
+                },
+                "file_size": {
+                    "type": "integer"
+                },
+                "file_type": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "memo_id": {
+                    "type": "integer"
+                },
+                "uploaded_at": {
+                    "type": "string"
+                },
+                "uploaded_by": {
+                    "type": "integer"
+                }
+            }
+        },
         "models.MemoLine": {
             "type": "object",
             "properties": {
                 "description": {
                     "type": "string"
                 },
-                "estimated_price": {
-                    "type": "number"
-                },
                 "id": {
                     "type": "integer"
-                },
-                "line_amount": {
-                    "type": "number"
                 },
                 "line_no": {
                     "type": "integer"
@@ -6245,9 +9802,6 @@
                 "description": {
                     "type": "string"
                 },
-                "estimated_price": {
-                    "type": "number"
-                },
                 "line_no": {
                     "type": "integer"
                 },
@@ -6262,6 +9816,35 @@
                 }
             }
         },
+        "models.POAttachment": {
+            "type": "object",
+            "properties": {
+                "file_name": {
+                    "type": "string"
+                },
+                "file_path": {
+                    "type": "string"
+                },
+                "file_size": {
+                    "type": "integer"
+                },
+                "file_type": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "po_id": {
+                    "type": "integer"
+                },
+                "uploaded_at": {
+                    "type": "string"
+                },
+                "uploaded_by": {
+                    "type": "integer"
+                }
+            }
+        },
         "models.POLine": {
             "type": "object",
             "properties": {
@@ -6269,6 +9852,9 @@
                     "type": "number"
                 },
                 "description": {
+                    "type": "string"
+                },
+                "disc_type": {
                     "type": "string"
                 },
                 "line_id": {
@@ -6335,6 +9921,18 @@
         "models.PRLine": {
             "type": "object",
             "properties": {
+                "cost_code": {
+                    "description": "resolved combined code, e.g. \"LE30300\"",
+                    "type": "string"
+                },
+                "cost_subgroup_id": {
+                    "description": "Cost Code — chosen per line item, not tied to the material.",
+                    "type": "integer"
+                },
+                "cost_subgroup_name": {
+                    "description": "resolved subgroup_name",
+                    "type": "string"
+                },
                 "line_id": {
                     "type": "integer"
                 },
@@ -6388,6 +9986,12 @@
         "models.ProjectFull": {
             "type": "object",
             "properties": {
+                "budget_amount": {
+                    "type": "number"
+                },
+                "consultant_name": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -6404,6 +10008,15 @@
                     "type": "boolean"
                 },
                 "location_code": {
+                    "type": "string"
+                },
+                "location_name": {
+                    "type": "string"
+                },
+                "owner_id": {
+                    "type": "integer"
+                },
+                "owner_name": {
                     "type": "string"
                 },
                 "project_code": {
@@ -6429,6 +10042,9 @@
         "models.PurchaseOrder": {
             "type": "object",
             "properties": {
+                "can_edit_approved": {
+                    "type": "boolean"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -6446,6 +10062,9 @@
                     "items": {
                         "$ref": "#/definitions/models.POLine"
                     }
+                },
+                "location_text": {
+                    "type": "string"
                 },
                 "net_amount": {
                     "type": "number"
@@ -6465,7 +10084,16 @@
                 "pr_id": {
                     "type": "integer"
                 },
+                "project_code": {
+                    "type": "string"
+                },
                 "remarks": {
+                    "type": "string"
+                },
+                "requested_by": {
+                    "type": "integer"
+                },
+                "requested_by_name": {
                     "type": "string"
                 },
                 "rfq_id": {
@@ -6503,7 +10131,7 @@
                         "$ref": "#/definitions/models.PRLine"
                     }
                 },
-                "location_code": {
+                "location_text": {
                     "type": "string"
                 },
                 "memo_id": {
@@ -6555,6 +10183,18 @@
             "properties": {
                 "refresh_token": {
                     "type": "string"
+                }
+            }
+        },
+        "models.ResetPasswordRequest": {
+            "type": "object",
+            "required": [
+                "new_password"
+            ],
+            "properties": {
+                "new_password": {
+                    "type": "string",
+                    "minLength": 8
                 }
             }
         },
@@ -6695,19 +10335,34 @@
                 "created_by": {
                     "type": "integer"
                 },
+                "currency": {
+                    "type": "string"
+                },
+                "fax": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "integer"
                 },
                 "is_active": {
                     "type": "boolean"
                 },
+                "office_phone": {
+                    "type": "string"
+                },
                 "payment_terms": {
+                    "type": "string"
+                },
+                "sales_person": {
                     "type": "string"
                 },
                 "supplier_code": {
                     "type": "string"
                 },
                 "supplier_name": {
+                    "type": "string"
+                },
+                "supplier_short_name": {
                     "type": "string"
                 },
                 "tax_id": {
@@ -6718,6 +10373,26 @@
                 },
                 "updated_by": {
                     "type": "integer"
+                }
+            }
+        },
+        "models.TransferStockRequest": {
+            "type": "object",
+            "properties": {
+                "from_location": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "integer"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "to_location": {
+                    "type": "string"
                 }
             }
         },
@@ -6810,6 +10485,15 @@
         "models.UpdateMemoRequest": {
             "type": "object",
             "properties": {
+                "approver_id": {
+                    "type": "integer"
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.AttachmentRef"
+                    }
+                },
                 "department": {
                     "type": "string"
                 },
@@ -6825,6 +10509,13 @@
                 "project_code": {
                     "type": "string"
                 },
+                "requested_by": {
+                    "type": "integer"
+                },
+                "status": {
+                    "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",
+                    "type": "string"
+                },
                 "title": {
                     "type": "string"
                 }
@@ -6835,13 +10526,27 @@
             "properties": {
                 "description": {
                     "type": "string"
+                },
+                "disc_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
                 }
             }
         },
         "models.UpdateProjectReq": {
             "type": "object",
             "properties": {
+                "budget_amount": {
+                    "type": "number"
+                },
+                "consultant_name": {
+                    "type": "string"
+                },
                 "end_date": {
+                    "description": "\"YYYY-MM-DD\"",
                     "type": "string"
                 },
                 "is_active": {
@@ -6850,6 +10555,9 @@
                 "location_code": {
                     "type": "string"
                 },
+                "owner_id": {
+                    "type": "integer"
+                },
                 "project_code": {
                     "type": "string"
                 },
@@ -6857,10 +10565,40 @@
                     "type": "string"
                 },
                 "start_date": {
+                    "description": "\"YYYY-MM-DD\" — pgx casts to date automatically",
                     "type": "string"
                 },
                 "status": {
                     "type": "string"
+                }
+            }
+        },
+        "models.UpdateStockItemRequest": {
+            "type": "object",
+            "properties": {
+                "category_id": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "item_name": {
+                    "type": "string"
+                },
+                "item_type": {
+                    "type": "string"
+                },
+                "mat_code": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "unit": {
+                    "type": "string"
+                },
+                "unit_cost": {
+                    "type": "number"
                 }
             }
         },
@@ -6879,10 +10617,25 @@
                 "contact_phone": {
                     "type": "string"
                 },
+                "currency": {
+                    "type": "string"
+                },
+                "fax": {
+                    "type": "string"
+                },
+                "office_phone": {
+                    "type": "string"
+                },
                 "payment_terms": {
                     "type": "string"
                 },
+                "sales_person": {
+                    "type": "string"
+                },
                 "supplier_name": {
+                    "type": "string"
+                },
+                "supplier_short_name": {
                     "type": "string"
                 },
                 "tax_id": {
@@ -6899,6 +10652,9 @@
                 "department": {
                     "type": "string"
                 },
+                "dept_code": {
+                    "type": "string"
+                },
                 "email": {
                     "type": "string"
                 },
@@ -6911,6 +10667,9 @@
                 },
                 "location_code": {
                     "type": "string"
+                },
+                "role_id": {
+                    "type": "integer"
                 }
             }
         },
@@ -6945,6 +10704,12 @@
                 "department": {
                     "type": "string"
                 },
+                "dept_code": {
+                    "type": "string"
+                },
+                "dept_name": {
+                    "type": "string"
+                },
                 "email": {
                     "type": "string"
                 },
@@ -6963,6 +10728,12 @@
                 "location_code": {
                     "type": "string"
                 },
+                "role_infos": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.UserRoleInfo"
+                    }
+                },
                 "roles": {
                     "type": "array",
                     "items": {
@@ -6973,6 +10744,20 @@
                     "type": "string"
                 },
                 "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.UserRoleInfo": {
+            "type": "object",
+            "properties": {
+                "role_code": {
+                    "type": "string"
+                },
+                "role_id": {
+                    "type": "integer"
+                },
+                "role_name": {
                     "type": "string"
                 }
             }

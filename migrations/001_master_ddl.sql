@@ -463,10 +463,11 @@ SELECT
     pr.pr_no,
     w.warehouse_name,
     u.full_name        AS created_by_name,
+    po.created_by       AS created_by_id,
     po.created_at
 FROM public.purchase_order po
 JOIN public.supplier s ON s.supplier_code = po.supplier_code
-JOIN public.warehouse w ON w.warehouse_code = po.warehouse_code
+LEFT JOIN public.warehouse w ON w.warehouse_code = po.warehouse_code
 JOIN public.users u ON u.id = po.created_by
 LEFT JOIN public.purchase_request pr ON pr.pr_id = po.pr_id;
 

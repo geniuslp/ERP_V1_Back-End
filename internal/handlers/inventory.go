@@ -135,7 +135,7 @@ func (h *InventoryHandler) CreateTransaction(c *fiber.Ctx) error {
 
 	// Generate txn_no
 	var seq int64
-	h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(txn_id),0)+1 FROM inventory_transaction`).Scan(&seq)
+	h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(id),0)+1 FROM inventory_transaction`).Scan(&seq)
 	txnNo := fmt.Sprintf("TXN-%s-%06d", txnDate.Format("2006"), seq)
 
 	var txnID int64
@@ -144,7 +144,7 @@ func (h *InventoryHandler) CreateTransaction(c *fiber.Ctx) error {
 		  (txn_no, txn_type, mat_code, from_warehouse, to_warehouse, from_zone_id, to_zone_id,
 		   qty, location_code, reason, txn_date, created_by)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-		RETURNING txn_id`,
+		RETURNING id`,
 		txnNo, req.TxnType, req.MatCode, req.FromWarehouse, req.ToWarehouse,
 		req.FromZoneID, req.ToZoneID, req.Qty, req.LocationCode, req.Reason, txnDate, claims.UserID,
 	).Scan(&txnID)
@@ -227,7 +227,7 @@ func (h *InventoryHandler) ListTransactions(c *fiber.Ctx) error {
 	h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM inventory_transaction`).Scan(&total)
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT txn_id, txn_no, txn_type, mat_code, from_warehouse, to_warehouse,
+		SELECT id, txn_no, txn_type, mat_code, from_warehouse, to_warehouse,
 		       qty, ref_doc_type, ref_doc_no, location_code, reason, txn_date, created_by, created_at
 		FROM inventory_transaction
 		ORDER BY created_at DESC

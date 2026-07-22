@@ -10,6 +10,7 @@ import (
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xuri/excelize/v2"
 )
@@ -115,6 +116,45 @@ func (h *MasterHandler) ListMaterials(c *fiber.Ctx) error {
 	})
 }
 
+// GetMaterialStats godoc
+// @Summary      Material code stats (total, active, duplicate combinations)
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /master/materials/stats [get]
+func (h *MasterHandler) GetMaterialStats(c *fiber.Ctx) error {
+	ctx := context.Background()
+
+	var total, active, duplicates int64
+
+	if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM material_code WHERE is_active = true`).Scan(&total); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to count materials: "+err.Error())
+	}
+	active = total
+
+	if err := h.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT group_id, subgroup_id, mat_name_id, spec_id, brand_id, unit_id
+			FROM material_code
+			WHERE is_active = true
+			GROUP BY group_id, subgroup_id, mat_name_id, spec_id, brand_id, unit_id
+			HAVING COUNT(*) > 1
+		) sub`,
+	).Scan(&duplicates); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to count duplicates: "+err.Error())
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"total":      total,
+			"active":     active,
+			"duplicates": duplicates,
+		},
+	})
+}
+
 // GetMaterial godoc
 // @Summary      Get material by code
 // @Tags         Master
@@ -169,7 +209,8 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
         mc.mat_code,
         mn.mat_name,
         u.unit_name AS unit,
-        lp.last_price
+        lp.last_price,
+        csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code
     FROM material_code mc
     JOIN mat_name mn ON mn.id = mc.mat_name_id
     JOIN unit u      ON u.id  = mc.unit_id
@@ -184,6 +225,10 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
         ORDER BY po.po_date DESC
         LIMIT 1
     ) lp ON TRUE
+    LEFT JOIN cost_subgroup csg ON csg.id = mc.cost_subgroup_id
+    LEFT JOIN cost_group    cg  ON cg.id  = csg.group_id
+    LEFT JOIN cost_job      cj  ON cj.id  = cg.job_id
+    LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
     WHERE mc.is_active = true
       AND (mc.mat_code ILIKE '%' || $1 || '%'
            OR mn.mat_name ILIKE '%' || $1 || '%')
@@ -199,7 +244,7 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 	items := make([]models.MaterialSearchItem, 0, limit)
 	for rows.Next() {
 		var m models.MaterialSearchItem
-		if err := rows.Scan(&m.MatCode, &m.MatName, &m.Unit, &m.LastPrice); err != nil {
+		if err := rows.Scan(&m.MatCode, &m.MatName, &m.Unit, &m.LastPrice, &m.CostCode); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "scan error: "+err.Error())
 		}
 		items = append(items, m)
@@ -238,7 +283,11 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		JOIN mat_name   mn ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size ss ON ss.id = mc.spec_id
 		LEFT JOIN brand     b  ON b.id  = mc.brand_id
-		JOIN unit           u  ON u.id  = mc.unit_id`
+		JOIN unit           u  ON u.id  = mc.unit_id
+		LEFT JOIN cost_subgroup csg ON csg.id = mc.cost_subgroup_id
+		LEFT JOIN cost_group    cg  ON cg.id  = csg.group_id
+		LEFT JOIN cost_job      cj  ON cj.id  = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id`
 
 	conditions := []string{"mc.is_active = true"}
 	args := []interface{}{}
@@ -277,7 +326,9 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 			mn.mat_name_code, mn.mat_name,
 			ss.spec_description, ss.spec_code,
 			b.brand_code, b.brand_name,
-			u.unit_code, u.unit_name, mc.is_active
+			u.unit_code, u.unit_name, mc.is_active,
+			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			csg.subgroup_name AS cost_subgroup_name
 		%s WHERE %s
 		ORDER BY mc.mat_code LIMIT $%d OFFSET $%d`,
 			joins, whereStr, idx, idx+1),
@@ -292,7 +343,8 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		var m models.MaterialDetail
 		rows.Scan(&m.GroupCode, &m.SubgroupCode, &m.MatCode, &m.MatNameCode, &m.MatNameTH,
 			&m.SpecDescription, &m.SpecCode, &m.BrandCode, &m.BrandName,
-			&m.UnitCode, &m.UnitName, &m.IsActive)
+			&m.UnitCode, &m.UnitName, &m.IsActive,
+			&m.CostCode, &m.CostSubgroupName)
 		items = append(items, m)
 	}
 	log.Println("checkdata", items)
@@ -387,6 +439,115 @@ func (h *MasterHandler) ListUnits(c *fiber.Ctx) error {
 		var u models.Unit
 		rows.Scan(&u.UnitCode, &u.UnitName)
 		items = append(items, u)
+	}
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// ─── Roles ───────────────────────────────────────────────────────────────────
+
+// ListRoles godoc
+// @Summary      List roles (optionally filtered by department)
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        dept_code  query  string  false  "filter roles by department"
+// @Success      200  {object}  fiber.Map
+// @Router       /master/roles [get]
+func (h *MasterHandler) ListRoles(c *fiber.Ctx) error {
+	deptCode := c.Query("dept_code")
+
+	var rows pgx.Rows
+	var err error
+	if deptCode != "" {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, role_code, role_name, dept_code FROM roles WHERE is_active = true AND dept_code = $1 ORDER BY role_name`,
+			deptCode)
+	} else {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, role_code, role_name, dept_code FROM roles WHERE is_active = true ORDER BY role_name`)
+	}
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type roleItem struct {
+		ID       int64   `json:"role_id"`
+		RoleCode string  `json:"role_code"`
+		RoleName string  `json:"role_name"`
+		DeptCode *string `json:"dept_code"`
+	}
+	items := []roleItem{}
+	for rows.Next() {
+		var it roleItem
+		if err := rows.Scan(&it.ID, &it.RoleCode, &it.RoleName, &it.DeptCode); err != nil {
+			return err
+		}
+		items = append(items, it)
+	}
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// ─── Eligible Approvers ────────────────────────────────────────────────────────
+
+// ListEligibleApprovers godoc
+// @Summary      List users eligible to approve a given doc_type
+// @Description  Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's "ผู้อนุมัติ" field) so only users actually eligible to approve that doc_type are offered.
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        doc_type  query  string  true  "Document type, e.g. MEMO"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Router       /master/eligible-approvers [get]
+func (h *MasterHandler) ListEligibleApprovers(c *fiber.Ctx) error {
+	docType := c.Query("doc_type")
+	if docType == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "doc_type is required")
+	}
+
+	rows, err := h.db.Query(context.Background(), `
+		SELECT DISTINCT u.id, u.full_name, u.dept_code, d.dept_name
+		FROM users u
+		LEFT JOIN departments d ON d.dept_code = u.dept_code
+		WHERE u.is_active = true
+		  AND (
+			u.id IN (
+				SELECT ur.user_id
+				FROM approval_config ac
+				JOIN user_roles ur ON ur.role_id = ac.approver_role_id
+				JOIN roles r ON r.id = ac.approver_role_id AND r.is_active = true
+				WHERE ac.doc_type = $1 AND ac.is_active = true
+			)
+			OR u.id IN (
+				SELECT ad.user_id FROM approval_delegation ad
+				WHERE ad.doc_type = $1 OR ad.doc_type IS NULL
+			)
+		  )
+		ORDER BY u.full_name`, docType)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type approverItem struct {
+		Value int64   `json:"value"`
+		Label string  `json:"label"`
+		Dept  *string `json:"dept"`
+	}
+	items := []approverItem{}
+	for rows.Next() {
+		var it approverItem
+		var deptCode, deptName *string
+		if err := rows.Scan(&it.Value, &it.Label, &deptCode, &deptName); err != nil {
+			return err
+		}
+		if deptName != nil {
+			it.Dept = deptName
+		} else {
+			it.Dept = deptCode
+		}
+		items = append(items, it)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }
@@ -727,6 +888,7 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 			req.MatNameCode == "" || req.MatNameTH == "" ||
 			req.SpecCode == "" || req.SpecDescription == "" ||
 			req.BrandCode == "" || req.UnitCode == "" {
+			// ลบ req.BrandName == "" ออก
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("item[%d]: all fields are required", i))
 		}
 	}
@@ -747,17 +909,24 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 	brandCache := map[string]int{}
 
 	type matRow struct {
-		matCode    string
-		groupID    int
-		subgroupID int
-		matNameID  int
-		specID     int
-		brandID    int
-		unitID     int
+		matCode     string
+		groupID     int
+		subgroupID  int
+		matNameID   int
+		specID      int
+		brandID     int
+		unitID      int
+		groupCode   string
+		subCode     string
+		matNameCode string
+		specCode    string
+		brandCode   string
+		unitCode    string
+		rowIndex    int
 	}
 	rows := make([]matRow, 0, len(reqs))
 
-	for _, req := range reqs {
+	for i, req := range reqs {
 		// unit
 		unitID, ok := unitCache[req.UnitCode]
 		if !ok {
@@ -767,7 +936,7 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 				 RETURNING id`,
 				req.UnitCode, req.UnitName,
 			).Scan(&unitID); err != nil {
-				log.Println("❌ unit:", err)
+				log.Printf("❌ unit[%d]: %v", i, err)
 				return err
 			}
 			unitCache[req.UnitCode] = unitID
@@ -779,7 +948,7 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 			if err = tx.QueryRow(ctx,
 				`SELECT id FROM mat_group WHERE group_code = $1`, req.GroupCode,
 			).Scan(&groupID); err != nil {
-				log.Println("❌ group:", err)
+				log.Printf("❌ group[%d]: %v", i, err)
 				return fiber.NewError(fiber.StatusUnprocessableEntity, "group_code not found: "+req.GroupCode)
 			}
 			groupCache[req.GroupCode] = groupID
@@ -794,7 +963,7 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 				 RETURNING id`,
 				req.SubgroupCode, groupID, req.SubgroupName,
 			).Scan(&subgroupID); err != nil {
-				log.Println("❌ subgroup:", err)
+				log.Printf("❌ subgroup[%d]: %v", i, err)
 				return err
 			}
 			subgroupCache[req.SubgroupCode] = subgroupID
@@ -810,7 +979,7 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 				 RETURNING id`,
 				req.MatNameCode, subgroupID, req.MatNameTH,
 			).Scan(&matNameID); err != nil {
-				log.Println("❌ mat_name:", err)
+				log.Printf("❌ mat_name[%d]: %v", i, err)
 				return err
 			}
 			matNameCache[matNameKey] = matNameID
@@ -827,7 +996,7 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 				 RETURNING id`,
 				req.SpecCode, matNameID, req.SpecDescription,
 			).Scan(&specID); err != nil {
-				log.Println("❌ spec_size:", err)
+				log.Printf("❌ spec_size[%d]: %v", i, err)
 				return err
 			}
 			specCache[specKey] = specID
@@ -844,15 +1013,23 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 				 RETURNING id`,
 				req.BrandCode, req.BrandName, specID,
 			).Scan(&brandID); err != nil {
-				log.Println("❌ brand:", err)
+				log.Printf("❌ brand[%d]: %v", i, err)
 				return err
 			}
 			brandCache[brandKey] = brandID
 		}
 
 		matCode := req.GroupCode + req.SubgroupCode + req.MatNameCode + req.SpecCode + req.BrandCode + req.UnitCode
-		rows = append(rows, matRow{matCode, groupID, subgroupID, matNameID, specID, brandID, unitID})
+
+		// ✅ log ตรงนี้เพื่อดูว่า mat_code ไหนซ้ำ
+		log.Printf("row[%d] mat_code=%s spec=%s brand=%s unit=%s",
+			i, matCode, req.SpecCode, req.BrandCode, req.UnitCode)
+
+		rows = append(rows, matRow{matCode, groupID, subgroupID, matNameID, specID, brandID, unitID,
+			req.GroupCode, req.SubgroupCode, req.MatNameCode, req.SpecCode, req.BrandCode, req.UnitCode, i})
 	}
+
+	log.Printf("✅ total rows before dedup: %d", len(rows))
 
 	// ── Build slices + dedup ──────────────────────────────────────────────
 	seen := map[string]bool{}
@@ -866,6 +1043,9 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 
 	for _, r := range rows {
 		if seen[r.matCode] {
+			// ✅ log mat_code ที่ซ้ำ
+			log.Printf("⚠️ duplicate skipped: Excel row %d | mat_code=%s | group=%s sub=%s matCode=%s spec=%s brand=%s unit=%s",
+				r.rowIndex+2, r.matCode, r.groupCode, r.subCode, r.matNameCode, r.specCode, r.brandCode, r.unitCode)
 			continue
 		}
 		seen[r.matCode] = true
@@ -877,6 +1057,8 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 		brandIDs = append(brandIDs, r.brandID)
 		unitIDs = append(unitIDs, r.unitID)
 	}
+
+	log.Printf("✅ total rows after dedup: %d", len(matCodes))
 
 	// ── Bulk upsert ───────────────────────────────────────────────────────
 	if _, err = tx.Exec(ctx, `
@@ -1029,7 +1211,9 @@ func (h *MasterHandler) ExportMaterials(c *fiber.Ctx) error {
 			COALESCE(ss.spec_description, '') AS spec_description,
 			COALESCE(b.brand_name, '')        AS brand_name,
 			u.unit_code,
-			u.unit_name
+			u.unit_name,
+			COALESCE(csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code, '') AS cost_code,
+			COALESCE(csg.subgroup_name, '') AS cost_subgroup_name
 		FROM material_code mc
 		JOIN mat_group  mg ON mg.id = mc.group_id
 		JOIN subgroup   sg ON sg.id = mc.subgroup_id
@@ -1037,6 +1221,10 @@ func (h *MasterHandler) ExportMaterials(c *fiber.Ctx) error {
 		LEFT JOIN spec_size ss ON ss.id = mc.spec_id
 		LEFT JOIN brand     b  ON b.id  = mc.brand_id
 		JOIN unit           u  ON u.id  = mc.unit_id
+		LEFT JOIN cost_subgroup csg ON csg.id = mc.cost_subgroup_id
+		LEFT JOIN cost_group    cg  ON cg.id  = csg.group_id
+		LEFT JOIN cost_job      cj  ON cj.id  = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
 		WHERE mc.is_active = true
 		ORDER BY mc.mat_code`)
 	if err != nil {
@@ -1055,8 +1243,8 @@ func (h *MasterHandler) ExportMaterials(c *fiber.Ctx) error {
 		return err
 	}
 
-	headers := []string{"mat_code", "group_code", "subgroup_code", "mat_name", "spec_description", "brand_name", "unit_code", "unit_name"}
-	colWidths := []float64{35, 15, 18, 40, 45, 25, 12, 20}
+	headers := []string{"mat_code", "group_code", "subgroup_code", "mat_name", "spec_description", "brand_name", "unit_code", "unit_name", "cost_code", "cost_subgroup_name"}
+	colWidths := []float64{35, 15, 18, 40, 45, 25, 12, 20, 15, 30}
 	for i, h := range headers {
 		col := string(rune('A' + i))
 		cell := col + "1"
@@ -1067,8 +1255,8 @@ func (h *MasterHandler) ExportMaterials(c *fiber.Ctx) error {
 
 	rowIdx := 2
 	for rows.Next() {
-		var matCode, groupCode, subgroupCode, matName, specDesc, brandName, unitCode, unitName string
-		if err := rows.Scan(&matCode, &groupCode, &subgroupCode, &matName, &specDesc, &brandName, &unitCode, &unitName); err != nil {
+		var matCode, groupCode, subgroupCode, matName, specDesc, brandName, unitCode, unitName, costCode, costSubgroupName string
+		if err := rows.Scan(&matCode, &groupCode, &subgroupCode, &matName, &specDesc, &brandName, &unitCode, &unitName, &costCode, &costSubgroupName); err != nil {
 			return err
 		}
 		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIdx), matCode)
@@ -1079,6 +1267,8 @@ func (h *MasterHandler) ExportMaterials(c *fiber.Ctx) error {
 		f.SetCellValue(sheet, fmt.Sprintf("F%d", rowIdx), brandName)
 		f.SetCellValue(sheet, fmt.Sprintf("G%d", rowIdx), unitCode)
 		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIdx), unitName)
+		f.SetCellValue(sheet, fmt.Sprintf("I%d", rowIdx), costCode)
+		f.SetCellValue(sheet, fmt.Sprintf("J%d", rowIdx), costSubgroupName)
 		rowIdx++
 	}
 

@@ -14,6 +14,34 @@ definitions:
   fiber.Map:
     additionalProperties: true
     type: object
+  handlers.CostCodeImportRow:
+    properties:
+      group_code:
+        type: string
+      group_name:
+        type: string
+      job_code:
+        type: string
+      job_name:
+        type: string
+      subgroup_code:
+        type: string
+      subgroup_name:
+        type: string
+      subject_code:
+        type: string
+      subject_name:
+        type: string
+    type: object
+  handlers.approvalDelegationRequest:
+    properties:
+      doc_type:
+        type: string
+      reason:
+        type: string
+      user_id:
+        type: integer
+    type: object
   models.AddAttachmentRequest:
     properties:
       file_name:
@@ -37,6 +65,19 @@ definitions:
         type: array
     required:
     - lines
+    type: object
+  models.AdjustStockRequest:
+    properties:
+      item_id:
+        type: integer
+      location_code:
+        type: string
+      qty:
+        type: number
+      remarks:
+        type: string
+      txn_type:
+        type: string
     type: object
   models.ApprovalActionRequest:
     properties:
@@ -106,11 +147,86 @@ definitions:
       step_no:
         type: integer
     type: object
+  models.AttachmentRef:
+    properties:
+      file_name:
+        type: string
+      file_path:
+        type: string
+      file_size:
+        type: integer
+      file_type:
+        type: string
+    type: object
+  models.BatchStockLookupRequest:
+    properties:
+      codes:
+        items:
+          type: string
+        type: array
+    type: object
+  models.BorrowApprovalRequest:
+    properties:
+      action:
+        type: string
+      comments:
+        type: string
+    type: object
+  models.BorrowLineReq:
+    properties:
+      line_no:
+        type: integer
+      location_code:
+        type: string
+      qty_requested:
+        type: number
+      remarks:
+        type: string
+      stock_item_id:
+        type: integer
+    type: object
+  models.BorrowReceiveLine:
+    properties:
+      borrow_line_id:
+        type: integer
+      condition_out:
+        type: string
+      qty_borrowed:
+        type: number
+    type: object
+  models.BorrowReceiveRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/models.BorrowReceiveLine'
+        type: array
+    type: object
+  models.BorrowReturnLine:
+    properties:
+      borrow_line_id:
+        type: integer
+      condition_in:
+        type: string
+      qty_returned:
+        type: number
+    type: object
+  models.BorrowReturnRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/models.BorrowReturnLine'
+        type: array
+    type: object
   models.Brand:
     properties:
       brand_code:
         type: string
       brand_name:
+        type: string
+    type: object
+  models.CancelMemoRequest:
+    properties:
+      comments:
         type: string
     type: object
   models.ChangePasswordRequest:
@@ -123,6 +239,19 @@ definitions:
     required:
     - new_password
     - old_password
+    type: object
+  models.CreateBorrowRequest:
+    properties:
+      expected_return:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.BorrowLineReq'
+        type: array
+      purpose:
+        type: string
+      remarks:
+        type: string
     type: object
   models.CreateBrandRequest:
     properties:
@@ -323,6 +452,12 @@ definitions:
     type: object
   models.CreateMemoRequest:
     properties:
+      approver_id:
+        type: integer
+      attachments:
+        items:
+          $ref: '#/definitions/models.AttachmentRef'
+        type: array
       department:
         type: string
       lines:
@@ -333,12 +468,22 @@ definitions:
         type: string
       project_code:
         type: string
+      requested_by:
+        type: integer
+      status:
+        description: '"DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT'
+        type: string
       title:
         type: string
     type: object
   models.CreatePOLine:
     properties:
       description:
+        type: string
+      disc_type:
+        enum:
+        - pct
+        - amt
         type: string
       mat_code:
         type: string
@@ -358,6 +503,8 @@ definitions:
     type: object
   models.CreatePORequest:
     properties:
+      approver_id:
+        type: integer
       currency:
         type: string
       expected_date:
@@ -367,12 +514,20 @@ definitions:
           $ref: '#/definitions/models.CreatePOLine'
         minItems: 1
         type: array
+      location_text:
+        type: string
       payment_terms:
         type: string
       pr_id:
         type: integer
+      project_code:
+        type: string
+      ref:
+        type: string
       remarks:
         type: string
+      requested_by:
+        type: integer
       rfq_id:
         type: integer
       status:
@@ -386,11 +541,13 @@ definitions:
         type: string
     required:
     - lines
+    - location_text
     - supplier_code
-    - warehouse_code
     type: object
   models.CreatePRLine:
     properties:
+      cost_subgroup_id:
+        type: integer
       line_no:
         type: integer
       mat_code:
@@ -414,7 +571,7 @@ definitions:
           $ref: '#/definitions/models.CreatePRLine'
         minItems: 1
         type: array
-      location_code:
+      location_text:
         type: string
       memo_id:
         type: integer
@@ -432,20 +589,28 @@ definitions:
         type: string
       status:
         type: string
+      warehouse_code:
+        type: string
     required:
     - created_by
     - lines
-    - location_code
+    - location_text
     - pr_date
     - pr_no
     - requested_by
     type: object
   models.CreateProjectReq:
     properties:
+      budget_amount:
+        type: number
+      consultant_name:
+        type: string
       end_date:
         type: string
       location_code:
         type: string
+      owner_id:
+        type: integer
       project_code:
         type: string
       project_name:
@@ -454,6 +619,19 @@ definitions:
         type: string
       status:
         type: string
+    type: object
+  models.CreateReservationRequest:
+    properties:
+      item_id:
+        type: integer
+      location_code:
+        type: string
+      needed_by:
+        type: string
+      purpose:
+        type: string
+      qty_reserved:
+        type: number
     type: object
   models.CreateSpecSizeRequest:
     properties:
@@ -470,6 +648,40 @@ definitions:
     - mat_name_code
     - spec_code
     - spec_description
+    type: object
+  models.CreateStockItemRequest:
+    properties:
+      category_id:
+        type: integer
+      description:
+        type: string
+      item_name:
+        type: string
+      item_type:
+        type: string
+      mat_code:
+        type: string
+      qty:
+        type: number
+      unit:
+        type: string
+      unit_cost:
+        type: number
+    type: object
+  models.CreateStockTransactionRequest:
+    properties:
+      from_location:
+        type: string
+      item_id:
+        type: integer
+      qty:
+        type: number
+      remarks:
+        type: string
+      to_location:
+        type: string
+      txn_type:
+        type: string
     type: object
   models.CreateSubgroupRequest:
     properties:
@@ -644,6 +856,39 @@ definitions:
       zone_type:
         type: string
     type: object
+  models.EditApprovedPORequest:
+    properties:
+      currency:
+        type: string
+      expected_date:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.CreatePOLine'
+        minItems: 1
+        type: array
+      location_text:
+        type: string
+      payment_terms:
+        type: string
+      project_code:
+        type: string
+      reason:
+        type: string
+      remarks:
+        type: string
+      requested_by:
+        type: integer
+      supplier_code:
+        type: string
+      warehouse_code:
+        type: string
+    required:
+    - lines
+    - location_text
+    - reason
+    - supplier_code
+    type: object
   models.InventoryTransaction:
     properties:
       created_at:
@@ -798,6 +1043,14 @@ definitions:
     type: object
   models.Memo:
     properties:
+      approver_id:
+        type: integer
+      approver_name:
+        type: string
+      attachments:
+        items:
+          $ref: '#/definitions/models.MemoAttachment'
+        type: array
       created_at:
         type: string
       created_by:
@@ -832,16 +1085,31 @@ definitions:
       updated_by:
         type: integer
     type: object
+  models.MemoAttachment:
+    properties:
+      file_name:
+        type: string
+      file_path:
+        type: string
+      file_size:
+        type: integer
+      file_type:
+        type: string
+      id:
+        type: integer
+      memo_id:
+        type: integer
+      uploaded_at:
+        type: string
+      uploaded_by:
+        type: integer
+    type: object
   models.MemoLine:
     properties:
       description:
         type: string
-      estimated_price:
-        type: number
       id:
         type: integer
-      line_amount:
-        type: number
       line_no:
         type: integer
       memo_id:
@@ -857,8 +1125,6 @@ definitions:
     properties:
       description:
         type: string
-      estimated_price:
-        type: number
       line_no:
         type: integer
       quantity:
@@ -868,11 +1134,32 @@ definitions:
       unit:
         type: string
     type: object
+  models.POAttachment:
+    properties:
+      file_name:
+        type: string
+      file_path:
+        type: string
+      file_size:
+        type: integer
+      file_type:
+        type: string
+      id:
+        type: integer
+      po_id:
+        type: integer
+      uploaded_at:
+        type: string
+      uploaded_by:
+        type: integer
+    type: object
   models.POLine:
     properties:
       amount:
         type: number
       description:
+        type: string
+      disc_type:
         type: string
       line_id:
         type: integer
@@ -916,6 +1203,15 @@ definitions:
     type: object
   models.PRLine:
     properties:
+      cost_code:
+        description: resolved combined code, e.g. "LE30300"
+        type: string
+      cost_subgroup_id:
+        description: Cost Code — chosen per line item, not tied to the material.
+        type: integer
+      cost_subgroup_name:
+        description: resolved subgroup_name
+        type: string
       line_id:
         type: integer
       line_no:
@@ -951,6 +1247,10 @@ definitions:
     type: object
   models.ProjectFull:
     properties:
+      budget_amount:
+        type: number
+      consultant_name:
+        type: string
       created_at:
         type: string
       created_by:
@@ -962,6 +1262,12 @@ definitions:
       is_active:
         type: boolean
       location_code:
+        type: string
+      location_name:
+        type: string
+      owner_id:
+        type: integer
+      owner_name:
         type: string
       project_code:
         type: string
@@ -978,6 +1284,8 @@ definitions:
     type: object
   models.PurchaseOrder:
     properties:
+      can_edit_approved:
+        type: boolean
       created_at:
         type: string
       created_by:
@@ -990,6 +1298,8 @@ definitions:
         items:
           $ref: '#/definitions/models.POLine'
         type: array
+      location_text:
+        type: string
       net_amount:
         type: number
       payment_terms:
@@ -1002,7 +1312,13 @@ definitions:
         type: string
       pr_id:
         type: integer
+      project_code:
+        type: string
       remarks:
+        type: string
+      requested_by:
+        type: integer
+      requested_by_name:
         type: string
       rfq_id:
         type: integer
@@ -1027,7 +1343,7 @@ definitions:
         items:
           $ref: '#/definitions/models.PRLine'
         type: array
-      location_code:
+      location_text:
         type: string
       memo_id:
         type: integer
@@ -1062,6 +1378,14 @@ definitions:
         type: string
     required:
     - refresh_token
+    type: object
+  models.ResetPasswordRequest:
+    properties:
+      new_password:
+        minLength: 8
+        type: string
+    required:
+    - new_password
     type: object
   models.SpecSize:
     properties:
@@ -1153,15 +1477,25 @@ definitions:
         type: string
       created_by:
         type: integer
+      currency:
+        type: string
+      fax:
+        type: string
       id:
         type: integer
       is_active:
         type: boolean
+      office_phone:
+        type: string
       payment_terms:
+        type: string
+      sales_person:
         type: string
       supplier_code:
         type: string
       supplier_name:
+        type: string
+      supplier_short_name:
         type: string
       tax_id:
         type: string
@@ -1169,6 +1503,19 @@ definitions:
         type: string
       updated_by:
         type: integer
+    type: object
+  models.TransferStockRequest:
+    properties:
+      from_location:
+        type: string
+      item_id:
+        type: integer
+      qty:
+        type: number
+      remarks:
+        type: string
+      to_location:
+        type: string
     type: object
   models.Unit:
     properties:
@@ -1231,6 +1578,12 @@ definitions:
     type: object
   models.UpdateMemoRequest:
     properties:
+      approver_id:
+        type: integer
+      attachments:
+        items:
+          $ref: '#/definitions/models.AttachmentRef'
+        type: array
       department:
         type: string
       lines:
@@ -1241,6 +1594,11 @@ definitions:
         type: string
       project_code:
         type: string
+      requested_by:
+        type: integer
+      status:
+        description: '"DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT'
+        type: string
       title:
         type: string
     type: object
@@ -1248,23 +1606,55 @@ definitions:
     properties:
       description:
         type: string
+      disc_type:
+        enum:
+        - pct
+        - amt
+        type: string
     type: object
   models.UpdateProjectReq:
     properties:
+      budget_amount:
+        type: number
+      consultant_name:
+        type: string
       end_date:
+        description: '"YYYY-MM-DD"'
         type: string
       is_active:
         type: boolean
       location_code:
         type: string
+      owner_id:
+        type: integer
       project_code:
         type: string
       project_name:
         type: string
       start_date:
+        description: '"YYYY-MM-DD" — pgx casts to date automatically'
         type: string
       status:
         type: string
+    type: object
+  models.UpdateStockItemRequest:
+    properties:
+      category_id:
+        type: integer
+      description:
+        type: string
+      item_name:
+        type: string
+      item_type:
+        type: string
+      mat_code:
+        type: string
+      qty:
+        type: number
+      unit:
+        type: string
+      unit_cost:
+        type: number
     type: object
   models.UpdateSupplierReq:
     properties:
@@ -1276,9 +1666,19 @@ definitions:
         type: string
       contact_phone:
         type: string
+      currency:
+        type: string
+      fax:
+        type: string
+      office_phone:
+        type: string
       payment_terms:
         type: string
+      sales_person:
+        type: string
       supplier_name:
+        type: string
+      supplier_short_name:
         type: string
       tax_id:
         type: string
@@ -1286,6 +1686,8 @@ definitions:
   models.UpdateUserRequest:
     properties:
       department:
+        type: string
+      dept_code:
         type: string
       email:
         type: string
@@ -1296,6 +1698,8 @@ definitions:
         type: string
       location_code:
         type: string
+      role_id:
+        type: integer
     required:
     - full_name
     type: object
@@ -1319,6 +1723,10 @@ definitions:
         type: string
       department:
         type: string
+      dept_code:
+        type: string
+      dept_name:
+        type: string
       email:
         type: string
       employee_code:
@@ -1331,6 +1739,10 @@ definitions:
         type: boolean
       location_code:
         type: string
+      role_infos:
+        items:
+          $ref: '#/definitions/models.UserRoleInfo'
+        type: array
       roles:
         items:
           type: string
@@ -1338,6 +1750,15 @@ definitions:
       updated_at:
         type: string
       username:
+        type: string
+    type: object
+  models.UserRoleInfo:
+    properties:
+      role_code:
+        type: string
+      role_id:
+        type: integer
+      role_name:
         type: string
     type: object
   models.Warehouse:
@@ -1387,6 +1808,385 @@ info:
   title: ERP API
   version: "2.0"
 paths:
+  /approval-config:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List approval configs
+      tags:
+      - Approval Config
+  /approval-config/{id}:
+    delete:
+      parameters:
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Delete approval config
+      tags:
+      - Approval Config
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: is_active
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Toggle approval config active status
+      tags:
+      - Approval Config
+  /approval-config/batch:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: create array and delete id array
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Batch create/delete approval config steps
+      tags:
+      - Approval Config
+  /approval-delegation:
+    get:
+      parameters:
+      - description: Filter by doc type
+        in: query
+        name: doc_type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List extra approvers
+      tags:
+      - Approval Delegation
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Extra approver payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.approvalDelegationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Add an extra approver (additive, on top of role-based approvers)
+      tags:
+      - Approval Delegation
+  /approval-delegation/{id}:
+    delete:
+      parameters:
+      - description: Extra approver row ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Remove an extra approver
+      tags:
+      - Approval Delegation
+  /approval-doc-types:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List approval document types
+      tags:
+      - Approval Doc Types
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: doc_type, doc_label, is_active
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Create approval document type
+      tags:
+      - Approval Doc Types
+  /approval-doc-types/{id}:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: is_active
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Toggle approval document type active status
+      tags:
+      - Approval Doc Types
+  /approval-request/{docType}/{docId}/my-status:
+    get:
+      description: |-
+        Backs Approve/Reject button gating on the frontend. Eligibility = role-based approver
+        (approval_config + user_roles) OR extra approver (approval_delegation), for the doc's
+        current PENDING approval_request row.
+      parameters:
+      - description: Document type, e.g. MEMO, BORROW, or PO
+        in: path
+        name: docType
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: docId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Check whether the current user is an eligible approver for a document's
+        current step
+      tags:
+      - Approvals
+  /approval/{docType}/{docId}/approve:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Document type, e.g. PO or MEMO
+        in: path
+        name: docType
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: docId
+        required: true
+        type: integer
+      - description: Optional comments
+        in: body
+        name: body
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve a document (generic, config-driven)
+      tags:
+      - Approvals
+  /approval/{docType}/{docId}/reject:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Document type, e.g. PO or MEMO
+        in: path
+        name: docType
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: docId
+        required: true
+        type: integer
+      - description: Optional comments
+        in: body
+        name: body
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reject a document (generic, config-driven)
+      tags:
+      - Approvals
   /approvals/audit:
     get:
       parameters:
@@ -1575,6 +2375,67 @@ paths:
       summary: Refresh token
       tags:
       - Auth
+  /departments:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List departments
+      tags:
+      - Departments
+  /dept-menu-permissions:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List department menu permissions
+      tags:
+      - Dept-Menu Permissions
+  /dept-menu-permissions/batch:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: permissions array
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Batch upsert department menu permissions
+      tags:
+      - Dept-Menu Permissions
   /grn:
     get:
       parameters:
@@ -1657,6 +2518,94 @@ paths:
       summary: Confirm GRN and post to inventory
       tags:
       - GRN
+  /grn/{id}/score:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: GRN ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Score request
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Score a confirmed goods receipt and mark it POSTED
+      tags:
+      - GoodsReceipt
+  /grn/history:
+    get:
+      parameters:
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20)
+        in: query
+        name: limit
+        type: integer
+      - description: Filter by supplier code
+        in: query
+        name: supplier_code
+        type: string
+      - description: Filter grn_date >= (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Filter grn_date <= (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Paginated GRN history with optional supplier/date filters
+      tags:
+      - GoodsReceipt
+  /grn/receive:
+    post:
+      consumes:
+      - application/json
+      description: Writes grn/grn_line, increments stock_item.qty, logs stock_transaction
+        (IN), updates purchase_order_line/purchase_order status
+      parameters:
+      - description: Goods receipt request
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create Goods Receipt (single full receive) against an APPROVED PO
+      tags:
+      - GoodsReceipt
   /groups:
     get:
       produces:
@@ -1930,6 +2879,234 @@ paths:
       security:
       - BearerAuth: []
       summary: Get all active materials with detail (paginated)
+      tags:
+      - Master
+  /master/cost-code/export:
+    get:
+      description: Rows are sorted by cost_subgroup.id ASC, preserving the exact row
+        order of the original import file (subgroup, group, job, and subject tables
+        were TRUNCATE...RESTART IDENTITY'd and re-imported in file order this session,
+        so id order == file order). รหัสรวม (combined code) uses the same subject_code+job_code+group_code+subgroup_code
+        concatenation as costCodeFullQuery / ListFull / ListCostCode — no separator,
+        same rule everywhere in this codebase.
+      produces:
+      - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Export the full cost-code hierarchy (subject/job/group/subgroup) to
+        Excel
+      tags:
+      - CostCode
+  /master/cost-code/full:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Full joined cost-code list with computed cost_code string
+      tags:
+      - CostCode
+  /master/cost-code/groups:
+    get:
+      parameters:
+      - description: job_id filter
+        in: query
+        name: job_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List cost groups filtered by job_id
+      tags:
+      - CostCode
+  /master/cost-code/import:
+    post:
+      consumes:
+      - application/json
+      description: Accepts an array of rows. Uses in-memory cache to skip duplicate
+        FK lookups, then upserts each level of the hierarchy. subgroup rows with empty
+        subgroup_name are skipped.
+      parameters:
+      - description: Array of cost-code rows
+        in: body
+        name: body
+        required: true
+        schema:
+          items:
+            $ref: '#/definitions/handlers.CostCodeImportRow'
+          type: array
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Bulk import cost-code hierarchy (subject/job/group/subgroup)
+      tags:
+      - CostCode
+  /master/cost-code/jobs:
+    get:
+      parameters:
+      - description: subject_id filter
+        in: query
+        name: subject_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List cost jobs filtered by subject_id
+      tags:
+      - CostCode
+  /master/cost-code/list:
+    get:
+      parameters:
+      - description: Search keyword (any code/name field)
+        in: query
+        name: q
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get all cost codes with detail (paginated)
+      tags:
+      - CostCode
+  /master/cost-code/options:
+    get:
+      description: Returns id + combined code (subject+job+group+subgroup) + subgroup_name
+        for every active cost_subgroup.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Flat list of active cost codes for a PR-line Cost Code dropdown
+      tags:
+      - CostCode
+  /master/cost-code/stats:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cost-code stats (total, active)
+      tags:
+      - CostCode
+  /master/cost-code/subgroups:
+    get:
+      parameters:
+      - description: group_id filter
+        in: query
+        name: group_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List cost subgroups filtered by group_id
+      tags:
+      - CostCode
+  /master/cost-code/subjects:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List cost subjects
+      tags:
+      - CostCode
+  /master/eligible-approvers:
+    get:
+      description: Union of role-based approvers (approval_config.approver_role_id,
+        joined via user_roles) and extra approvers (approval_delegation, doc_type
+        match or NULL = applies to all), deduplicated. Used to populate approver-selection
+        dropdowns (e.g. Memo's "ผู้อนุมัติ" field) so only users actually eligible
+        to approve that doc_type are offered.
+      parameters:
+      - description: Document type, e.g. MEMO
+        in: query
+        name: doc_type
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List users eligible to approve a given doc_type
       tags:
       - Master
   /master/groups:
@@ -2288,17 +3465,8 @@ paths:
       summary: Export all active materials as Excel
       tags:
       - Master
-  /master/projects:
+  /master/materials/stats:
     get:
-      parameters:
-      - description: Filter by status (ACTIVE|INACTIVE|CLOSED)
-        in: query
-        name: status
-        type: string
-      - description: Search project_code or project_name
-        in: query
-        name: q
-        type: string
       produces:
       - application/json
       responses:
@@ -2306,13 +3474,44 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/fiber.Map'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: List all active projects
+      summary: Material code stats (total, active, duplicate combinations)
+      tags:
+      - Master
+  /master/projects:
+    get:
+      parameters:
+      - description: search project_code / project_name
+        in: query
+        name: search
+        type: string
+      - description: filter status
+        in: query
+        name: status
+        type: string
+      - description: filter is_active
+        in: query
+        name: is_active
+        type: string
+      - description: page
+        in: query
+        name: page
+        type: integer
+      - description: page_size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List projects
       tags:
       - Master
     post:
@@ -2364,9 +3563,36 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
       summary: Soft-delete project
+      tags:
+      - Master
+    get:
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.ProjectFull'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get project by id
       tags:
       - Master
     put:
@@ -2402,6 +3628,25 @@ paths:
       security:
       - BearerAuth: []
       summary: Update project
+      tags:
+      - Master
+  /master/roles:
+    get:
+      parameters:
+      - description: filter roles by department
+        in: query
+        name: dept_code
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List roles (optionally filtered by department)
       tags:
       - Master
   /master/subgroups:
@@ -3505,6 +4750,10 @@ paths:
         in: query
         name: date_to
         type: string
+      - description: true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)
+        in: query
+        name: my_approvals
+        type: string
       - description: หน้า (default 1)
         in: query
         name: page
@@ -3641,6 +4890,49 @@ paths:
       summary: อนุมัติหรือปฏิเสธ Memo
       tags:
       - Memo
+  /memo/{id}/cancel:
+    patch:
+      consumes:
+      - application/json
+      description: |-
+        Cancels a memo. Allowed when status is DRAFT, REJECTED, or PENDING_APPROVAL.
+        DRAFT/REJECTED can be cancelled by the owner (requested_by). PENDING_APPROVAL
+        can be cancelled by an eligible approver (same eligibility check as Approve/Reject).
+      parameters:
+      - description: Memo ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Optional cancel reason
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/models.CancelMemoRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cancel a memo
+      tags:
+      - Memo
   /memo/{id}/submit:
     post:
       parameters:
@@ -3661,12 +4953,70 @@ paths:
       summary: ส่ง Memo ขออนุมัติ (DRAFT → PENDING_APPROVAL)
       tags:
       - Memo
+  /menus:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List menus as parent/child tree
+      tags:
+      - Role-Menu Permissions
+  /permissions/effective:
+    get:
+      parameters:
+      - description: User ID
+        in: query
+        name: user_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Get effective permissions for a user (dept + role + user layers)
+      tags:
+      - Permissions
   /po:
     get:
       parameters:
       - description: status filter
         in: query
         name: status
+        type: string
+      - description: when true, only POs created by the current user
+        in: query
+        name: my
+        type: boolean
+      - description: partial match on PO number
+        in: query
+        name: po_no
+        type: string
+      - description: partial match on supplier name, or exact/partial supplier code
+        in: query
+        name: supplier
+        type: string
+      - description: partial match on creator's full name
+        in: query
+        name: created_by_name
         type: string
       - default: 1
         description: page
@@ -3694,7 +5044,7 @@ paths:
       consumes:
       - application/json
       description: Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the
-        referenced PR must be APPROVED and any pr_line_id must belong to it. Line
+        referenced PR must be COMPLETED and any pr_line_id must belong to it. Line
         totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL
         opens a step-1 approval_request.
       parameters:
@@ -3742,6 +5092,46 @@ paths:
       security:
       - BearerAuth: []
       summary: Get full PO detail including lines with material info
+      tags:
+      - Purchase Order
+    put:
+      consumes:
+      - application/json
+      description: Replaces header fields and all lines of a PO that is still in DRAFT
+        status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved
+        for APPROVED POs; other statuses cannot be edited). Line totals and the PO
+        total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code
+        auto-fill rules as POST /po.
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: PO data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreatePORequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a DRAFT purchase order
       tags:
       - Purchase Order
   /po/{id}/approve:
@@ -3799,6 +5189,94 @@ paths:
       summary: Approve a purchase order
       tags:
       - Purchase Order
+  /po/{id}/attachments:
+    get:
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.POAttachment'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List attachments for a PO
+      tags:
+      - Attachments
+    post:
+      consumes:
+      - application/json
+      description: Link an already-uploaded file to a purchase order
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Attachment metadata
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.AddAttachmentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Add attachment record to PO
+      tags:
+      - Attachments
+  /po/{id}/attachments/{attach_id}:
+    delete:
+      description: Removes the database record and deletes the file from disk
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Attachment ID
+        in: path
+        name: attach_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a PO attachment
+      tags:
+      - Attachments
   /po/{id}/cancel:
     put:
       parameters:
@@ -3825,6 +5303,47 @@ paths:
       security:
       - BearerAuth: []
       summary: Cancel an approved purchase order
+      tags:
+      - Purchase Order
+  /po/{id}/edit-approved:
+    put:
+      consumes:
+      - application/json
+      description: Allows editing a PO with status=APPROVED, provided the PO's created_at
+        is less than 1 year old. Requires a mandatory non-empty reason, logged to
+        po_edit_log. Replaces header fields and all lines, recomputes totals server-side,
+        sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request
+        row (same approval_id / assigned_to — not a fresh approver lookup).
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Updated PO data + reason
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.EditApprovedPORequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Edit an already-approved PO (requires reason, triggers re-approval)
       tags:
       - Purchase Order
   /po/{id}/lines:
@@ -3928,6 +5447,34 @@ paths:
       summary: Get PO status history
       tags:
       - Purchase Order
+  /po/{id}/print-data:
+    get:
+      description: Aggregates purchase_order, purchase_order_line, supplier, project,
+        location and purchase_request into the shape consumed by the PurchaseOrderPrint
+        frontend component. "job", "contractDelivery" and "quotationNo" are literal
+        "***" placeholders — those fields don't exist in the schema yet.
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get print-ready data for a purchase order
+      tags:
+      - Purchase Order
   /po/{id}/reject:
     put:
       consumes:
@@ -3984,13 +5531,67 @@ paths:
       summary: Send PO to supplier
       tags:
       - Purchase Order
+  /po/next-number:
+    get:
+      description: Read-only preview of the next po_no, computed the same way as POST
+        /po's real generation. This is NOT reserved — it's not written or locked anywhere,
+        so two users previewing at the same time may see the same value; only whoever
+        actually saves first gets it, since POST /po recomputes fresh inside its own
+        transaction at save time. Purely cosmetic for the create-page hint.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Preview the next PO number
+      tags:
+      - Purchase Order
+  /po/search:
+    get:
+      parameters:
+      - description: PO number keyword (partial match)
+        in: query
+        name: po_no
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Search APPROVED/PARTIALLY_RECEIVED Purchase Orders by partial po_no
+        match
+      tags:
+      - GoodsReceipt
   /pr:
     get:
+      description: |-
+        available_for_po=true additionally restricts to status=COMPLETED PRs that still
+        have at least one line not fully referenced by existing PO(s) — for the "select
+        PR to create PO from" picker only. Omit it for any other PR listing (PR status/
+        history pages), which must keep showing every PR regardless of reference status.
       parameters:
       - description: status filter
         in: query
         name: status
         type: string
+      - description: true = only COMPLETED PRs with remaining unreferenced qty on
+          at least one line
+        in: query
+        name: available_for_po
+        type: boolean
       - default: 1
         description: page
         in: query
@@ -4061,65 +5662,6 @@ paths:
       security:
       - BearerAuth: []
       summary: Get PR detail with lines and attachments
-      tags:
-      - Purchase Request
-  /pr/{id}/approve:
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: PR ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      - description: action
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/models.ApprovalActionRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/fiber.Map'
-      security:
-      - BearerAuth: []
-      summary: Approve or reject PR (Senior Team Project)
-      tags:
-      - Purchase Request
-    put:
-      parameters:
-      - description: PR ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/fiber.Map'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/fiber.Map'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/fiber.Map'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/fiber.Map'
-      security:
-      - BearerAuth: []
-      summary: Approve a purchase request
       tags:
       - Purchase Request
   /pr/{id}/attachments:
@@ -4264,46 +5806,6 @@ paths:
       summary: Get PR status history
       tags:
       - Purchase Request
-  /pr/{id}/reject:
-    put:
-      consumes:
-      - application/json
-      parameters:
-      - description: PR ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      - description: Rejection reason
-        in: body
-        name: body
-        required: true
-        schema:
-          type: object
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/fiber.Map'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/fiber.Map'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/fiber.Map'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/fiber.Map'
-      security:
-      - BearerAuth: []
-      summary: Reject a purchase request
-      tags:
-      - Purchase Request
   /pr/{id}/submit:
     post:
       parameters:
@@ -4325,7 +5827,7 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Submit PR for approval
+      summary: Submit PR (no approval required — goes straight to COMPLETED)
       tags:
       - Purchase Request
   /pr/next-number:
@@ -4344,6 +5846,856 @@ paths:
       summary: Get next PR number
       tags:
       - Purchase Request
+  /role-menu-permissions:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List role menu permissions
+      tags:
+      - Role-Menu Permissions
+  /role-menu-permissions/batch:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: permissions array
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Batch upsert role menu permissions
+      tags:
+      - Role-Menu Permissions
+  /roles:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: List roles
+      tags:
+      - Roles
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: role_name, description
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Create role
+      tags:
+      - Roles
+  /roles/{id}:
+    delete:
+      parameters:
+      - description: Role ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Delete role (rejected if referenced by approval configs)
+      tags:
+      - Roles
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: is_active
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Toggle role active status
+      tags:
+      - Roles
+  /stock/borrow:
+    get:
+      parameters:
+      - description: Status
+        in: query
+        name: status
+        type: string
+      - description: Date from
+        in: query
+        name: date_from
+        type: string
+      - description: Date to
+        in: query
+        name: date_to
+        type: string
+      - description: Search
+        in: query
+        name: search
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการ Borrow Request
+      tags:
+      - Stock
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateBorrowRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้าง Borrow Request
+      tags:
+      - Stock
+  /stock/borrow/{id}:
+    get:
+      parameters:
+      - description: Borrow ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ดู Borrow Request ตาม ID
+      tags:
+      - Stock
+  /stock/borrow/{id}/approve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Borrow ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.BorrowApprovalRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve / Reject Borrow Request
+      tags:
+      - Stock
+  /stock/borrow/{id}/receive:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Borrow ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.BorrowReceiveRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รับ Items จาก Borrow (scan QR)
+      tags:
+      - Stock
+  /stock/borrow/{id}/return:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Borrow ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.BorrowReturnRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: คืน Items จาก Borrow (scan QR)
+      tags:
+      - Stock
+  /stock/borrow/{id}/submit:
+    post:
+      parameters:
+      - description: Borrow ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Submit Borrow Request
+      tags:
+      - Stock
+  /stock/borrow/scan/{item_code}:
+    get:
+      parameters:
+      - description: Item code or QR code
+        in: path
+        name: item_code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Scan QR Code เพื่อดูข้อมูล Item
+      tags:
+      - Stock
+  /stock/categories:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการ Stock Category
+      tags:
+      - Stock
+  /stock/inventory:
+    get:
+      parameters:
+      - description: Search
+        in: query
+        name: search
+        type: string
+      - description: Warehouse code
+        in: query
+        name: warehouse_code
+        type: string
+      - description: Location code
+        in: query
+        name: location_code
+        type: string
+      - description: Low stock only
+        in: query
+        name: low_stock_only
+        type: boolean
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการ Stock Inventory
+      tags:
+      - Stock
+  /stock/inventory/adjust:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.AdjustStockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ปรับ Stock (ADJUST_PLUS / ADJUST_MINUS)
+      tags:
+      - Stock
+  /stock/inventory/batch-lookup:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: list of codes
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.BatchStockLookupRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get total stock quantity for multiple material codes
+      tags:
+      - Stock
+  /stock/inventory/transfer:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.TransferStockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: โอน Stock ระหว่าง Location
+      tags:
+      - Stock
+  /stock/items:
+    get:
+      parameters:
+      - description: Search
+        in: query
+        name: search
+        type: string
+      - description: RETURNABLE|CONSUMABLE
+        in: query
+        name: item_type
+        type: string
+      - description: true|false
+        in: query
+        name: is_active
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการ Stock Item
+      tags:
+      - Stock
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateStockItemRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้าง Stock Item
+      tags:
+      - Stock
+  /stock/items/{id}:
+    delete:
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ลบ Stock Item (soft delete)
+      tags:
+      - Stock
+    get:
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ดู Stock Item ตาม ID
+      tags:
+      - Stock
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateStockItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แก้ไข Stock Item
+      tags:
+      - Stock
+  /stock/items/import:
+    post:
+      consumes:
+      - multipart/form-data
+      parameters:
+      - description: Excel file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Import Stock Items จาก Excel
+      tags:
+      - Stock
+  /stock/lookup:
+    get:
+      parameters:
+      - description: Material code
+        in: query
+        name: mat_code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: หา stock qty_on_hand จาก mat_code (สำหรับหน้า PO)
+      tags:
+      - Stock
+  /stock/reservations:
+    get:
+      parameters:
+      - description: Status
+        in: query
+        name: status
+        type: string
+      - description: Item ID
+        in: query
+        name: item_id
+        type: integer
+      - description: Date from
+        in: query
+        name: date_from
+        type: string
+      - description: Date to
+        in: query
+        name: date_to
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการ Stock Reservation
+      tags:
+      - Stock
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateReservationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้าง Stock Reservation
+      tags:
+      - Stock
+  /stock/reservations/{id}/cancel:
+    post:
+      parameters:
+      - description: Reservation ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ยกเลิก Stock Reservation
+      tags:
+      - Stock
+  /stock/transactions:
+    get:
+      parameters:
+      - description: Transaction type
+        in: query
+        name: txn_type
+        type: string
+      - description: Date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Search
+        in: query
+        name: search
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการ Stock Transaction
+      tags:
+      - Stock
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Request body
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateStockTransactionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้าง Stock Transaction
+      tags:
+      - Stock
+  /upload/memo:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload multipart file; returns stored path to use when saving the
+        memo attachment record
+      parameters:
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Upload a file for Memo attachment
+      tags:
+      - Attachments
+  /upload/po:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload multipart file; returns stored path to use when saving the
+        attachment record
+      parameters:
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Upload a file for PO attachment
+      tags:
+      - Attachments
   /upload/pr:
     post:
       consumes:
@@ -4372,6 +6724,59 @@ paths:
       summary: Upload a file for PR attachment
       tags:
       - Attachments
+  /user-menu-permissions:
+    delete:
+      parameters:
+      - description: User ID
+        in: query
+        name: user_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Delete all menu permissions for a user
+      tags:
+      - User-Menu Permissions
+  /user-menu-permissions/batch:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: user_id and permissions array
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      summary: Batch upsert user menu permissions
+      tags:
+      - User-Menu Permissions
   /users:
     post:
       consumes:
@@ -4487,6 +6892,43 @@ paths:
       security:
       - BearerAuth: []
       summary: Update user
+      tags:
+      - Users
+  /users/{id}/password:
+    put:
+      consumes:
+      - application/json
+      description: Admin sets a new password for another user, no old password required
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New password
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ResetPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reset user password (admin)
       tags:
       - Users
   /users/allUser:

@@ -43,13 +43,13 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 	// Get supplier from PO
 	var supplierCode string
 	if err := h.db.QueryRow(context.Background(),
-		`SELECT supplier_code FROM purchase_order WHERE po_id=$1`, req.POID).Scan(&supplierCode); err != nil {
+		`SELECT supplier_code FROM purchase_order WHERE id=$1`, req.POID).Scan(&supplierCode); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "PO not found")
 	}
 
 	now := time.Now()
 	var seq int64
-	h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(grn_id),0)+1 FROM grn`).Scan(&seq)
+	h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(id),0)+1 FROM grn`).Scan(&seq)
 	grnNo := fmt.Sprintf("GRN-%s-%06d", now.Format("2006"), seq)
 
 	tx, _ := h.db.Begin(context.Background())
@@ -59,7 +59,7 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 	err := tx.QueryRow(context.Background(), `
 		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_code, delivery_note, status, quality_status, received_by, remarks)
 		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,'DRAFT','PENDING',$6,$7)
-		RETURNING grn_id`,
+		RETURNING id`,
 		grnNo, req.POID, req.WarehouseCode, supplierCode, req.DeliveryNote, claims.UserID, req.Remarks,
 	).Scan(&grnID)
 	if err != nil {
@@ -97,7 +97,7 @@ func (h *GRNHandler) Confirm(c *fiber.Ctx) error {
 	var status, warehouseCode string
 	var grnNo string
 	h.db.QueryRow(context.Background(),
-		`SELECT status, warehouse_code, grn_no FROM grn WHERE grn_id=$1`, id).Scan(&status, &warehouseCode, &grnNo)
+		`SELECT status, warehouse_code, grn_no FROM grn WHERE id=$1`, id).Scan(&status, &warehouseCode, &grnNo)
 
 	if status != "DRAFT" {
 		return fiber.NewError(fiber.StatusBadRequest, "GRN is not in DRAFT status")
@@ -107,7 +107,7 @@ func (h *GRNHandler) Confirm(c *fiber.Ctx) error {
 	defer tx.Rollback(context.Background())
 
 	tx.Exec(context.Background(), `
-		UPDATE grn SET status='CONFIRMED', confirmed_by=$1, confirmed_at=NOW() WHERE grn_id=$2`,
+		UPDATE grn SET status='CONFIRMED', confirmed_by=$1, confirmed_at=NOW() WHERE id=$2`,
 		claims.UserID, id)
 
 	// Auto-post inventory transactions for accepted qty
@@ -116,7 +116,7 @@ func (h *GRNHandler) Confirm(c *fiber.Ctx) error {
 	if rows != nil {
 		defer rows.Close()
 		var seq int64
-		h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(txn_id),0)+1 FROM inventory_transaction`).Scan(&seq)
+		h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(id),0)+1 FROM inventory_transaction`).Scan(&seq)
 
 		for rows.Next() {
 			var matCode string
@@ -142,7 +142,7 @@ func (h *GRNHandler) Confirm(c *fiber.Ctx) error {
 			// Update PO line received qty
 			tx.Exec(context.Background(), `
 				UPDATE purchase_order_line SET qty_received = qty_received + $1
-				WHERE line_id IN (SELECT po_line_id FROM grn_line WHERE grn_id=$2 AND mat_code=$3 LIMIT 1)`,
+				WHERE id IN (SELECT po_line_id FROM grn_line WHERE grn_id=$2 AND mat_code=$3 LIMIT 1)`,
 				qty, id, matCode)
 
 			seq++
@@ -173,11 +173,11 @@ func (h *GRNHandler) List(c *fiber.Ctx) error {
 	h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM grn`).Scan(&total)
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT g.grn_id, g.grn_no, g.grn_date, g.po_id, po.po_no, g.warehouse_code,
+		SELECT g.id, g.grn_no, g.grn_date, g.po_id, po.po_no, g.warehouse_code,
 		       g.supplier_code, s.supplier_name, g.status, g.quality_status,
 		       u.full_name AS received_by, g.created_at
 		FROM grn g
-		JOIN purchase_order po ON po.po_id = g.po_id
+		JOIN purchase_order po ON po.id = g.po_id
 		JOIN supplier s ON s.supplier_code = g.supplier_code
 		JOIN users u ON u.id = g.received_by
 		ORDER BY g.created_at DESC LIMIT $1 OFFSET $2`, size, offset)
@@ -238,7 +238,7 @@ func (h *ApprovalHandler) Pending(c *fiber.Ctx) error {
 	docType := c.Query("doc_type")
 
 	q := `
-		SELECT ar.approval_id, ar.doc_type, ar.doc_id, ar.doc_no, ar.step_no,
+		SELECT ar.id, ar.doc_type, ar.doc_id, ar.doc_no, ar.step_no,
 		       ac.step_name, ar.requested_by, ar.assigned_to, ar.status,
 		       ar.due_date, ar.amount, ar.created_at
 		FROM v_pending_approvals ar
@@ -282,7 +282,7 @@ func (h *ApprovalHandler) Logs(c *fiber.Ctx) error {
 	docID := c.Query("doc_id")
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT al.log_id, al.approval_id, al.doc_type, al.doc_no, al.step_no,
+		SELECT al.id, al.approval_id, al.doc_type, al.doc_no, al.step_no,
 		       al.action, al.action_by, u.full_name, al.action_at, al.comments,
 		       al.old_status, al.new_status
 		FROM approval_log al
@@ -342,7 +342,7 @@ func (h *ApprovalHandler) AuditLogs(c *fiber.Ctx) error {
 
 	args = append(args, size, offset)
 	rows, err := h.db.Query(context.Background(), fmt.Sprintf(`
-		SELECT al.audit_id, al.table_name, al.record_id, al.action, u.full_name, al.changed_at, al.old_data, al.new_data
+		SELECT al.id, al.table_name, al.record_id, al.action, u.full_name, al.changed_at, al.old_data, al.new_data
 		FROM erp_audit_log al LEFT JOIN users u ON u.id = al.changed_by
 		WHERE %s ORDER BY al.changed_at DESC LIMIT $%d OFFSET $%d`, where, idx, idx+1), args...)
 	if err != nil {

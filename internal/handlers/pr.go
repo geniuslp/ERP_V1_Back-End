@@ -13,6 +13,7 @@ import (
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,6 +26,10 @@ func NewPRHandler(db *pgxpool.Pool) *PRHandler {
 }
 
 // ListPR godoc
+// NOTE: this handler is currently unreachable — RegisterPRApprovalRoutes (routes/pr.go)
+// registers PRApprovalHandler.List on the same GET /pr path, after this one, and wins.
+// Left as-is / not fixed here since it's out of scope for this task; see pr_approval.go
+// for the endpoint that actually backs GET /pr today.
 // @Summary      List purchase requests
 // @Tags         Purchase Request
 // @Security     BearerAuth
@@ -118,25 +123,34 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 func (h *PRHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 	row := h.db.QueryRow(context.Background(), `
-		SELECT pr_id, pr_no, pr_date, requested_by, location_code, warehouse_code,
+		SELECT id, pr_no, pr_date, requested_by, location_text, warehouse_code,
 		       required_date::text, status, priority, remarks, created_at, updated_at
-		FROM purchase_request WHERE pr_id=$1`, id)
+		FROM purchase_request WHERE id=$1`, id)
 
 	var pr models.PurchaseRequest
-	if err := row.Scan(&pr.PRID, &pr.PRNo, &pr.PRDate, &pr.RequestedBy, &pr.LocationCode,
+	if err := row.Scan(&pr.PRID, &pr.PRNo, &pr.PRDate, &pr.RequestedBy, &pr.LocationText,
 		&pr.WarehouseCode, &pr.RequiredDate, &pr.Status, &pr.Priority, &pr.Remarks, &pr.CreatedAt, &pr.UpdatedAt); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
 
 	rows, _ := h.db.Query(context.Background(), `
-		SELECT line_id, pr_id, line_no, mat_code, qty_requested, qty_reserved, qty_to_order, remarks, status
-		FROM purchase_request_line WHERE pr_id=$1 ORDER BY line_no`, id)
+		SELECT prl.id, prl.pr_id, prl.line_no, prl.mat_code, prl.qty_requested, prl.qty_reserved, prl.qty_to_order, prl.remarks, prl.status,
+		       prl.cost_subgroup_id,
+		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+		       csg.subgroup_name
+		FROM purchase_request_line prl
+		LEFT JOIN cost_subgroup csg ON csg.id = prl.cost_subgroup_id
+		LEFT JOIN cost_group cg ON cg.id = csg.group_id
+		LEFT JOIN cost_job cj ON cj.id = cg.job_id
+		LEFT JOIN cost_subject csub ON csub.id = cj.subject_id
+		WHERE prl.pr_id=$1 ORDER BY prl.line_no`, id)
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
 			var l models.PRLine
 			rows.Scan(&l.LineID, &l.PRID, &l.LineNo, &l.MatCode,
-				&l.QtyRequested, &l.QtyReserved, &l.QtyToOrder, &l.Remarks, &l.Status)
+				&l.QtyRequested, &l.QtyReserved, &l.QtyToOrder, &l.Remarks, &l.Status,
+				&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName)
 			pr.Lines = append(pr.Lines, l)
 		}
 	}
@@ -159,11 +173,25 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.PRNo == "" || req.LocationCode == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "pr_no and location_code are required")
+	if req.PRNo == "" || req.LocationText == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "pr_no and location_text are required")
 	}
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least one line required")
+	}
+	for _, line := range req.Lines {
+		if line.CostSubgroupID == nil {
+			continue
+		}
+		var exists bool
+		if err := h.db.QueryRow(context.Background(),
+			`SELECT EXISTS(SELECT 1 FROM cost_subgroup WHERE id = $1)`, *line.CostSubgroupID,
+		).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cost_subgroup_id %d not found for mat_code %s", *line.CostSubgroupID, line.MatCode))
+		}
 	}
 
 	tx, err := h.db.Begin(context.Background())
@@ -176,11 +204,11 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	var prID int64
 	err = tx.QueryRow(context.Background(), `
 		INSERT INTO purchase_request
-		    (pr_no, pr_date, requested_by, location_code, required_date,
+		    (pr_no, pr_date, requested_by, location_text, warehouse_code, required_date,
 		     project_code, status, remarks, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),now(),$9,$9)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now(),$10,$10)
 		RETURNING id`,
-		req.PRNo, req.PRDate, req.RequestedBy, req.LocationCode,
+		req.PRNo, req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
 		req.RequiredDate, req.ProjectCode, req.Status, req.Remarks, req.CreatedBy,
 	).Scan(&prID)
 	if err != nil {
@@ -190,9 +218,9 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	// 2. Insert lines
 	for _, line := range req.Lines {
 		if _, err := tx.Exec(context.Background(), `
-			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status)
-			VALUES ($1,$2,$3,$4,'OPEN')`,
-			prID, line.LineNo, line.MatCode, line.QtyRequested,
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id)
+			VALUES ($1,$2,$3,$4,'OPEN',$5)`,
+			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID,
 		); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
 		}
@@ -220,7 +248,7 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 }
 
 // SubmitPR godoc
-// @Summary      Submit PR for approval
+// @Summary      Submit PR (no approval required — goes straight to COMPLETED)
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
@@ -230,52 +258,163 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 // @Router       /pr/{id}/submit [post]
 func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
-	id := c.Params("id")
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid PR id")
+	}
+	ctx := context.Background()
 
 	var currentStatus string
 	var prNo string
-	err := h.db.QueryRow(context.Background(), `SELECT status, pr_no FROM purchase_request WHERE pr_id=$1`, id).Scan(&currentStatus, &prNo)
-	if err != nil {
+	if err := h.db.QueryRow(ctx,
+		`SELECT status, pr_no FROM purchase_request WHERE id=$1`, id,
+	).Scan(&currentStatus, &prNo); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
-	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
+	if currentStatus != "DRAFT" {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot submit PR in status: %s", currentStatus))
 	}
 
-	return h.changeStatus(c, id, currentStatus, "PENDING_APPROVAL", "submitted for approval", claims.UserID, prNo)
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	shortages, err := h.deductStockOnSubmit(ctx, tx, id, claims.UserID)
+	if err != nil {
+		return err
+	}
+	if len(shortages) > 0 {
+		var msgs []string
+		for _, s := range shortages {
+			msgs = append(msgs, fmt.Sprintf(
+				"สต็อกไม่พอสำหรับ %s ต้องการ %g มีในสต็อก %g กรุณาแก้ไขจำนวนสั่งซื้อ",
+				s.MatCode, s.Requested, s.Available))
+		}
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   strings.Join(msgs, "; "),
+			"data":    fiber.Map{"shortages": shortages},
+		})
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status='COMPLETED', updated_at=NOW() WHERE id=$1`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+		VALUES ($1,$2,'COMPLETED',$3,'submitted')`, id, currentStatus, claims.UserID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
+		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
+		id, claims.UserID, fmt.Sprintf(`{"pr_no":"%s","status":"COMPLETED"}`, prNo),
+	); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "message": "PR status changed to COMPLETED"})
 }
 
-// ApprovePR godoc
-// @Summary      Approve or reject PR (Senior Team Project)
-// @Tags         Purchase Request
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      json
-// @Param        id    path  int                          true  "PR ID"
-// @Param        body  body  models.ApprovalActionRequest true  "action"
-// @Success      200  {object}  fiber.Map
-// @Router       /pr/{id}/approve [post]
-func (h *PRHandler) Approve(c *fiber.Ctx) error {
-	claims := middleware.GetClaims(c)
-	id := c.Params("id")
+// stockShortage is one PR line whose stock_item.qty on-hand is insufficient to cover
+// the shortfall (qty_requested - qty_to_order) that submission would otherwise deduct.
+type stockShortage struct {
+	MatCode   string  `json:"mat_code"`
+	Requested float64 `json:"requested"` // the shortfall qty that would have been deducted
+	Available float64 `json:"available"` // stock_item.qty currently on hand
+}
 
-	var req models.ApprovalActionRequest
-	c.BodyParser(&req)
+// deductStockOnSubmit implements the "cover the shortfall from existing stock" rule for
+// PR submission: for every line where qty_requested > qty_to_order, the difference
+// (shortfall) is assumed to come out of stock_item.qty rather than being purchased.
+//
+// If ANY line's shortfall exceeds stock_item.qty, the whole submission is blocked —
+// every affected line is returned so the caller can report them all at once, not just
+// the first. Nothing is written in that case. Otherwise every shortfall line's
+// stock_item.qty is decremented and a stock_transaction (TxnTypeIssue) is recorded,
+// all inside the caller's tx so a failure anywhere rolls back PR completion too.
+func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int64, userID int64) ([]stockShortage, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT mat_code, (qty_requested - qty_to_order) AS shortfall
+		FROM purchase_request_line
+		WHERE pr_id = $1 AND (qty_requested - qty_to_order) > 0`, prID)
+	if err != nil {
+		return nil, err
+	}
+	type line struct {
+		MatCode   string
+		Shortfall float64
+	}
+	var lines []line
+	for rows.Next() {
+		var l line
+		if err := rows.Scan(&l.MatCode, &l.Shortfall); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		lines = append(lines, l)
+	}
+	rows.Close()
 
-	var currentStatus, prNo string
-	h.db.QueryRow(context.Background(), `SELECT status, pr_no FROM purchase_request WHERE pr_id=$1`, id).Scan(&currentStatus, &prNo)
-	if currentStatus != "PENDING_APPROVAL" {
-		return fiber.NewError(fiber.StatusBadRequest, "PR is not pending approval")
+	if len(lines) == 0 {
+		return nil, nil
 	}
 
-	newStatus := "APPROVED"
-	if req.Action == "REJECT" {
-		newStatus = "REJECTED"
-	} else if req.Action == "RETURN" {
-		newStatus = "DRAFT"
+	var shortages []stockShortage
+	itemIDs := make(map[string]int64, len(lines))
+	for _, l := range lines {
+		var itemID int64
+		var available float64
+		if err := tx.QueryRow(ctx,
+			`SELECT id, qty FROM stock_item WHERE mat_code = $1`, l.MatCode,
+		).Scan(&itemID, &available); err != nil {
+			shortages = append(shortages, stockShortage{MatCode: l.MatCode, Requested: l.Shortfall, Available: 0})
+			continue
+		}
+		if available < l.Shortfall {
+			shortages = append(shortages, stockShortage{MatCode: l.MatCode, Requested: l.Shortfall, Available: available})
+			continue
+		}
+		itemIDs[l.MatCode] = itemID
 	}
 
-	return h.changeStatus(c, id, currentStatus, newStatus, req.Action, claims.UserID, prNo)
+	// Block the entire submission — list every affected line, write nothing.
+	if len(shortages) > 0 {
+		return shortages, nil
+	}
+
+	for _, l := range lines {
+		itemID := itemIDs[l.MatCode]
+
+		if _, err := tx.Exec(ctx,
+			`UPDATE stock_item SET qty = qty - $1, updated_at = NOW() WHERE id = $2`,
+			l.Shortfall, itemID,
+		); err != nil {
+			return nil, err
+		}
+
+		txnNo, err := generateTxnNo(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO stock_transaction
+			    (txn_no, txn_type, item_id, qty, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
+			VALUES ($1,$2,$3,$4,'PR',$5,'ตัด stock อัตโนมัติจากการ submit PR',CURRENT_DATE,$6)`,
+			txnNo, TxnTypeIssue, itemID, l.Shortfall, prID, userID,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	return nil, nil
 }
 
 // GetPRLogs godoc
@@ -289,7 +428,7 @@ func (h *PRHandler) Approve(c *fiber.Ctx) error {
 func (h *PRHandler) GetLogs(c *fiber.Ctx) error {
 	id := c.Params("id")
 	rows, err := h.db.Query(context.Background(), `
-		SELECT l.log_id, l.from_status, l.to_status, u.full_name, l.changed_at, l.remarks
+		SELECT l.id, l.from_status, l.to_status, u.full_name, l.changed_at, l.remarks
 		FROM pr_status_log l JOIN users u ON u.id = l.changed_by
 		WHERE l.pr_id=$1 ORDER BY l.changed_at`, id)
 	if err != nil {
@@ -324,15 +463,15 @@ func (h *PRHandler) GetLogs(c *fiber.Ctx) error {
 // @Router       /pr/next-number [get]
 func (h *PRHandler) NextNumber(c *fiber.Ctx) error {
 	now := time.Now()
-	buddhistYear := (now.Year() + 543) % 100
-	prefix := fmt.Sprintf("%02d%02d", buddhistYear, int(now.Month()))
+	gregorianYear := now.Year() % 100
+	prefix := fmt.Sprintf("PR%02d%02d", gregorianYear, int(now.Month()))
 	pattern := prefix + "-%"
 
 	var lastNo string
 	err := h.db.QueryRow(context.Background(), `
 		SELECT pr_no FROM purchase_request
 		WHERE pr_no LIKE $1
-		  AND status NOT IN ('CANCELLED','REJECTED')
+		  AND status NOT IN ('CANCELLED')
 		ORDER BY pr_no DESC
 		LIMIT 1`, pattern).Scan(&lastNo)
 
@@ -384,8 +523,8 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
 	if err := h.db.QueryRow(ctx, `SELECT pr_no, status FROM purchase_request WHERE id=$1`, prID).Scan(&prNo, &prStatus); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR %d not found", prID))
 	}
-	if prStatus != "APPROVED" && prStatus != "PARTIALLY_FILLED" {
-		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR status must be APPROVED or PARTIALLY_FILLED, got %s", prStatus))
+	if prStatus != "COMPLETED" && prStatus != "PARTIALLY_FILLED" {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR status must be COMPLETED or PARTIALLY_FILLED, got %s", prStatus))
 	}
 
 	rows, err := h.db.Query(ctx, `
@@ -399,8 +538,13 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
     FROM (
         SELECT
             prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
-            prl.qty_requested, prl.qty_reserved, prl.qty_ordered,
-            (prl.qty_requested - prl.qty_ordered) AS qty_remaining,
+            prl.qty_requested, prl.qty_reserved,
+            -- Both qty_ordered and qty_remaining are derived from the live referenced_pos
+            -- sum below, not the cached prl.qty_ordered column, so neither can disagree
+            -- with referenced_pos or with any other endpoint (e.g. the PO-creation PR list
+            -- filter) that reads the same live data.
+            COALESCE(SUM(pol.qty_ordered) FILTER (WHERE pol.id IS NOT NULL), 0) AS qty_ordered,
+            (prl.qty_requested - COALESCE(SUM(pol.qty_ordered) FILTER (WHERE pol.id IS NOT NULL), 0)) AS qty_remaining,
             prl.status,
             COALESCE(
                 JSON_AGG(
@@ -499,7 +643,7 @@ func (h *PRHandler) changeStatus(c *fiber.Ctx, id, from, to, remarks string, use
 	tx, _ := h.db.Begin(context.Background())
 	defer tx.Rollback(context.Background())
 
-	tx.Exec(context.Background(), `UPDATE purchase_request SET status=$1, updated_at=NOW() WHERE pr_id=$2`, to, id)
+	tx.Exec(context.Background(), `UPDATE purchase_request SET status=$1, updated_at=NOW() WHERE id=$2`, to, id)
 	tx.Exec(context.Background(), `
 		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
 		VALUES ($1,$2,$3,$4,$5)`, id, from, to, userID, remarks)

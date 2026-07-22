@@ -5,8 +5,6 @@ import (
 	"log"
 	"strconv"
 
-	"erp-api/internal/middleware"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,37 +17,24 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 	return &PRApprovalHandler{db: db}
 }
 
-// requireSeniorPM checks that the calling user belongs to "Senior Project Mgr" department.
-// Returns the caller's userID on success, or a fiber error on failure.
-func (h *PRApprovalHandler) requireSeniorPM(c *fiber.Ctx) (int64, error) {
-	claims := middleware.GetClaims(c)
-	if claims == nil {
-		return 0, fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
-	}
-	var dept string
-	if err := h.db.QueryRow(context.Background(),
-		`SELECT COALESCE(department, '') FROM users WHERE id = $1`, claims.UserID,
-	).Scan(&dept); err != nil {
-		return 0, fiber.NewError(fiber.StatusUnauthorized, "user not found")
-	}
-	if dept != "Senior Project Mgr" {
-		return 0, fiber.NewError(fiber.StatusForbidden, "only Senior Project Mgr can perform this action")
-	}
-	return claims.UserID, nil
-}
-
 // ListPRApproval godoc
 // @Summary      List purchase requests
+// @Description  available_for_po=true additionally restricts to status=COMPLETED PRs that still
+// @Description  have at least one line not fully referenced by existing PO(s) — for the "select
+// @Description  PR to create PO from" picker only. Omit it for any other PR listing (PR status/
+// @Description  history pages), which must keep showing every PR regardless of reference status.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
-// @Param        status  query  string  false  "status filter"
-// @Param        page    query  int     false  "page"   default(1)
-// @Param        limit   query  int     false  "limit"  default(20)
+// @Param        status            query  string  false  "status filter"
+// @Param        available_for_po  query  bool    false  "true = only COMPLETED PRs with remaining unreferenced qty on at least one line"
+// @Param        page              query  int     false  "page"   default(1)
+// @Param        limit             query  int     false  "limit"  default(20)
 // @Success      200  {object}  fiber.Map
 // @Router       /pr [get]
 func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	status := c.Query("status")
+	availableForPO := c.Query("available_for_po") == "true"
 	page := max(c.QueryInt("page", 1), 1)
 	limit := c.QueryInt("limit", 20)
 	offset := (page - 1) * limit
@@ -59,9 +44,30 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		statusFilter = &status
 	}
 
+	// available_for_po forces status=COMPLETED (PR's only "usable" terminal status) and adds a
+	// live EXISTS check: at least one line whose referenced-qty sum, from non-cancelled
+	// purchase_order_line rows joined the same way LinesWithPOStatus computes qty_remaining, is
+	// still below qty_requested. Same source as that endpoint, so the two can never disagree —
+	// a PR excluded here always shows qty_remaining=0 on every line there, and vice versa.
+	availableForPOFilter := "TRUE"
+	if availableForPO {
+		statusFilter = nil
+		availableForPOFilter = `
+			pr.status = 'COMPLETED'
+			AND EXISTS (
+				SELECT 1 FROM purchase_request_line prl
+				WHERE prl.pr_id = pr.id
+				AND prl.qty_requested > COALESCE((
+					SELECT SUM(pol.qty_ordered)
+					FROM purchase_order_line pol
+					WHERE pol.pr_line_id = prl.id AND pol.status != 'CANCELLED'
+				), 0)
+			)`
+	}
+
 	var total int64
 	h.db.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM purchase_request WHERE ($1::text IS NULL OR status = $1)`,
+		`SELECT COUNT(*) FROM purchase_request pr WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`,
 		statusFilter,
 	).Scan(&total)
 
@@ -71,7 +77,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		Status       string  `json:"status"`
 		RequestedBy  string  `json:"requested_by"`
 		ApproverName *string `json:"approver_name"`
-		LocationCode string  `json:"location_code"`
+		LocationText string  `json:"location_text"`
 		ProjectCode  *string `json:"project_code"`
 		Remarks      *string `json:"remarks"`
 		PRDate       string  `json:"pr_date"`
@@ -81,11 +87,11 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        COALESCE(u1.full_name, '') AS requested_by,
        NULL::text                 AS approver_name,
-       pr.location_code, pr.project_code, pr.remarks,
+       pr.location_text, pr.project_code, pr.remarks,
        pr.pr_date::text
 FROM purchase_request pr
 LEFT JOIN users u1 ON u1.id = pr.requested_by
-WHERE ($1::text IS NULL OR pr.status = $1)
+WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)
 ORDER BY pr.created_at DESC
 LIMIT $2 OFFSET $3`,
 		statusFilter, limit, offset,
@@ -99,7 +105,7 @@ LIMIT $2 OFFSET $3`,
 	for rows.Next() {
 		var item PRListItem
 		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
-			&item.LocationCode, &item.ProjectCode, &item.Remarks, &item.PRDate)
+			&item.LocationText, &item.ProjectCode, &item.Remarks, &item.PRDate)
 		items = append(items, item)
 	}
 
@@ -144,6 +150,11 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		SpecName     *string `json:"spec_name,omitempty"`
 		GroupName    *string `json:"group_name,omitempty"`
 		SubgroupName *string `json:"subgroup_name,omitempty"`
+
+		// Cost Code — chosen per line item, not tied to the material.
+		CostSubgroupID   *int64  `json:"cost_subgroup_id,omitempty"`
+		CostCode         *string `json:"cost_code,omitempty"`          // resolved combined code, e.g. "LE30300"
+		CostSubgroupName *string `json:"cost_subgroup_name,omitempty"` // resolved cost_subgroup.subgroup_name
 	}
 
 	type PRAttachItem struct {
@@ -164,7 +175,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		RequesterID  int64          `json:"requester_id"`
 		ApproverID   *int64         `json:"approver_id"`
 		ApproverName *string        `json:"approver_name"`
-		LocationCode string         `json:"location_code"`
+		LocationText string         `json:"location_text"`
 		ProjectCode  *string        `json:"project_code"`
 		Remarks      *string        `json:"remarks"`
 		PRDate       string         `json:"pr_date"`
@@ -177,7 +188,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		SELECT pr.id, pr.pr_no, pr.status,
 		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
 		       NULL AS approver_id, NULL AS approver_name,
-		       pr.location_code, pr.project_code, pr.remarks,
+		       pr.location_text, pr.project_code, pr.remarks,
 		       pr.pr_date::text
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
@@ -189,7 +200,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 
 	if err := row.Scan(
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
-		&pr.ApproverID, &pr.ApproverName, &pr.LocationCode, &pr.ProjectCode,
+		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode,
 		&pr.Remarks, &pr.PRDate,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
@@ -202,7 +213,10 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 			prl.id, prl.line_no, prl.mat_code, prl.qty_requested,
 			prl.qty_reserved, prl.qty_to_order, prl.status, prl.remarks,
 			mn.mat_name, u.unit_name, b.brand_name, ss.spec_description AS spec_name,
-			mg.group_name, sg.subgroup_name
+			mg.group_name, sg.subgroup_name,
+			prl.cost_subgroup_id,
+			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			csg.subgroup_name AS cost_subgroup_name
 		FROM purchase_request_line prl
 		LEFT JOIN material_code mc ON mc.mat_code = prl.mat_code
 		LEFT JOIN mat_group     mg ON mg.id = mc.group_id
@@ -211,6 +225,10 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		LEFT JOIN spec_size     ss ON ss.id = mc.spec_id
 		LEFT JOIN brand         b  ON b.id  = mc.brand_id
 		LEFT JOIN unit          u  ON u.id  = mc.unit_id
+		LEFT JOIN cost_subgroup csg  ON csg.id = prl.cost_subgroup_id
+		LEFT JOIN cost_group    cg   ON cg.id = csg.group_id
+		LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
 		WHERE prl.pr_id = $1
 		ORDER BY prl.line_no`, id)
 	if err != nil {
@@ -224,6 +242,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 				&l.QtyReserved, &l.QtyToOrder, &l.Status, &l.Remarks,
 				&l.MatName, &l.UnitName, &l.BrandName, &l.SpecName,
 				&l.GroupName, &l.SubgroupName,
+				&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName,
 			); err != nil {
 				log.Printf("❌ lines scan error: %v", err)
 			}
@@ -255,92 +274,3 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": pr})
 }
 
-// ApprovePR godoc
-// @Summary      Approve a purchase request
-// @Tags         Purchase Request
-// @Security     BearerAuth
-// @Produce      json
-// @Param        id  path  int  true  "PR ID"
-// @Success      200  {object}  fiber.Map
-// @Failure      400  {object}  fiber.Map
-// @Failure      403  {object}  fiber.Map
-// @Failure      404  {object}  fiber.Map
-// @Router       /pr/{id}/approve [put]
-func (h *PRApprovalHandler) Approve(c *fiber.Ctx) error {
-	userID, err := h.requireSeniorPM(c)
-	if err != nil {
-		return err
-	}
-
-	id := c.Params("id")
-
-	var status string
-	if err := h.db.QueryRow(context.Background(),
-		`SELECT status FROM purchase_request WHERE pr_id = $1`, id,
-	).Scan(&status); err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "PR not found")
-	}
-	if status != "PENDING_APPROVAL" {
-		return fiber.NewError(fiber.StatusBadRequest, "PR is not pending approval")
-	}
-
-	if _, err := h.db.Exec(context.Background(), `
-		UPDATE purchase_request
-		SET status = 'APPROVED', approver_id = $1, updated_at = NOW(), updated_by = $1
-		WHERE pr_id = $2`, userID, id); err != nil {
-		return err
-	}
-
-	return c.JSON(fiber.Map{"success": true, "message": "PR approved successfully"})
-}
-
-// RejectPR godoc
-// @Summary      Reject a purchase request
-// @Tags         Purchase Request
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      json
-// @Param        id    path  int     true  "PR ID"
-// @Param        body  body  object  true  "Rejection reason"
-// @Success      200  {object}  fiber.Map
-// @Failure      400  {object}  fiber.Map
-// @Failure      403  {object}  fiber.Map
-// @Failure      404  {object}  fiber.Map
-// @Router       /pr/{id}/reject [put]
-func (h *PRApprovalHandler) Reject(c *fiber.Ctx) error {
-	userID, err := h.requireSeniorPM(c)
-	if err != nil {
-		return err
-	}
-
-	id := c.Params("id")
-
-	var req struct {
-		Reason string `json:"reason"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
-	}
-	if len(req.Reason) < 5 {
-		return fiber.NewError(fiber.StatusBadRequest, "reason must be at least 5 characters")
-	}
-
-	var status string
-	if err := h.db.QueryRow(context.Background(),
-		`SELECT status FROM purchase_request WHERE pr_id = $1`, id,
-	).Scan(&status); err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "PR not found")
-	}
-	if status != "PENDING_APPROVAL" {
-		return fiber.NewError(fiber.StatusBadRequest, "PR is not pending approval")
-	}
-
-	if _, err := h.db.Exec(context.Background(), `
-		UPDATE purchase_request
-		SET status = 'REJECTED', remarks = $1, approver_id = $2, updated_at = NOW(), updated_by = $2
-		WHERE pr_id = $3`, req.Reason, userID, id); err != nil {
-		return err
-	}
-
-	return c.JSON(fiber.Map{"success": true, "message": "PR rejected successfully"})
-}

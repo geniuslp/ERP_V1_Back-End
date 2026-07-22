@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"context"
-	"strings"
 	"log"
+	"strings"
 
 	"erp-api/internal/auth"
 	"erp-api/internal/config"
@@ -46,7 +46,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	}
 
 	// Fetch user + roles
-	
+
 	row := h.db.QueryRow(context.Background(), `
 		SELECT u.id, u.username, u.full_name, u.password_hash, u.is_active
 		FROM users u WHERE u.username = $1`, req.Username)
@@ -65,7 +65,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	log.Println("hash:", user.PasswordHash)
 	log.Println("password:", req.Password)
 	log.Println("check result:", result)
-	
+
 	if !auth.CheckPassword(user.PasswordHash, req.Password) {
 		return fiber.NewError(fiber.StatusUnauthorized, "invalid credentials")
 	}
