@@ -123,13 +123,17 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 func (h *PRHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 	row := h.db.QueryRow(context.Background(), `
-		SELECT id, pr_no, pr_date, requested_by, location_text, warehouse_code,
-		       required_date::text, status, priority, remarks, created_at, updated_at
-		FROM purchase_request WHERE id=$1`, id)
+		SELECT pr.id, pr.pr_no, pr.pr_date, pr.requested_by, pr.location_text, pr.warehouse_code, pr.project_code,
+		       pr.required_date::text, pr.status, pr.priority, pr.remarks, pr.created_at, pr.updated_at,
+		       w.warehouse_name
+		FROM purchase_request pr
+		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
+		WHERE pr.id=$1`, id)
 
 	var pr models.PurchaseRequest
 	if err := row.Scan(&pr.PRID, &pr.PRNo, &pr.PRDate, &pr.RequestedBy, &pr.LocationText,
-		&pr.WarehouseCode, &pr.RequiredDate, &pr.Status, &pr.Priority, &pr.Remarks, &pr.CreatedAt, &pr.UpdatedAt); err != nil {
+		&pr.WarehouseCode, &pr.ProjectCode, &pr.RequiredDate, &pr.Status, &pr.Priority, &pr.Remarks, &pr.CreatedAt, &pr.UpdatedAt,
+		&pr.WarehouseName); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
 
@@ -194,6 +198,18 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
+	if req.MemoID != nil {
+		var existingPRNo string
+		err := h.db.QueryRow(context.Background(),
+			`SELECT pr_no FROM purchase_request WHERE memo_id = $1`, *req.MemoID,
+		).Scan(&existingPRNo)
+		if err == nil {
+			return fiber.NewError(fiber.StatusConflict, "memo already used by PR "+existingPRNo)
+		} else if err != pgx.ErrNoRows {
+			return err
+		}
+	}
+
 	tx, err := h.db.Begin(context.Background())
 	if err != nil {
 		return err
@@ -205,11 +221,11 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	err = tx.QueryRow(context.Background(), `
 		INSERT INTO purchase_request
 		    (pr_no, pr_date, requested_by, location_text, warehouse_code, required_date,
-		     project_code, status, remarks, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now(),$10,$10)
+		     project_code, status, remarks, memo_id, created_at, updated_at, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now(),$11,$11)
 		RETURNING id`,
 		req.PRNo, req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
-		req.RequiredDate, req.ProjectCode, req.Status, req.Remarks, req.CreatedBy,
+		req.RequiredDate, req.ProjectCode, req.Status, req.Remarks, req.MemoID, req.CreatedBy,
 	).Scan(&prID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
@@ -274,7 +290,6 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	if currentStatus != "DRAFT" {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot submit PR in status: %s", currentStatus))
 	}
-
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err

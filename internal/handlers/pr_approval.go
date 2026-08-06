@@ -168,19 +168,21 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	}
 
 	type PRDetail struct {
-		ID           int64          `json:"id"`
-		PRNo         string         `json:"pr_no"`
-		Status       string         `json:"status"`
-		RequestedBy  string         `json:"requested_by"`
-		RequesterID  int64          `json:"requester_id"`
-		ApproverID   *int64         `json:"approver_id"`
-		ApproverName *string        `json:"approver_name"`
-		LocationText string         `json:"location_text"`
-		ProjectCode  *string        `json:"project_code"`
-		Remarks      *string        `json:"remarks"`
-		PRDate       string         `json:"pr_date"`
-		Lines        []PRLineItem   `json:"lines"`
-		Attachments  []PRAttachItem `json:"attachments"`
+		ID            int64          `json:"id"`
+		PRNo          string         `json:"pr_no"`
+		Status        string         `json:"status"`
+		RequestedBy   string         `json:"requested_by"`
+		RequesterID   int64          `json:"requester_id"`
+		ApproverID    *int64         `json:"approver_id"`
+		ApproverName  *string        `json:"approver_name"`
+		LocationText  string         `json:"location_text"`
+		ProjectCode   *string        `json:"project_code"`
+		WarehouseCode *string        `json:"warehouse_code"`
+		WarehouseName *string        `json:"warehouse_name"`
+		Remarks       *string        `json:"remarks"`
+		PRDate        string         `json:"pr_date"`
+		Lines         []PRLineItem   `json:"lines"`
+		Attachments   []PRAttachItem `json:"attachments"`
 	}
 
 	// ── Header ──────────────────────────────────────────────────────────────
@@ -188,10 +190,11 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		SELECT pr.id, pr.pr_no, pr.status,
 		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
 		       NULL AS approver_id, NULL AS approver_name,
-		       pr.location_text, pr.project_code, pr.remarks,
+		       pr.location_text, pr.project_code, pr.warehouse_code, w.warehouse_name, pr.remarks,
 		       pr.pr_date::text
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
+		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
 		WHERE pr.id = $1`, id)
 
 	var pr PRDetail
@@ -201,7 +204,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	if err := row.Scan(
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode,
-		&pr.Remarks, &pr.PRDate,
+		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
@@ -273,4 +276,3 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"success": true, "data": pr})
 }
-

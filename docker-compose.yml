@@ -1,41 +1,15 @@
 version: "3.9"
 
 services:
-
-  # ── PostgreSQL ──────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: erp_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB:       erpdb
-      POSTGRES_USER:     postgres
-      POSTGRES_PASSWORD: postgres
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-      # Auto-apply both Erp_v1 DDL and our extension migration on first start
-      - ./migrations:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d erpdb"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── ERP API ─────────────────────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: erp_api
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       PORT:               "8080"
-      DATABASE_URL:       postgres://postgres:postgres@postgres:5432/erpdb?sslmode=disable
+      DATABASE_URL:       "postgres://postgres:root@host.docker.internal:5432/postgres?sslmode=disable"
       JWT_SECRET:         "change-me-in-production-use-32chars!!"
       JWT_EXPIRY_HOURS:   "8"
       JWT_REFRESH_HOURS:  "168"
@@ -49,20 +23,3 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-
-  # ── pgAdmin (optional) ──────────────────────────────────────────────────────
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: erp_pgadmin
-    restart: unless-stopped
-    profiles: ["tools"]   # only starts with: docker compose --profile tools up
-    environment:
-      PGADMIN_DEFAULT_EMAIL:    admin@erp.local
-      PGADMIN_DEFAULT_PASSWORD: admin
-    ports:
-      - "5050:80"
-    depends_on:
-      - postgres
-
-volumes:
-  pg_data:

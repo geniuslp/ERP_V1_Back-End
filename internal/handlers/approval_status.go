@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 
 	"erp-api/internal/middleware"
 
@@ -132,6 +133,11 @@ func pkColumn(docType string) string {
 // @Failure      500  {object}  fiber.Map
 // @Router       /approval-request/{docType}/{docId}/my-status [get]
 func (h *ApprovalHandler) MyApprovalStatus(c *fiber.Ctx) error {
+	claims := middleware.GetClaims(c)
+	fmt.Println("[DEBUG] docType param:", c.Params("docType"))
+	fmt.Println("[DEBUG] docID param:", c.Params("docId"))
+	fmt.Println("[DEBUG] claims.UserID:", claims.UserID)
+
 	docType := c.Params("docType")
 	docID, err := c.ParamsInt("docId")
 	if err != nil {
@@ -205,8 +211,6 @@ func (h *ApprovalHandler) MyApprovalStatus(c *fiber.Ctx) error {
 			"doc_status":           docStatus,
 		}})
 	}
-
-	claims := middleware.GetClaims(c)
 
 	isAssigned, err := isEligibleApprover(ctx, h.db, docType, stepNo, int64(docID), claims.UserID)
 	if err != nil {

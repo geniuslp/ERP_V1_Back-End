@@ -43,6 +43,10 @@ type UpdateUserRequest struct {
 	RoleID       *int64  `json:"role_id,omitempty"`
 }
 
+type UpdateUserRolesRequest struct {
+	RoleIDs []int64 `json:"role_ids" validate:"required"`
+}
+
 type UserRoleInfo struct {
 	RoleID   int64  `json:"role_id"`
 	RoleCode string `json:"role_code"`
@@ -88,23 +92,25 @@ type CreateLocationRequest struct {
 // ─── Master: Project ─────────────────────────────────────────────────────────
 
 type ProjectFull struct {
-	Id             int        `json:"id"`
-	ProjectCode    string     `json:"project_code"`
-	ProjectName    string     `json:"project_name"`
-	LocationCode   *string    `json:"location_code,omitempty"`
-	LocationName   *string    `json:"location_name,omitempty"`
-	OwnerID        *int64     `json:"owner_id,omitempty"`
-	OwnerName      *string    `json:"owner_name,omitempty"`
-	BudgetAmount   float64    `json:"budget_amount"`
-	ConsultantName *string    `json:"consultant_name,omitempty"`
-	StartDate      *time.Time `json:"start_date,omitempty"`
-	EndDate        *time.Time `json:"end_date,omitempty"`
-	Status         string     `json:"status"`
-	IsActive       bool       `json:"is_active"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	CreatedBy      *int64     `json:"created_by,omitempty"`
-	UpdatedBy      *int64     `json:"updated_by,omitempty"`
+	Id              int        `json:"id"`
+	ProjectCode     string     `json:"project_code"`
+	ProjectName     string     `json:"project_name"`
+	LocationCode    *string    `json:"location_code,omitempty"`
+	LocationName    *string    `json:"location_name,omitempty"`
+	OwnerID         *int64     `json:"owner_id,omitempty"`
+	OwnerName       *string    `json:"owner_name,omitempty"`
+	BudgetAmount    float64    `json:"budget_amount"`
+	SpentAmount     float64    `json:"spent_amount"`
+	RemainingAmount float64    `json:"remaining_amount"`
+	ConsultantName  *string    `json:"consultant_name,omitempty"`
+	StartDate       *time.Time `json:"start_date,omitempty"`
+	EndDate         *time.Time `json:"end_date,omitempty"`
+	Status          string     `json:"status"`
+	IsActive        bool       `json:"is_active"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	CreatedBy       *int64     `json:"created_by,omitempty"`
+	UpdatedBy       *int64     `json:"updated_by,omitempty"`
 }
 
 type CreateProjectReq struct {
@@ -665,6 +671,8 @@ type PurchaseRequest struct {
 	RequestedBy   int64     `json:"requested_by" db:"requested_by"`
 	LocationText  string    `json:"location_text" db:"location_text"`
 	WarehouseCode *string   `json:"warehouse_code,omitempty" db:"warehouse_code"`
+	WarehouseName *string   `json:"warehouse_name,omitempty" db:"warehouse_name"`
+	ProjectCode   *string   `json:"project_code,omitempty" db:"project_code"`
 	RequiredDate  *string   `json:"required_date,omitempty" db:"required_date"`
 	Status        string    `json:"status" db:"status"`
 	Priority      string    `json:"priority" db:"priority"`
@@ -770,41 +778,66 @@ type PurchaseOrder struct {
 	PODate          time.Time `json:"po_date" db:"po_date"`
 	SupplierCode    string    `json:"supplier_code" db:"supplier_code"`
 	PRID            *int64    `json:"pr_id,omitempty" db:"pr_id"`
+	PRNo            *string   `json:"pr_no,omitempty"`
 	RFQID           *int64    `json:"rfq_id,omitempty" db:"rfq_id"`
-	LocationText    string    `json:"location_text" db:"location_text"`
+	Ref             *string   `json:"ref,omitempty" db:"ref"`
+	LocationText    *string   `json:"location_text,omitempty" db:"location_text"`
 	WarehouseCode   *string   `json:"warehouse_code,omitempty" db:"warehouse_code"`
 	ProjectCode     *string   `json:"project_code,omitempty" db:"project_code"`
 	RequestedBy     *int64    `json:"requested_by,omitempty" db:"requested_by"`
 	RequestedByName string    `json:"requested_by_name,omitempty"`
+	ApproverID      *int64    `json:"approver_id,omitempty"`
 	Currency        string    `json:"currency" db:"currency"`
 	TotalAmount     float64   `json:"total_amount" db:"total_amount"`
 	VATAmount       float64   `json:"vat_amount" db:"vat_amount"`
 	NetAmount       float64   `json:"net_amount" db:"net_amount"`
 	ExpectedDate    *string   `json:"expected_date,omitempty" db:"expected_date"`
+	UseDiscount     *bool     `json:"use_discount,omitempty"`
+	DiscountType    *string   `json:"discount_type,omitempty"`
+	DiscountAmount  *float64  `json:"discount_amount,omitempty"`
+	UseVAT          *bool     `json:"use_vat,omitempty"`
+	UseWHT          *bool     `json:"use_wht,omitempty"`
+	WHTAmount       *float64  `json:"wht_amount,omitempty"`
 	Status          string    `json:"status" db:"status"`
+	StatusReceive   string    `json:"status_receive" db:"status_receive"`
 	PaymentTerms    *string   `json:"payment_terms,omitempty" db:"payment_terms"`
 	Remarks         *string   `json:"remarks,omitempty" db:"remarks"`
 	CreatedBy       int64     `json:"created_by" db:"created_by"`
 	CreatedAt       time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
 	CanEditApproved bool      `json:"can_edit_approved"`
+	OfficePhone     *string   `json:"office_phone,omitempty"`
+	Fax             *string   `json:"fax,omitempty"`
+	SalesPerson     *string   `json:"sales_person,omitempty"`
+	ContactEmail    *string   `json:"contact_email,omitempty"`
+	ContactPhone    *string   `json:"contact_phone,omitempty"`
 	Lines           []POLine  `json:"lines,omitempty"`
 }
 
 type POLine struct {
-	LineID      int64   `json:"line_id" db:"line_id"`
-	POID        int64   `json:"po_id" db:"po_id"`
-	LineNo      int     `json:"line_no" db:"line_no"`
-	MatCode     string  `json:"mat_code" db:"mat_code"`
-	PRLineID    *int64  `json:"pr_line_id,omitempty" db:"pr_line_id"`
-	QtyOrdered  float64 `json:"qty_ordered" db:"qty_ordered"`
-	QtyReceived float64 `json:"qty_received" db:"qty_received"`
-	UnitPrice   float64 `json:"unit_price" db:"unit_price"`
-	DiscType    string  `json:"disc_type" db:"disc_type"`
-	Amount      float64 `json:"amount" db:"amount"`
-	Description *string `json:"description,omitempty" db:"description"`
-	Remarks     *string `json:"remarks,omitempty" db:"remarks"`
-	Status      string  `json:"status" db:"status"`
+	LineID          int64    `json:"line_id" db:"line_id"`
+	POID            int64    `json:"po_id" db:"po_id"`
+	LineNo          int      `json:"line_no" db:"line_no"`
+	MatCode         string   `json:"mat_code" db:"mat_code"`
+	PRLineID        *int64   `json:"pr_line_id,omitempty" db:"pr_line_id"`
+	QtyOrdered      float64  `json:"qty_ordered" db:"qty_ordered"`
+	QtyReceived     float64  `json:"qty_received" db:"qty_received"`
+	UnitPrice       float64  `json:"unit_price" db:"unit_price"`
+	DiscType        string   `json:"disc_type" db:"disc_type"`
+	Discount        float64  `json:"discount" db:"discount"`
+	LineDiscount    float64  `json:"line_discount" db:"line_discount"`
+	LineVAT         float64  `json:"line_vat" db:"line_vat"`
+	LineWHT         float64  `json:"line_wht" db:"line_wht"`
+	LineNet         float64  `json:"line_net" db:"line_net"`
+	WhtRate         *float64 `json:"wht_rate,omitempty" db:"wht_rate"`
+	Amount          float64  `json:"amount" db:"amount"`
+	Description     *string  `json:"description,omitempty" db:"description"`
+	Remarks         *string  `json:"remarks,omitempty" db:"remarks"`
+	Status          string   `json:"status" db:"status"`
+	MatName         *string  `json:"mat_name,omitempty"`
+	SpecDescription *string  `json:"spec,omitempty"`
+	BrandName       *string  `json:"brand,omitempty"`
+	CurrentStock    float64  `json:"current_stock"`
 }
 
 type CreatePORequest struct {
@@ -822,17 +855,23 @@ type CreatePORequest struct {
 	PaymentTerms  *string        `json:"payment_terms,omitempty"`
 	Remarks       *string        `json:"remarks,omitempty"`
 	Status        string         `json:"status" validate:"omitempty,oneof=DRAFT PENDING_APPROVAL"`
+	UseDiscount   *bool          `json:"use_discount,omitempty"`
+	DiscountType  *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
+	UseVAT        *bool          `json:"use_vat,omitempty"`
+	UseWHT        *bool          `json:"use_wht,omitempty"`
 	Lines         []CreatePOLine `json:"lines" validate:"required,min=1,dive"`
 }
 
 type CreatePOLine struct {
-	MatCode     string  `json:"mat_code" validate:"required"`
-	PRLineID    *int64  `json:"pr_line_id,omitempty"`
-	QtyOrdered  float64 `json:"qty_ordered" validate:"required,gt=0"`
-	UnitPrice   float64 `json:"unit_price" validate:"required,gte=0"`
-	DiscType    string  `json:"disc_type" validate:"omitempty,oneof=pct amt"`
-	Description *string `json:"description,omitempty"`
-	Remarks     *string `json:"remarks,omitempty"`
+	MatCode     string   `json:"mat_code" validate:"required"`
+	PRLineID    *int64   `json:"pr_line_id,omitempty"`
+	QtyOrdered  float64  `json:"qty_ordered" validate:"required,gt=0"`
+	UnitPrice   float64  `json:"unit_price" validate:"required,gte=0"`
+	DiscType    string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
+	Discount    float64  `json:"discount,omitempty"`
+	WhtRate     *float64 `json:"wht_rate,omitempty"`
+	Description *string  `json:"description,omitempty"`
+	Remarks     *string  `json:"remarks,omitempty"`
 }
 
 type AddPOLinesRequest struct {

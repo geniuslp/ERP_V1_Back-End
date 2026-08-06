@@ -850,6 +850,24 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		return err
 	}
 
+	// Every material must have a matching stock_item so GRN receiving can
+	// always find one — see CLAUDE.md "GRN receiving / stock link" note.
+	var stockItemExists bool
+	if err = tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM stock_item WHERE mat_code = $1)`, matCode,
+	).Scan(&stockItemExists); err != nil {
+		return err
+	}
+	if !stockItemExists {
+		if _, err = tx.Exec(ctx,
+			`INSERT INTO stock_item (mat_code, item_name, unit, qty, created_at, updated_at)
+			 VALUES ($1, $2, $3, 0, NOW(), NOW())`,
+			matCode, req.MatNameTH, req.UnitName,
+		); err != nil {
+			return err
+		}
+	}
+
 	if err = tx.Commit(ctx); err != nil {
 		return err
 	}

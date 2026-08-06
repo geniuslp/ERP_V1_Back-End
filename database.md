@@ -1,0 +1,978 @@
+# Database Reference — ERP V10
+
+> Generated from DB dump. ใช้เป็น reference สำหรับเขียน prompt ให้ AI — ไม่ต้องแนบไฟล์ dump อีก
+> อัปเดตไฟล์นี้ทุกครั้งที่มี migration หรือ ALTER TABLE
+
+---
+
+## Table Index
+
+| Table | กลุ่ม | หมายเหตุ |
+|-------|--------|----------|
+| [approval_config](#approval_config) | Approval | config ขั้นตอนอนุมัติต่อ doc_type |
+| [approval_delegation](#approval_delegation) | Approval | มอบหมายสิทธิ์อนุมัติ |
+| [approval_doc_types](#approval_doc_types) | Approval | ทะเบียน doc_type ที่ใช้ approval engine |
+| [approval_log](#approval_log) | Approval | log ทุก action ของ approval |
+| [approval_request](#approval_request) | Approval | คำขออนุมัติ pending |
+| [borrow](#borrow) | Stock | ใบขอยืม/เบิกวัสดุ |
+| [borrow_line](#borrow_line) | Stock | รายการใน borrow |
+| [borrow_status_log](#borrow_status_log) | Stock | log สถานะ borrow |
+| [brand](#brand) | Master | แบรนด์สินค้า |
+| [cost_group](#cost_group) | Cost | กลุ่มต้นทุน |
+| [cost_job](#cost_job) | Cost | งานต้นทุน |
+| [cost_subgroup](#cost_subgroup) | Cost | กลุ่มย่อยต้นทุน |
+| [cost_subject](#cost_subject) | Cost | หัวข้อต้นทุน |
+| [departments](#departments) | Org | แผนก |
+| [dept_menu_permissions](#dept_menu_permissions) | Permission | สิทธิ์เมนูตามแผนก |
+| [erp_audit_log](#erp_audit_log) | Audit | audit log ทั้งระบบ |
+| [grn](#grn) | GRN | ใบรับเข้าสินค้า |
+| [grn_line](#grn_line) | GRN | รายการใน GRN |
+| [inventory](#inventory) | Stock | stock PR/PO (mat_code based) |
+| [inventory_transaction](#inventory_transaction) | Stock | transaction inventory |
+| [location](#location) | Master | สถานที่/ที่ตั้ง |
+| [mat_group](#mat_group) | Material | กลุ่มวัสดุ |
+| [mat_name](#mat_name) | Material | ชื่อวัสดุ |
+| [material_code](#material_code) | Material | รหัสวัสดุ master |
+| [memo](#memo) | Memo | บันทึกข้อความ |
+| [memo_attachment](#memo_attachment) | Memo | ไฟล์แนบ memo |
+| [memo_line](#memo_line) | Memo | รายการใน memo |
+| [memo_status_log](#memo_status_log) | Memo | log สถานะ memo |
+| [menus](#menus) | System | เมนูระบบ |
+| [modules](#modules) | System | โมดูลระบบ |
+| [permission_audit_logs](#permission_audit_logs) | Permission | audit log สิทธิ์ |
+| [permissions](#permissions) | Permission | permission key |
+| [po_attachment](#po_attachment) | PO | ไฟล์แนบ PO |
+| [po_edit_log](#po_edit_log) | PO | log การแก้ไข PO |
+| [po_status_log](#po_status_log) | PO | log สถานะ PO |
+| [pr_attachment](#pr_attachment) | PR | ไฟล์แนบ PR |
+| [pr_status_log](#pr_status_log) | PR | log สถานะ PR |
+| [project](#project) | Master | โครงการ |
+| [purchase_order](#purchase_order) | PO | ใบสั่งซื้อ |
+| [purchase_order_line](#purchase_order_line) | PO | รายการใน PO |
+| [purchase_request](#purchase_request) | PR | ใบขอซื้อ |
+| [purchase_request_line](#purchase_request_line) | PR | รายการใน PR |
+| [rfq](#rfq) | RFQ | ใบขอเสนอราคา |
+| [rfq_line](#rfq_line) | RFQ | รายการใน RFQ |
+| [role_menu_permissions](#role_menu_permissions) | Permission | สิทธิ์เมนูตาม role |
+| [role_menus](#role_menus) | Permission | เมนูที่ role เข้าถึงได้ |
+| [role_permissions](#role_permissions) | Permission | permission ของ role |
+| [roles](#roles) | Org | บทบาทผู้ใช้ |
+| [spec_size](#spec_size) | Material | spec/ขนาดวัสดุ |
+| [stock_category](#stock_category) | Stock | หมวดหมู่ stock |
+| [stock_count](#stock_count) | Stock | ใบนับสต็อก |
+| [stock_count_line](#stock_count_line) | Stock | รายการนับสต็อก |
+| [stock_inventory](#stock_inventory) | Stock | inventory ต่อ location (stock_item based) |
+| [stock_item](#stock_item) | Stock | รายการวัสดุในคลัง (qty จริง) |
+| [stock_reservation](#stock_reservation) | Stock | การจองวัสดุ |
+| [stock_transaction](#stock_transaction) | Stock | transaction stock_item |
+| [storage_zone](#storage_zone) | Master | โซนคลัง |
+| [subgroup](#subgroup) | Material | กลุ่มย่อยวัสดุ |
+| [supplier](#supplier) | Master | ซัพพลายเออร์ |
+| [unit](#unit) | Master | หน่วยนับ |
+| [user_menu_permissions](#user_menu_permissions) | Permission | สิทธิ์เมนูรายบุคคล |
+| [user_permissions](#user_permissions) | Permission | permission รายบุคคล |
+| [user_roles](#user_roles) | Org | role ของแต่ละ user |
+| [users](#users) | Org | ผู้ใช้งาน |
+| [warehouse](#warehouse) | Master | คลังสินค้า |
+
+---
+
+## ⚠️ Important Notes
+
+- `stock_item.qty` — qty จริงของวัสดุในคลัง ใช้ตัดเมื่อ borrow/requisition อนุมัติ
+- `inventory.qty_on_hand` — ใช้กับ PR/PO flow (mat_code based) คนละตัวกับ stock_item
+- `material_code.mat_code` ≠ `stock_item.mat_code` — ใช้ค่าเดียวกันแต่คนละตาราง ไม่มี FK ข้าม
+- `borrow_type` — `'BORROW'` = ขอยืม/เบิก, `'RETURN'` = คืน
+- `borrow_line.mat_type` — `'RETURNABLE'` = ต้องคืน, `'CONSUMABLE'` = ไม่ต้องคืน
+- `grn` มี `quality_status`, `confirmed_by`, `delivery_note` — ใช้ schema นี้ ไม่ใช่ inventory table
+
+---
+
+## Approval Engine
+
+```
+approval_doc_types  ← ลงทะเบียน doc_type (BORROW, PO, PR, ฯลฯ)
+approval_config     ← กำหนด step + approver_role_id ต่อ doc_type
+approval_request    ← คำขอ pending รอ action
+approval_log        ← log ทุก action (SUBMIT/APPROVE/REJECT/CANCEL)
+```
+
+**Status flow (ทั่วไป):** `DRAFT → PENDING_APPROVAL → APPROVED / REJECTED`
+- REJECTED → สามารถแก้ไขแล้ว re-submit ได้
+- APPROVED → lock ห้ามแก้ไข
+
+---
+
+## Schema Detail
+
+---
+
+### approval_config
+```
+id               bigint        NOT NULL  PK
+doc_type         varchar(30)   NOT NULL  — 'PO','PR','BORROW', etc.
+step_no          integer       NOT NULL
+step_name        varchar(200)  NOT NULL
+approver_role_id bigint        nullable  — FK → roles.id
+min_amount       numeric(18,4) nullable
+max_amount       numeric(18,4) nullable
+is_active        boolean       NOT NULL  DEFAULT true
+created_at       timestamp     NOT NULL  DEFAULT now()
+updated_at       timestamp     NOT NULL  DEFAULT now()
+created_by       bigint        nullable
+updated_by       bigint        nullable
+```
+
+---
+
+### approval_delegation
+```
+id         bigint      NOT NULL  PK
+doc_type   varchar(30) nullable
+user_id    bigint      NOT NULL
+reason     text        nullable
+created_at timestamp   NOT NULL  DEFAULT now()
+created_by bigint      nullable
+```
+
+---
+
+### approval_doc_types
+```
+id                 bigint      NOT NULL  PK
+doc_type           varchar(30) NOT NULL  UNIQUE
+doc_label          varchar(200)NOT NULL
+is_active          boolean     NOT NULL  DEFAULT true
+table_name         varchar(50) nullable  — ชื่อตารางที่ update status
+id_column          varchar(50) nullable  DEFAULT 'id'
+status_column      varchar(50) nullable  DEFAULT 'status'
+approved_value     varchar(30) nullable  DEFAULT 'APPROVED'
+rejected_value     varchar(30) nullable  DEFAULT 'REJECTED'
+status_log_table   varchar(50) nullable  — ตาราง log สถานะ
+status_log_fk_column varchar(50) nullable
+created_at         timestamp   NOT NULL  DEFAULT now()
+updated_at         timestamp   NOT NULL  DEFAULT now()
+created_by         bigint      nullable
+updated_by         bigint      nullable
+```
+
+---
+
+### approval_log
+```
+id          bigint      NOT NULL  PK
+approval_id bigint      NOT NULL  — FK → approval_request.id
+doc_type    varchar(30) NOT NULL
+doc_id      bigint      NOT NULL
+doc_no      varchar(30) NOT NULL
+step_no     integer     NOT NULL
+action      varchar(20) NOT NULL  — SUBMIT|APPROVE|REJECT|RETURN|CANCEL|ESCALATE|COMMENT
+action_by   bigint      NOT NULL  — FK → users.id
+action_at   timestamp   NOT NULL  DEFAULT now()
+comments    text        nullable
+old_status  varchar(20) nullable
+new_status  varchar(20) nullable
+ip_address  inet        nullable
+user_agent  text        nullable
+```
+
+---
+
+### approval_request
+```
+id           bigint      NOT NULL  PK
+doc_type     varchar(30) NOT NULL
+doc_id       bigint      NOT NULL
+doc_no       varchar(30) NOT NULL
+step_no      integer     NOT NULL
+requested_by bigint      NOT NULL  — FK → users.id
+assigned_to  bigint      nullable  — FK → users.id (ผู้อนุมัติ)
+status       varchar(20) NOT NULL  DEFAULT 'PENDING'
+             — PENDING|APPROVED|REJECTED|CANCELLED|ESCALATED
+due_date     date        nullable
+amount       numeric(18,4) nullable
+created_at   timestamp   NOT NULL  DEFAULT now()
+updated_at   timestamp   NOT NULL  DEFAULT now()
+created_by   bigint      nullable
+updated_by   bigint      nullable
+```
+
+---
+
+### borrow
+```
+id             bigint      NOT NULL  PK
+borrow_no      varchar(30) NOT NULL
+borrow_type    varchar(20) NOT NULL  DEFAULT 'BORROW'  — BORROW|RETURN
+warehouse_code varchar(20) NOT NULL
+borrower_id    bigint      NOT NULL  — FK → users.id
+location_code  varchar(20) nullable
+borrow_date    date        NOT NULL  DEFAULT CURRENT_DATE
+expected_return date       nullable
+actual_return  date        nullable
+status         varchar(20) NOT NULL  DEFAULT 'OPEN'
+               — DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|BORROWED|RETURNED|PARTIALLY_RETURNED|CANCELLED
+purpose        text        nullable  — วัตถุประสงค์การยืม
+approved_by    bigint      nullable  — FK → users.id
+approved_at    timestamp   nullable
+remarks        text        nullable
+created_at     timestamp   NOT NULL  DEFAULT now()
+updated_at     timestamp   NOT NULL  DEFAULT now()
+created_by     bigint      NOT NULL
+updated_by     bigint      nullable
+```
+
+---
+
+### borrow_line
+```
+id            bigint        NOT NULL  PK
+borrow_id     bigint        NOT NULL  — FK → borrow.id
+line_no       integer       nullable
+stock_item_id bigint        nullable  — FK → stock_item.id
+mat_code      varchar(20)   NOT NULL
+mat_type      varchar(20)   NOT NULL  DEFAULT 'RETURNABLE'  — RETURNABLE|CONSUMABLE
+unit          varchar(50)   nullable
+qty_requested numeric(18,4) nullable  — จำนวนที่ขอ
+qty_approved  numeric(18,4) nullable  — จำนวนที่อนุมัติ (อาจน้อยกว่า)
+qty_borrowed  numeric(18,4) NOT NULL  DEFAULT 0
+qty_returned  numeric(18,4) NOT NULL  DEFAULT 0
+condition_out varchar(50)   nullable  — GOOD|FAIR|DAMAGED
+condition_in  varchar(50)   nullable  — GOOD|FAIR|DAMAGED
+remarks       text          nullable
+location_code varchar(20)   nullable
+```
+
+---
+
+### borrow_status_log
+```
+id          bigint      NOT NULL  PK
+borrow_id   bigint      NOT NULL  — FK → borrow.id
+from_status varchar(30) nullable
+to_status   varchar(30) NOT NULL
+changed_by  bigint      NOT NULL  — FK → users.id
+changed_at  timestamp   NOT NULL  DEFAULT now()
+remarks     text        nullable
+```
+
+---
+
+### brand
+```
+id         integer     NOT NULL  PK
+brand_code varchar(20) NOT NULL
+spec_id    integer     NOT NULL  — FK → spec_size.id
+brand_name varchar(100)NOT NULL
+is_active  boolean     NOT NULL  DEFAULT true
+created_at timestamp   NOT NULL  DEFAULT now()
+updated_at timestamp   NOT NULL  DEFAULT now()
+created_by bigint      nullable
+updated_by bigint      nullable
+```
+
+---
+
+### cost_group / cost_job / cost_subgroup / cost_subject
+```
+-- cost_subject
+id, subject_code, subject_name, is_active, created_at, updated_at, created_by, updated_by
+
+-- cost_job (FK → cost_subject)
+id, subject_id, job_code, job_name, is_active, created_at, updated_at, created_by, updated_by
+
+-- cost_group (FK → cost_job)
+id, job_id, group_code, group_name, is_active, created_at, updated_at, created_by, updated_by
+
+-- cost_subgroup (FK → cost_group)
+id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at, created_by, updated_by
+```
+
+---
+
+### departments
+```
+id        bigint      NOT NULL  PK
+dept_code varchar(20) NOT NULL  UNIQUE
+dept_name varchar(200)NOT NULL
+is_active boolean     NOT NULL  DEFAULT true
+sort_order integer    NOT NULL  DEFAULT 0
+created_at timestamp  NOT NULL  DEFAULT now()
+updated_at timestamp  NOT NULL  DEFAULT now()
+```
+
+---
+
+### dept_menu_permissions
+```
+id         bigint   NOT NULL  PK
+dept_code  varchar  NOT NULL
+menu_id    bigint   NOT NULL  — FK → menus.id
+can_read   boolean  NOT NULL  DEFAULT false
+can_write  boolean  NOT NULL  DEFAULT false
+can_update boolean  NOT NULL  DEFAULT false
+can_delete boolean  NOT NULL  DEFAULT false
+created_at timestamp NOT NULL DEFAULT now()
+updated_at timestamp NOT NULL DEFAULT now()
+created_by bigint   nullable
+updated_by bigint   nullable
+```
+
+---
+
+### erp_audit_log
+```
+id           bigint    NOT NULL  PK
+table_name   varchar   NOT NULL
+record_id    bigint    NOT NULL
+action       varchar   NOT NULL  — INSERT|UPDATE|DELETE
+changed_by   bigint    nullable  — FK → users.id
+changed_at   timestamp NOT NULL  DEFAULT now()
+old_data     jsonb     nullable
+new_data     jsonb     nullable
+session_info jsonb     nullable
+```
+
+---
+
+### grn
+```
+id             bigint      NOT NULL  PK
+grn_no         varchar(30) NOT NULL
+grn_date       date        NOT NULL  DEFAULT CURRENT_DATE
+po_id          bigint      NOT NULL  — FK → purchase_order.id
+warehouse_code varchar(20) NOT NULL
+supplier_code  varchar(20) NOT NULL
+delivery_note  varchar(50) nullable  — เลขใบส่งของ
+status         varchar(20) NOT NULL  DEFAULT 'DRAFT'  — DRAFT|CONFIRMED|POSTED
+quality_status varchar(20) NOT NULL  DEFAULT 'PENDING' — PENDING|PASSED|FAILED|PARTIAL
+received_by    bigint      NOT NULL  — FK → users.id
+confirmed_by   bigint      nullable  — FK → users.id
+confirmed_at   timestamp   nullable
+remarks        text        nullable
+score_quality  smallint    nullable  — 1-5
+score_quantity smallint    nullable  — 1-5
+score_ontime   smallint    nullable  — 1-5
+score_notes    text        nullable
+created_at     timestamp   NOT NULL  DEFAULT now()
+updated_at     timestamp   NOT NULL  DEFAULT now()
+created_by     bigint      nullable
+updated_by     bigint      nullable
+```
+
+---
+
+### grn_line
+```
+id              bigint        NOT NULL  PK
+grn_id          bigint        NOT NULL  — FK → grn.id
+line_no         integer       NOT NULL
+po_line_id      bigint        NOT NULL  — FK → purchase_order_line.id
+mat_code        varchar(20)   NOT NULL
+zone_id         integer       nullable  — FK → storage_zone.id
+qty_received    numeric(18,4) NOT NULL
+qty_accepted    numeric(18,4) NOT NULL  DEFAULT 0
+qty_rejected    numeric(18,4) NOT NULL  DEFAULT 0
+quality_remarks text          nullable
+```
+
+---
+
+### inventory
+> 🔴 **ไม่ได้ใช้งานจริง (ตัดสินใจ 2026-07-27)** — table นี้กับ `inventory_transaction` มีอยู่ใน DB
+> แต่ handler ไหน ๆ ก็ไม่ควรอ่าน/เขียนที่นี่ รวมถึง GRN confirm ด้วย ระบบ stock ที่ใช้จริงคือ
+> `stock_item`/`stock_inventory` (ดูด้านล่าง) — อย่าสับสนสองระบบนี้เข้าด้วยกัน
+```
+id             bigint        NOT NULL  PK
+mat_code       varchar(20)   NOT NULL  — ใช้กับ PR/PO flow
+warehouse_code varchar(20)   NOT NULL
+zone_id        integer       nullable
+qty_on_hand    numeric(18,4) NOT NULL  DEFAULT 0
+qty_reserved   numeric(18,4) NOT NULL  DEFAULT 0
+qty_on_order   numeric(18,4) NOT NULL  DEFAULT 0
+reorder_point  numeric(18,4) nullable
+reorder_qty    numeric(18,4) nullable
+min_stock      numeric(18,4) nullable
+max_stock      numeric(18,4) nullable
+last_counted_at timestamp    nullable
+created_at     timestamp     NOT NULL  DEFAULT now()
+updated_at     timestamp     NOT NULL  DEFAULT now()
+created_by     bigint        nullable
+updated_by     bigint        nullable
+```
+
+---
+
+### inventory_transaction
+> 🔴 **ไม่ได้ใช้งานจริง เช่นเดียวกับ `inventory`** — ดูหมายเหตุด้านบน
+```
+id             bigint        NOT NULL  PK
+txn_no         varchar(30)   NOT NULL
+txn_type       varchar(20)   NOT NULL
+mat_code       varchar(20)   NOT NULL
+from_warehouse varchar(20)   nullable
+to_warehouse   varchar(20)   nullable
+from_zone_id   integer       nullable
+to_zone_id     integer       nullable
+qty            numeric(18,4) NOT NULL
+ref_doc_type   varchar(20)   nullable
+ref_doc_no     varchar(30)   nullable
+location_code  varchar(20)   nullable
+reason         text          nullable
+txn_date       date          NOT NULL  DEFAULT CURRENT_DATE
+created_at     timestamp     NOT NULL  DEFAULT now()
+updated_at     timestamp     NOT NULL  DEFAULT now()
+created_by     bigint        NOT NULL
+updated_by     bigint        nullable
+```
+
+---
+
+### location
+```
+id            integer     NOT NULL  PK
+location_code varchar(20) NOT NULL  UNIQUE
+location_name varchar(100)NOT NULL
+location_type varchar(20) NOT NULL
+parent_id     integer     nullable  — self-ref
+is_active     boolean     NOT NULL  DEFAULT true
+created_at    timestamp   NOT NULL  DEFAULT now()
+updated_at    timestamp   NOT NULL  DEFAULT now()
+created_by    bigint      nullable
+updated_by    bigint      nullable
+```
+
+---
+
+### mat_group / subgroup / mat_name / spec_size / brand / material_code
+```
+-- mat_group
+id, group_code, group_name, is_active, created_at, updated_at, created_by, updated_by
+
+-- subgroup (FK → mat_group)
+id, group_id, subgroup_code, subgroup_name, is_active, ...
+
+-- mat_name (FK → subgroup)
+id, mat_name_code, subgroup_id, mat_name, is_active, ...
+
+-- spec_size (FK → mat_name)
+id, spec_code, mat_name_id, spec_description, is_active, ...
+
+-- brand (FK → spec_size)
+id, brand_code, spec_id, brand_name, is_active, ...
+
+-- material_code (FK → group, subgroup, mat_name, spec_size, brand, unit)
+id, mat_code, group_id, subgroup_id, mat_name_id, spec_id, brand_id,
+unit_id, cost_subgroup_id, is_active, created_at, updated_at, created_by, updated_by
+```
+
+---
+
+### memo
+```
+id           bigint      NOT NULL  PK
+memo_no      varchar(30) NOT NULL
+title        varchar(200)NOT NULL
+project_code varchar(20) nullable
+requested_by bigint      NOT NULL  — FK → users.id
+department   varchar(100)nullable
+note         text        nullable
+status       varchar(20) NOT NULL  DEFAULT 'DRAFT'
+approver_id  bigint      nullable
+created_at   timestamp   NOT NULL  DEFAULT now()
+updated_at   timestamp   NOT NULL  DEFAULT now()
+created_by   bigint      nullable
+updated_by   bigint      nullable
+```
+
+---
+
+### menus
+```
+id          bigint      NOT NULL  PK
+parent_id   bigint      nullable  — self-ref (FK → menus.id)
+menu_code   varchar(50) NOT NULL  UNIQUE
+menu_name   varchar(100)NOT NULL
+menu_path   varchar(200)nullable
+icon_name   varchar(50) nullable
+sort_order  integer     DEFAULT 0
+is_active   boolean     DEFAULT true
+created_at  timestamp   NOT NULL  DEFAULT now()
+updated_at  timestamp   NOT NULL  DEFAULT now()
+created_by  bigint      nullable
+updated_by  bigint      nullable
+```
+
+> ⚠️ menu_code ต้องใช้รูปแบบ MENU_XXX_YYY (UPPER_SNAKE) ให้ consistent
+> ปัจจุบัน id=43 ('stock-receiving') และ id=44 ('stock-receiving-history') ยังเป็น kebab-case อยู่
+
+---
+
+### modules
+```
+id          bigint      NOT NULL  PK
+module_code varchar(30) NOT NULL  UNIQUE
+module_name varchar(100)NOT NULL
+sort_order  integer     DEFAULT 0
+is_active   boolean     DEFAULT true
+created_at  timestamp   NOT NULL  DEFAULT now()
+updated_at  timestamp   NOT NULL  DEFAULT now()
+created_by  bigint      nullable
+updated_by  bigint      nullable
+```
+
+---
+
+### permissions / role_permissions / user_permissions
+```
+-- permissions
+id, permission_key, permission_name, module_id, created_at, updated_at, created_by, updated_by
+
+-- role_permissions
+role_id, permission_id, created_at, created_by
+
+-- user_permissions
+user_id, permission_id, is_allow, created_at, updated_at, created_by, updated_by
+```
+
+---
+
+### po_attachment / pr_attachment
+```
+id, [po_id|pr_id], file_name, file_path, file_size, file_type, uploaded_at, uploaded_by
+```
+
+---
+
+### po_edit_log
+```
+id, po_id, edited_by, reason (NOT NULL), edited_at
+```
+
+---
+
+### po_status_log / pr_status_log
+```
+id, [po_id|pr_id], from_status, to_status (NOT NULL), changed_by, changed_at, remarks
+```
+
+---
+
+### project
+```
+id              integer     NOT NULL  PK
+project_code    varchar(20) NOT NULL  UNIQUE
+project_name    varchar(200)NOT NULL
+location_code   varchar(20) nullable
+start_date      date        nullable
+end_date        date        nullable
+status          varchar(20) NOT NULL  DEFAULT 'ACTIVE'
+is_active       boolean     NOT NULL  DEFAULT true
+owner_id        bigint      nullable  — FK → users.id
+budget_amount   numeric(18,4) NOT NULL DEFAULT 0
+consultant_name varchar(200)nullable
+created_at      timestamp   NOT NULL  DEFAULT now()
+updated_at      timestamp   NOT NULL  DEFAULT now()
+created_by      bigint      nullable
+updated_by      bigint      nullable
+```
+
+---
+
+### purchase_order
+> 🔴 **2026-07-27 — แยก status ออกเป็น 2 field แล้ว** (ก่อนหน้านี้ `status` เดียวรวมทั้ง
+> approval flow และ receiving flow ปนกัน ทำให้ `PENDING_REAPPROVAL` กับ `PARTIALLY_RECEIVED`
+> เก็บพร้อมกันไม่ได้) รัน migration `003_po_split_receive_status.sql` แล้วต้องใช้ตามนี้:
+> - `status` = **สถานะอนุมัติเท่านั้น**: `DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|PENDING_REAPPROVAL|CANCELLED`
+> - `status_receive` = **สถานะรับของเท่านั้น**: `NOT_SENT|SENT|PARTIALLY_RECEIVED|RECEIVED`
+> - ทั้งสอง field เป็นอิสระต่อกัน เช่น PO ที่กำลัง `PENDING_REAPPROVAL` แต่รับของไปแล้วบางส่วน
+>   จะเป็น `status='PENDING_REAPPROVAL', status_receive='PARTIALLY_RECEIVED'` พร้อมกันได้ปกติ
+```
+id               bigint        NOT NULL  PK
+po_no            varchar(30)   NOT NULL
+po_date          date          NOT NULL  DEFAULT CURRENT_DATE
+supplier_code    varchar(20)   NOT NULL
+pr_id            bigint        nullable  — FK → purchase_request.id
+rfq_id           bigint        nullable  — FK → rfq.id
+currency         varchar(10)   NOT NULL  DEFAULT 'THB'
+total_amount     numeric(18,4) NOT NULL  DEFAULT 0
+vat_amount       numeric(18,4) NOT NULL  DEFAULT 0
+net_amount       numeric(18,4) NOT NULL  DEFAULT 0
+expected_date    date          nullable  — วันที่ส่งของที่คาดหวัง
+status           varchar(30)   NOT NULL  DEFAULT 'DRAFT'
+                 — สถานะอนุมัติเท่านั้น: DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|PENDING_REAPPROVAL|CANCELLED
+status_receive   varchar(20)   NOT NULL  DEFAULT 'NOT_SENT'
+                 — สถานะรับของ แยกจาก status: NOT_SENT|SENT|PARTIALLY_RECEIVED|RECEIVED
+payment_terms    varchar(100)  nullable
+delivery_address text          nullable
+remarks          text          nullable
+use_discount     boolean       NOT NULL  DEFAULT false
+discount_type    varchar(10)   NOT NULL  DEFAULT 'pct'
+discount_amount  numeric(18,4) NOT NULL  DEFAULT 0
+use_vat          boolean       NOT NULL  DEFAULT false
+use_wht          boolean       NOT NULL  DEFAULT false
+wht_amount       numeric(18,4) NOT NULL  DEFAULT 0
+location_code    varchar(20)   nullable
+location_text    varchar(200)  nullable
+warehouse_code   varchar(20)   nullable
+project_code     varchar(20)   nullable
+requested_by     bigint        nullable  — FK → users.id
+approver_id      bigint        nullable  — FK → users.id
+ref              varchar(50)   nullable
+created_at       timestamp     NOT NULL  DEFAULT now()
+updated_at       timestamp     NOT NULL  DEFAULT now()
+created_by       bigint        NOT NULL
+updated_by       bigint        nullable
+```
+
+---
+
+### purchase_order_line
+> 💡 **หน้ารับเข้า (GRN) ใช้ field นี้ระบุ "PO ที่ยังรับไม่ครบ"**: filter
+> `purchase_order.status IN ('APPROVED','SENT','PARTIALLY_RECEIVED')` ร่วมกับมี line ที่
+> `status IN ('OPEN','PARTIAL')` — ดูรายละเอียด query ใน `CLAUDE.md` (backend) หัวข้อ
+> "Session learnings (2026-07-27)"
+```
+id           bigint        NOT NULL  PK
+po_id        bigint        NOT NULL  — FK → purchase_order.id
+line_no      integer       NOT NULL
+mat_code     varchar(20)   NOT NULL
+pr_line_id   bigint        nullable  — FK → purchase_request_line.id
+qty_ordered  numeric(18,4) NOT NULL
+qty_received numeric(18,4) NOT NULL  DEFAULT 0
+unit_price   numeric(18,4) NOT NULL
+amount       numeric(18,4) nullable
+discount     numeric(18,4) NOT NULL  DEFAULT 0
+disc_type    varchar(10)   NOT NULL  DEFAULT 'pct'
+line_discount numeric(18,4) NOT NULL DEFAULT 0
+line_vat     numeric(18,4) NOT NULL  DEFAULT 0
+line_wht     numeric(18,4) NOT NULL  DEFAULT 0
+line_net     numeric(18,4) NOT NULL  DEFAULT 0
+wht_rate     numeric(5,2)  nullable
+status       varchar(20)   NOT NULL  DEFAULT 'OPEN'  — OPEN|PARTIAL|RECEIVED|CANCELLED
+description  text          nullable
+remarks      text          nullable
+```
+
+---
+
+### purchase_request
+```
+id             bigint      NOT NULL  PK
+pr_no          varchar(30) NOT NULL
+pr_date        date        NOT NULL  DEFAULT CURRENT_DATE
+requested_by   bigint      NOT NULL  — FK → users.id
+warehouse_code varchar(20) nullable
+required_date  date        nullable
+status         varchar(20) NOT NULL  DEFAULT 'DRAFT'
+priority       varchar(20) DEFAULT 'NORMAL'  — LOW|NORMAL|HIGH|URGENT
+remarks        text        nullable
+project_code   varchar(20) nullable
+memo_id        bigint      nullable  — FK → memo.id
+location_text  varchar(200)nullable
+created_at     timestamp   NOT NULL  DEFAULT now()
+updated_at     timestamp   NOT NULL  DEFAULT now()
+created_by     bigint      nullable
+updated_by     bigint      nullable
+```
+
+---
+
+### purchase_request_line
+```
+id              bigint        NOT NULL  PK
+pr_id           bigint        NOT NULL  — FK → purchase_request.id
+line_no         integer       NOT NULL
+mat_code        varchar(20)   NOT NULL
+qty_requested   numeric(18,4) NOT NULL
+qty_reserved    numeric(18,4) NOT NULL  DEFAULT 0
+qty_to_order    numeric(18,4) NOT NULL  DEFAULT 0
+qty_ordered     numeric(18,4) NOT NULL  DEFAULT 0
+status          varchar(20)   NOT NULL  DEFAULT 'OPEN'
+cost_subgroup_id bigint       nullable
+remarks         text          nullable
+```
+
+---
+
+### rfq / rfq_line
+```
+-- rfq
+id, rfq_no, rfq_date, supplier_code, pr_id, status (DEFAULT 'SENT'),
+remarks, created_at, updated_at, created_by, updated_by
+
+-- rfq_line
+id, rfq_id, line_no, mat_code, qty, unit_price, currency (DEFAULT 'THB'),
+lead_time_days, remarks
+```
+
+---
+
+### roles
+```
+id          bigint      NOT NULL  PK
+role_code   varchar(30) NOT NULL  UNIQUE
+role_name   varchar(100)NOT NULL
+description text        nullable
+is_active   boolean     NOT NULL  DEFAULT true
+level       integer     NOT NULL  DEFAULT 0
+department  varchar(100)nullable
+dept_code   varchar(20) nullable
+created_at  timestamp   NOT NULL  DEFAULT now()
+updated_at  timestamp   NOT NULL  DEFAULT now()
+created_by  bigint      nullable
+updated_by  bigint      nullable
+```
+
+---
+
+### role_menu_permissions / role_menus
+```
+-- role_menu_permissions
+id, role_id, menu_id, can_read, can_write, can_update, can_delete,
+created_at, updated_at, created_by, updated_by
+
+-- role_menus
+role_id, menu_id, created_at, created_by
+```
+
+---
+
+### stock_category
+```
+id          bigint      NOT NULL  PK
+code        varchar(20) NOT NULL  UNIQUE
+name        varchar(100)NOT NULL
+description text        nullable
+is_active   boolean     NOT NULL  DEFAULT true
+created_at  timestamp   NOT NULL  DEFAULT now()
+```
+
+---
+
+### stock_count / stock_count_line
+```
+-- stock_count
+id, count_no, warehouse_code, count_date, status (DEFAULT 'DRAFT'),
+remarks, approved_by, approved_at, created_at, updated_at, created_by, updated_by
+
+-- stock_count_line
+id, count_id, mat_code, zone_id, qty_system, qty_counted, qty_diff, remarks
+```
+
+---
+
+### stock_inventory
+```
+id             bigint        NOT NULL  PK
+item_id        bigint        NOT NULL  — FK → stock_item.id
+location_code  varchar(20)   NOT NULL
+warehouse_code varchar(20)   NOT NULL
+qty_on_hand    numeric(18,4) NOT NULL  DEFAULT 0
+qty_reserved   numeric(18,4) NOT NULL  DEFAULT 0
+qty_available  numeric(18,4) nullable  — computed
+updated_at     timestamp     NOT NULL  DEFAULT now()
+```
+
+---
+
+### stock_item
+> ✅ **ระบบ stock ที่ใช้งานจริง (2026-07-27)** — คู่กับ Borrow/Return module, `qty` ตัดตรงนี้ตอน
+> borrow/requisition ได้รับอนุมัติ ผูกกับ `item_id` คนละตัวกับ `mat_code` (ไม่มี FK เชื่อมกัน แม้ค่า
+> จะซ้ำได้) อย่าสับสนกับ `inventory`/`inventory_transaction` ด้านบนซึ่งไม่ได้ใช้งาน
+```
+id             bigint        NOT NULL  PK
+mat_code       varchar(30)   NOT NULL  — ใช้ค่าเดียวกับ material_code แต่ไม่มี FK
+item_name      varchar(255)  NOT NULL
+description    text          nullable
+category_id    bigint        nullable  — FK → stock_category.id
+item_type      varchar(20)   NOT NULL  DEFAULT 'RETURNABLE'  — RETURNABLE|CONSUMABLE
+tracking_type  varchar(10)   NOT NULL  DEFAULT 'sku'  — sku|serial
+unit           varchar(50)   NOT NULL
+qty            numeric(18,4) NOT NULL  DEFAULT 0  ← ตัดที่นี่เมื่อ borrow/requisition อนุมัติ
+unit_cost      numeric(18,4) NOT NULL  DEFAULT 0
+warehouse_code varchar(20)   NOT NULL  DEFAULT 'WH01'
+location_code  varchar(20)   NOT NULL  DEFAULT 'SAL'
+qr_code        text          nullable
+is_active      boolean       NOT NULL  DEFAULT true
+created_at     timestamp     NOT NULL  DEFAULT now()
+updated_at     timestamp     NOT NULL  DEFAULT now()
+created_by     bigint        nullable
+updated_by     bigint        nullable
+```
+
+---
+
+### stock_reservation
+```
+id              bigint        NOT NULL  PK
+reservation_no  varchar(30)   NOT NULL
+item_id         bigint        NOT NULL  — FK → stock_item.id
+location_code   varchar(20)   NOT NULL
+qty_reserved    numeric(18,4) NOT NULL
+qty_fulfilled   numeric(18,4) NOT NULL  DEFAULT 0
+status          varchar(20)   NOT NULL  DEFAULT 'PENDING'
+requested_by    bigint        NOT NULL  — FK → users.id
+needed_by       date          nullable
+purpose         text          nullable
+ref_doc_type    varchar(20)   nullable
+ref_doc_id      bigint        nullable
+created_at      timestamp     NOT NULL  DEFAULT now()
+updated_at      timestamp     NOT NULL  DEFAULT now()
+cancelled_at    timestamp     nullable
+```
+
+---
+
+### stock_transaction
+```
+id            bigint        NOT NULL  PK
+txn_no        varchar(30)   NOT NULL
+txn_type      varchar(20)   NOT NULL
+item_id       bigint        NOT NULL  — FK → stock_item.id
+from_location varchar(20)   nullable
+to_location   varchar(20)   nullable
+qty           numeric(18,4) NOT NULL
+qty_before    numeric(18,4) nullable
+qty_after     numeric(18,4) nullable
+ref_doc_type  varchar(20)   nullable
+ref_doc_id    bigint        nullable
+remarks       text          nullable
+txn_date      date          NOT NULL  DEFAULT CURRENT_DATE
+created_at    timestamp     NOT NULL  DEFAULT now()
+created_by    bigint        NOT NULL
+```
+
+---
+
+### storage_zone
+```
+id            integer     NOT NULL  PK
+warehouse_id  integer     NOT NULL  — FK → warehouse.id
+zone_code     varchar(20) NOT NULL
+zone_name     varchar(100)NOT NULL
+zone_type     varchar(20) nullable
+created_at    timestamp   NOT NULL  DEFAULT now()
+updated_at    timestamp   NOT NULL  DEFAULT now()
+created_by    bigint      nullable
+updated_by    bigint      nullable
+```
+
+---
+
+### supplier
+```
+id                   integer     NOT NULL  PK
+supplier_code        varchar(20) NOT NULL  UNIQUE
+supplier_name        varchar(200)NOT NULL
+supplier_short_name  varchar(50) nullable
+tax_id               varchar(20) nullable
+address              text        nullable
+contact_name         varchar(100)nullable
+contact_phone        varchar(20) nullable
+contact_email        varchar(100)nullable
+office_phone         varchar(20) nullable
+fax                  varchar(20) nullable
+payment_terms        varchar(50) nullable
+currency             varchar(10) DEFAULT 'THB'
+sales_person         varchar(100)nullable
+is_active            boolean     NOT NULL  DEFAULT true
+created_at           timestamp   NOT NULL  DEFAULT now()
+updated_at           timestamp   NOT NULL  DEFAULT now()
+created_by           bigint      nullable
+updated_by           bigint      nullable
+```
+
+---
+
+### unit
+```
+id        integer     NOT NULL  PK
+unit_code varchar(20) NOT NULL  UNIQUE
+unit_name varchar(50) NOT NULL
+is_active boolean     NOT NULL  DEFAULT true
+created_at timestamp  NOT NULL  DEFAULT now()
+updated_at timestamp  NOT NULL  DEFAULT now()
+created_by bigint     nullable
+updated_by bigint     nullable
+```
+
+---
+
+### user_menu_permissions
+```
+id         bigint   NOT NULL  PK
+user_id    bigint   NOT NULL  — FK → users.id
+menu_id    bigint   NOT NULL  — FK → menus.id
+can_read   boolean  NOT NULL  DEFAULT false
+can_write  boolean  NOT NULL  DEFAULT false
+can_update boolean  NOT NULL  DEFAULT false
+can_delete boolean  NOT NULL  DEFAULT false
+created_at timestamp NOT NULL DEFAULT now()
+updated_at timestamp NOT NULL DEFAULT now()
+created_by bigint   nullable
+updated_by bigint   nullable
+```
+
+---
+
+### users
+```
+id            bigint      NOT NULL  PK
+username      varchar(50) NOT NULL  UNIQUE
+full_name     varchar(200)NOT NULL
+email         varchar(100)nullable
+password_hash text        nullable
+is_active     boolean     NOT NULL  DEFAULT true
+employee_code varchar(30) nullable
+department    varchar(100)nullable
+dept_code     varchar(20) nullable
+location_code varchar(20) nullable
+created_at    timestamp   NOT NULL  DEFAULT now()
+updated_at    timestamp   NOT NULL  DEFAULT now()
+created_by    bigint      nullable
+updated_by    bigint      nullable
+```
+
+---
+
+### user_roles
+```
+user_id    bigint    NOT NULL  — FK → users.id
+role_id    bigint    NOT NULL  — FK → roles.id
+created_at timestamp NOT NULL  DEFAULT now()
+created_by bigint    nullable
+```
+
+---
+
+### warehouse
+```
+id             integer     NOT NULL  PK
+warehouse_code varchar(20) NOT NULL  UNIQUE
+warehouse_name varchar(100)NOT NULL
+address        text        nullable
+is_active      boolean     NOT NULL  DEFAULT true
+created_at     timestamp   NOT NULL  DEFAULT now()
+updated_at     timestamp   NOT NULL  DEFAULT now()
+created_by     bigint      nullable
+updated_by     bigint      nullable
+```
+
+---
+
+## Tables ที่อาจไม่ได้ใช้ (ตรวจสอบ row_count ก่อน DROP)
+
+```sql
+SELECT
+    t.table_name,
+    (xpath('/row/cnt/text()',
+        query_to_xml('SELECT COUNT(*) AS cnt FROM public.' || t.table_name, false, false, ''))
+    )[1]::text::int AS row_count
+FROM information_schema.tables t
+WHERE t.table_schema = 'public'
+  AND t.table_type = 'BASE TABLE'
+ORDER BY row_count ASC, t.table_name;
+```
+
+ผลที่ได้ row_count = 0 ให้พิจารณา DROP ทีละตัว ระวัง FK constraint ก่อน DROP ทุกครั้ง

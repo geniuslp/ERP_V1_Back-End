@@ -1155,7 +1155,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Writes grn/grn_line, increments stock_item.qty, logs stock_transaction (IN), updates purchase_order_line/purchase_order status",
+                "description": "Writes grn/grn_line, upserts stock_inventory.qty_on_hand per item+location, rolls up stock_item.qty as the sum, logs stock_transaction (IN), updates purchase_order_line/purchase_order status",
                 "consumes": [
                     "application/json"
                 ],
@@ -5197,6 +5197,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/po/available-prs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns COMPLETED PRs that do not already have an active (non-CANCELLED) PO.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "List PRs eligible to be linked to a new PO",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/next-number": {
             "get": {
                 "security": [
@@ -5222,6 +5247,53 @@ const docTemplate = `{
                 }
             }
         },
+        "/po/receivable": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns approved POs that have not been fully received yet: status=APPROVED, status_receive IN (NOT_SENT, SENT, PARTIALLY_RECEIVED), and at least one line still OPEN or PARTIAL.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "List POs that are eligible for goods receiving (GRN)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "search by po_no",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page_size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/po/search": {
             "get": {
                 "security": [
@@ -5229,13 +5301,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Matches POs with status=APPROVED and status_receive IN (NOT_SENT, SENT, PARTIALLY_RECEIVED).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "GoodsReceipt"
                 ],
-                "summary": "Search APPROVED/PARTIALLY_RECEIVED Purchase Orders by partial po_no match",
+                "summary": "Search receivable Purchase Orders by partial po_no match",
                 "parameters": [
                     {
                         "type": "string",
@@ -5879,6 +5952,46 @@ const docTemplate = `{
                 }
             }
         },
+        "/po/{id}/receivable-lines": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns purchase_order_line rows with status IN (OPEN, PARTIAL) for the given PO, including qty_remaining = qty_ordered - qty_received, so the GRN form can prevent over-receiving.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "List the not-yet-fully-received lines of a PO",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/{id}/reject": {
             "put": {
                 "security": [
@@ -5943,6 +6056,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Marks the PO as sent to the supplier. Only touches status_receive (NOT_SENT -\u003e SENT); the approval status field is left untouched.",
                 "produces": [
                     "application/json"
                 ],
@@ -8147,6 +8261,64 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/users/{id}/roles": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Replace all roles assigned to a user (delete existing, insert submitted role_ids)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Update user roles",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Role IDs",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateUserRolesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -8865,6 +9037,9 @@ const docTemplate = `{
                         "amt"
                     ]
                 },
+                "discount": {
+                    "type": "number"
+                },
                 "mat_code": {
                     "type": "string"
                 },
@@ -8880,6 +9055,9 @@ const docTemplate = `{
                 "unit_price": {
                     "type": "number",
                     "minimum": 0
+                },
+                "wht_rate": {
+                    "type": "number"
                 }
             }
         },
@@ -8896,6 +9074,13 @@ const docTemplate = `{
                 },
                 "currency": {
                     "type": "string"
+                },
+                "discount_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
                 },
                 "expected_date": {
                     "type": "string"
@@ -8940,6 +9125,15 @@ const docTemplate = `{
                 },
                 "supplier_code": {
                     "type": "string"
+                },
+                "use_discount": {
+                    "type": "boolean"
+                },
+                "use_vat": {
+                    "type": "boolean"
+                },
+                "use_wht": {
+                    "type": "boolean"
                 },
                 "warehouse_code": {
                     "type": "string"
@@ -9857,19 +10051,43 @@ const docTemplate = `{
                 "amount": {
                     "type": "number"
                 },
+                "brand": {
+                    "type": "string"
+                },
+                "current_stock": {
+                    "type": "number"
+                },
                 "description": {
                     "type": "string"
                 },
                 "disc_type": {
                     "type": "string"
                 },
+                "discount": {
+                    "type": "number"
+                },
+                "line_discount": {
+                    "type": "number"
+                },
                 "line_id": {
                     "type": "integer"
+                },
+                "line_net": {
+                    "type": "number"
                 },
                 "line_no": {
                     "type": "integer"
                 },
+                "line_vat": {
+                    "type": "number"
+                },
+                "line_wht": {
+                    "type": "number"
+                },
                 "mat_code": {
+                    "type": "string"
+                },
+                "mat_name": {
                     "type": "string"
                 },
                 "po_id": {
@@ -9887,10 +10105,16 @@ const docTemplate = `{
                 "remarks": {
                     "type": "string"
                 },
+                "spec": {
+                    "type": "string"
+                },
                 "status": {
                     "type": "string"
                 },
                 "unit_price": {
+                    "type": "number"
+                },
+                "wht_rate": {
                     "type": "number"
                 }
             }
@@ -10031,6 +10255,12 @@ const docTemplate = `{
                 "project_name": {
                     "type": "string"
                 },
+                "remaining_amount": {
+                    "type": "number"
+                },
+                "spent_amount": {
+                    "type": "number"
+                },
                 "start_date": {
                     "type": "string"
                 },
@@ -10048,8 +10278,17 @@ const docTemplate = `{
         "models.PurchaseOrder": {
             "type": "object",
             "properties": {
+                "approver_id": {
+                    "type": "integer"
+                },
                 "can_edit_approved": {
                     "type": "boolean"
+                },
+                "contact_email": {
+                    "type": "string"
+                },
+                "contact_phone": {
+                    "type": "string"
                 },
                 "created_at": {
                     "type": "string"
@@ -10060,7 +10299,16 @@ const docTemplate = `{
                 "currency": {
                     "type": "string"
                 },
+                "discount_amount": {
+                    "type": "number"
+                },
+                "discount_type": {
+                    "type": "string"
+                },
                 "expected_date": {
+                    "type": "string"
+                },
+                "fax": {
                     "type": "string"
                 },
                 "lines": {
@@ -10074,6 +10322,9 @@ const docTemplate = `{
                 },
                 "net_amount": {
                     "type": "number"
+                },
+                "office_phone": {
+                    "type": "string"
                 },
                 "payment_terms": {
                     "type": "string"
@@ -10090,7 +10341,13 @@ const docTemplate = `{
                 "pr_id": {
                     "type": "integer"
                 },
+                "pr_no": {
+                    "type": "string"
+                },
                 "project_code": {
+                    "type": "string"
+                },
+                "ref": {
                     "type": "string"
                 },
                 "remarks": {
@@ -10105,7 +10362,13 @@ const docTemplate = `{
                 "rfq_id": {
                     "type": "integer"
                 },
+                "sales_person": {
+                    "type": "string"
+                },
                 "status": {
+                    "type": "string"
+                },
+                "status_receive": {
                     "type": "string"
                 },
                 "supplier_code": {
@@ -10117,11 +10380,23 @@ const docTemplate = `{
                 "updated_at": {
                     "type": "string"
                 },
+                "use_discount": {
+                    "type": "boolean"
+                },
+                "use_vat": {
+                    "type": "boolean"
+                },
+                "use_wht": {
+                    "type": "boolean"
+                },
                 "vat_amount": {
                     "type": "number"
                 },
                 "warehouse_code": {
                     "type": "string"
+                },
+                "wht_amount": {
+                    "type": "number"
                 }
             }
         },
@@ -10161,6 +10436,9 @@ const docTemplate = `{
                 "priority": {
                     "type": "string"
                 },
+                "project_code": {
+                    "type": "string"
+                },
                 "remarks": {
                     "type": "string"
                 },
@@ -10177,6 +10455,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "warehouse_code": {
+                    "type": "string"
+                },
+                "warehouse_name": {
                     "type": "string"
                 }
             }
@@ -10676,6 +10957,20 @@ const docTemplate = `{
                 },
                 "role_id": {
                     "type": "integer"
+                }
+            }
+        },
+        "models.UpdateUserRolesRequest": {
+            "type": "object",
+            "required": [
+                "role_ids"
+            ],
+            "properties": {
+                "role_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 }
             }
         },

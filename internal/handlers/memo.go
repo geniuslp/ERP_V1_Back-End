@@ -163,7 +163,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 	if f.ExcludeUsedByPR == "true" {
 		where += ` AND NOT EXISTS (
 			SELECT 1 FROM public.purchase_request pr
-			WHERE pr.memo_id = m.id AND pr.status = 'COMPLETED'
+			WHERE pr.memo_id = m.id
 		)`
 	}
 
@@ -388,9 +388,9 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 		if hasConfig {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO public.approval_request
-				    (doc_type, doc_id, doc_no, step_no, requested_by, status)
-				VALUES ('MEMO',$1,$2,1,$3,'PENDING')`,
-				memoID, memoNo, claims.UserID,
+				    (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
+				VALUES ('MEMO',$1,$2,1,$3,$4,'PENDING')`,
+				memoID, memoNo, claims.UserID, req.ApproverID,
 			); err != nil {
 				return err
 			}
@@ -558,9 +558,10 @@ func (h *MemoHandler) Submit(c *fiber.Ctx) error {
 
 	var currentStatus string
 	var requestedBy int64
+	var approverID int64
 	if err := h.db.QueryRow(ctx,
-		`SELECT status, requested_by FROM public.memo WHERE id=$1`, id,
-	).Scan(&currentStatus, &requestedBy); err != nil {
+		`SELECT status, requested_by, approver_id FROM public.memo WHERE id=$1`, id,
+	).Scan(&currentStatus, &requestedBy, &approverID); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "memo not found")
 	}
 	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
@@ -606,9 +607,9 @@ func (h *MemoHandler) Submit(c *fiber.Ctx) error {
 
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO public.approval_request
-			    (doc_type, doc_id, doc_no, step_no, requested_by, status)
-			VALUES ('MEMO',$1,$2,1,$3,'PENDING')`,
-			id, memoNo, claims.UserID,
+			    (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
+			VALUES ('MEMO',$1,$2,1,$3,$4,'PENDING')`,
+			id, memoNo, claims.UserID, approverID,
 		); err != nil {
 			return err
 		}

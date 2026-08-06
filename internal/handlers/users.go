@@ -7,6 +7,7 @@ import (
 
 	"erp-api/internal/auth"
 	"erp-api/internal/config"
+	"erp-api/internal/middleware"
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
@@ -37,22 +38,24 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	var query string
 	switch role {
 	case "approver":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, u.dept_code, u.is_active, u.created_at, u.updated_at
-				 FROM users u WHERE u.department = 'บริหาร' AND u.is_active = true ORDER BY u.full_name`
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
+				 WHERE u.department = 'บริหาร' AND u.is_active = true ORDER BY u.full_name`
 	case "requester":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, u.dept_code, u.is_active, u.created_at, u.updated_at
-				 FROM users u
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE (u.department IN ('วิศวกรรม', 'ฝ่ายจัดซื้อ') OR u.department IS NULL)
 				 AND u.is_active = true
 				 ORDER BY u.full_name`
 	case "engineering":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, u.dept_code, u.is_active, u.created_at, u.updated_at
-				 FROM users u
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.department = 'วิศวกรรม' AND u.is_active = true
 				 ORDER BY u.full_name`
 	default:
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, u.dept_code, u.is_active, u.created_at, u.updated_at
-				 FROM users u ORDER BY u.id`
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
+				 ORDER BY u.id`
 	}
 
 	rows, err := h.db.Query(context.Background(), query)
@@ -179,13 +182,14 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
-		"id":        userID,
-		"username":  username,
-		"full_name": fullName,
-		"email":     email,
-		"dept_code": deptCode,
-		"dept_name": deptName,
-		"roles":     roleInfos,
+		"id":         userID,
+		"username":   username,
+		"full_name":  fullName,
+		"email":      email,
+		"dept_code":  deptCode,
+		"dept_name":  deptName,
+		"department": deptName,
+		"roles":      roleInfos,
 	}})
 }
 
@@ -325,6 +329,69 @@ func (h *UsersHandler) Update(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"success": true, "message": "user updated"})
+}
+
+// UpdateRoles godoc
+// @Summary      Update user roles
+// @Description  Replace all roles assigned to a user (delete existing, insert submitted role_ids)
+// @Tags         Users
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int                          true  "User ID"
+// @Param        body  body  models.UpdateUserRolesRequest true  "Role IDs"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /users/{id}/roles [put]
+func (h *UsersHandler) UpdateRoles(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+
+	var req models.UpdateUserRolesRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if len(req.RoleIDs) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "role_ids must not be empty")
+	}
+
+	claims := middleware.GetClaims(c)
+
+	var count int
+	if err := h.db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM users WHERE id=$1`, id).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "user not found")
+	}
+
+	tx, err := h.db.Begin(context.Background())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+
+	if _, err := tx.Exec(context.Background(), `DELETE FROM user_roles WHERE user_id=$1`, id); err != nil {
+		return err
+	}
+
+	for _, roleID := range req.RoleIDs {
+		if _, err := tx.Exec(context.Background(),
+			`INSERT INTO user_roles (user_id, role_id, created_by) VALUES ($1, $2, $3)`,
+			id, roleID, claims.UserID); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid role_id")
+		}
+	}
+
+	if err := tx.Commit(context.Background()); err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{"success": true, "message": "roles updated"})
 }
 
 // ResetPassword godoc

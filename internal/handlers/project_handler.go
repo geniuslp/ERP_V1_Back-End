@@ -25,7 +25,14 @@ var validProjectStatus = map[string]bool{"ACTIVE": true, "INACTIVE": true, "CLOS
 
 const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code,
 	l.location_name, p.owner_id, u.full_name AS owner_name,
-	p.budget_amount, p.consultant_name,
+	p.budget_amount,
+	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
+		WHERE po.project_code = p.project_code
+		  AND po.status = 'APPROVED'), 0) AS spent_amount,
+	p.budget_amount - COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
+		WHERE po.project_code = p.project_code
+		  AND po.status = 'APPROVED'), 0) AS remaining_amount,
+	p.consultant_name,
 	p.start_date, p.end_date, p.status, p.is_active,
 	p.created_at, p.updated_at, p.created_by, p.updated_by`
 
@@ -37,7 +44,7 @@ const projectSelectFrom = `
 func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 	return row.Scan(&p.Id, &p.ProjectCode, &p.ProjectName, &p.LocationCode,
 		&p.LocationName, &p.OwnerID, &p.OwnerName,
-		&p.BudgetAmount, &p.ConsultantName,
+		&p.BudgetAmount, &p.SpentAmount, &p.RemainingAmount, &p.ConsultantName,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }

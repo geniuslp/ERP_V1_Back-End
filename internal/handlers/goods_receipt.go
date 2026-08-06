@@ -25,7 +25,8 @@ func NewGoodsReceiptHandler(db *pgxpool.Pool) *GoodsReceiptHandler {
 // ─── 1. Search approved PO ─────────────────────────────────────────────────
 
 // SearchApprovedPO godoc
-// @Summary      Search APPROVED/PARTIALLY_RECEIVED Purchase Orders by partial po_no match
+// @Summary      Search receivable Purchase Orders by partial po_no match
+// @Description  Matches POs with status=APPROVED and status_receive IN (NOT_SENT, SENT, PARTIALLY_RECEIVED).
 // @Tags         GoodsReceipt
 // @Security     BearerAuth
 // @Produce      json
@@ -42,10 +43,11 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(ctx, `
 		SELECT id, po_no, po_date::text, expected_date::text, supplier_code,
-		       COALESCE(warehouse_code, ''), status, currency, COALESCE(net_amount, 0)
+		       COALESCE(warehouse_code, ''), status, status_receive, currency, COALESCE(net_amount, 0)
 		FROM purchase_order
 		WHERE po_no ILIKE '%' || $1 || '%'
-		  AND status IN ('APPROVED', 'PARTIALLY_RECEIVED')
+		  AND status = 'APPROVED'
+		  AND status_receive IN ('NOT_SENT', 'SENT', 'PARTIALLY_RECEIVED')
 		ORDER BY po_date DESC, po_no ASC`, poNo)
 	if err != nil {
 		return err
@@ -60,6 +62,7 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 		SupplierCode  string  `json:"supplier_code"`
 		WarehouseCode string  `json:"warehouse_code"`
 		Status        string  `json:"status"`
+		StatusReceive string  `json:"status_receive"`
 		Currency      string  `json:"currency"`
 		NetAmount     float64 `json:"net_amount"`
 	}
@@ -67,7 +70,7 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 	for rows.Next() {
 		var p poResp
 		if err := rows.Scan(&p.POID, &p.PONo, &p.PODate, &p.ExpectedDate, &p.SupplierCode,
-			&p.WarehouseCode, &p.Status, &p.Currency, &p.NetAmount); err != nil {
+			&p.WarehouseCode, &p.Status, &p.StatusReceive, &p.Currency, &p.NetAmount); err != nil {
 			return err
 		}
 		results = append(results, p)
@@ -115,7 +118,7 @@ func generateGRNNo(ctx context.Context, db *pgxpool.Pool) (string, error) {
 
 // Receive godoc
 // @Summary      Create Goods Receipt (single full receive) against an APPROVED PO
-// @Description  Writes grn/grn_line, increments stock_item.qty, logs stock_transaction (IN), updates purchase_order_line/purchase_order status
+// @Description  Writes grn/grn_line, upserts stock_inventory.qty_on_hand per item+location, rolls up stock_item.qty as the sum, logs stock_transaction (IN), updates purchase_order_line/purchase_order status
 // @Tags         GoodsReceipt
 // @Security     BearerAuth
 // @Accept       json
@@ -144,12 +147,16 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
-	var poStatus string
-	if err := h.db.QueryRow(ctx, `SELECT status FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus); err != nil {
+	var poStatus, poStatusReceive string
+	var poLocationCode *string
+	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, location_code FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus, &poStatusReceive, &poLocationCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
-	if poStatus != "APPROVED" && poStatus != "PARTIALLY_RECEIVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "PO is not in a receivable status (APPROVED/PARTIALLY_RECEIVED), current status: "+poStatus)
+	if poStatus != "APPROVED" {
+		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved, current status: "+poStatus)
+	}
+	if poStatusReceive != "NOT_SENT" && poStatusReceive != "SENT" && poStatusReceive != "PARTIALLY_RECEIVED" {
+		return fiber.NewError(fiber.StatusBadRequest, "PO is not in a receivable status_receive (NOT_SENT/SENT/PARTIALLY_RECEIVED), current: "+poStatusReceive)
 	}
 
 	grnNo, err := generateGRNNo(ctx, h.db)
@@ -191,17 +198,52 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 		}
 
 		var itemID int64
-		var qtyAfter float64
-		err := tx.QueryRow(ctx, `
-			UPDATE stock_item SET qty = qty + $1, updated_at = NOW()
-			WHERE mat_code = $2
-			RETURNING id, qty`, line.AddQty, line.MatCode,
-		).Scan(&itemID, &qtyAfter)
-		if err != nil {
+		var itemLocationCode string
+		if err := tx.QueryRow(ctx, `
+			SELECT id, location_code FROM stock_item WHERE mat_code = $1`, line.MatCode,
+		).Scan(&itemID, &itemLocationCode); err != nil {
 			lineErrors = append(lineErrors, fmt.Sprintf("mat_code %s: not found in stock_item — cannot receive into a non-existent stock item", line.MatCode))
 			continue
 		}
-		qtyBefore := qtyAfter - line.AddQty
+
+		// PO's location_code wins when set; otherwise fall back to the item's
+		// own default location (stock_inventory.location_code has a FK to
+		// location, so this must always resolve to a real location row).
+		locationCode := itemLocationCode
+		if poLocationCode != nil && *poLocationCode != "" {
+			locationCode = *poLocationCode
+		}
+
+		var qtyBefore float64
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(qty_on_hand), 0) FROM stock_inventory WHERE item_id = $1`,
+			itemID,
+		).Scan(&qtyBefore); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO stock_inventory (item_id, location_code, warehouse_code, qty_on_hand, updated_at)
+			VALUES ($1, $2, $3, $4, NOW())
+			ON CONFLICT (item_id, location_code) DO UPDATE
+			SET qty_on_hand = stock_inventory.qty_on_hand + EXCLUDED.qty_on_hand,
+			    warehouse_code = EXCLUDED.warehouse_code,
+			    updated_at = NOW()`,
+			itemID, locationCode, req.WarehouseCode, line.AddQty,
+		); err != nil {
+			return fmt.Errorf("upsert stock_inventory for mat_code %s: %w", line.MatCode, err)
+		}
+
+		var qtyAfter float64
+		if err := tx.QueryRow(ctx, `
+			UPDATE stock_item SET qty = (
+				SELECT COALESCE(SUM(qty_on_hand), 0) FROM stock_inventory WHERE item_id = $1
+			), updated_at = NOW()
+			WHERE id = $1
+			RETURNING qty`, itemID,
+		).Scan(&qtyAfter); err != nil {
+			return err
+		}
 
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO grn_line (grn_id, line_no, po_line_id, mat_code, qty_received, qty_accepted, qty_rejected)
@@ -246,11 +288,17 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 		req.POID).Scan(&openCount); err != nil {
 		return err
 	}
-	newPOStatus := "PARTIALLY_RECEIVED"
+	newStatusReceive := "PARTIALLY_RECEIVED"
 	if openCount == 0 {
-		newPOStatus = "RECEIVED"
+		newStatusReceive = "RECEIVED"
 	}
-	if _, err := tx.Exec(ctx, `UPDATE purchase_order SET status=$1, updated_at=NOW() WHERE id=$2`, newPOStatus, req.POID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE purchase_order SET status_receive=$1, updated_at=NOW() WHERE id=$2`, newStatusReceive, req.POID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO po_status_log (po_id, from_status, to_status, changed_by, remarks)
+		VALUES ($1,$2,$3,$4,'Goods received')`, req.POID, poStatusReceive, newStatusReceive, claims.UserID,
+	); err != nil {
 		return err
 	}
 
@@ -261,9 +309,9 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
-			"grn_id":    grnID,
-			"grn_no":    grnNo,
-			"po_status": newPOStatus,
+			"grn_id":         grnID,
+			"grn_no":         grnNo,
+			"status_receive": newStatusReceive,
 		},
 	})
 }
