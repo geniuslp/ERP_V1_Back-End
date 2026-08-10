@@ -1703,6 +1703,48 @@ const docTemplate = `{
                 }
             }
         },
+        "/master/brands": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "List brand rows by spec_id",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Spec ID",
+                        "name": "spec_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/fiber.Map"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/cost-code/export": {
             "get": {
                 "security": [
@@ -2920,6 +2962,48 @@ const docTemplate = `{
                 }
             }
         },
+        "/master/specs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "List spec_size rows by mat_name_id",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Material Name ID",
+                        "name": "mat_name_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/fiber.Map"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/subgroups": {
             "get": {
                 "security": [
@@ -2933,7 +3017,15 @@ const docTemplate = `{
                 "tags": [
                     "Master"
                 ],
-                "summary": "List active subgroups",
+                "summary": "List active subgroups (optionally filtered by group_id)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Group ID (filter)",
+                        "name": "group_id",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -5217,6 +5309,89 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/line-items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is\nnot considered), one object per PO with a nested \"lines\" array. mat_code/job_code filters\nare applied at the line level: only lines matching the filter appear in \"lines\", and a PO\nis dropped from the result entirely if none of its lines match. Pagination (page/page_size)\npaginates POs, not lines.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "List approved POs with their line items (grouped by PO)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "po_date \u003e= (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po_date \u003c= (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po_no ILIKE filter",
+                        "name": "po_no",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "mat_code ILIKE filter — only matching lines are kept, POs with no match are excluded",
+                        "name": "mat_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "requested_by user id filter",
+                        "name": "requested_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "resolved cost_job.job_code filter — only matching lines are kept, POs with no match are excluded",
+                        "name": "job_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po.project_code filter",
+                        "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page (paginates POs)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page_size (POs per page)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
                         }
                     }
                 }
@@ -9027,6 +9202,9 @@ const docTemplate = `{
                 "unit_price"
             ],
             "properties": {
+                "cost_subgroup_id": {
+                    "type": "integer"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -10054,6 +10232,10 @@ const docTemplate = `{
                 "brand": {
                     "type": "string"
                 },
+                "cost_subgroup_id": {
+                    "description": "Cost Code (job) — chosen per line item, mirrors purchase_request_line.cost_subgroup_id.",
+                    "type": "integer"
+                },
                 "current_stock": {
                     "type": "number"
                 },
@@ -10065,6 +10247,10 @@ const docTemplate = `{
                 },
                 "discount": {
                     "type": "number"
+                },
+                "job_code": {
+                    "description": "resolved via cost_subgroup -\u003e cost_group -\u003e cost_job, read-only",
+                    "type": "string"
                 },
                 "line_discount": {
                     "type": "number"
@@ -10359,6 +10545,10 @@ const docTemplate = `{
                 "requested_by_name": {
                     "type": "string"
                 },
+                "revision_round": {
+                    "description": "RevisionRound is how many times this PO has been edited-and-resent for re-approval\n(COUNT of po_edit_log rows for this PO). 0 = original, never edited. po_no itself never\nchanges; the frontend composes a display suffix like \"#R2\" from this when \u003e 0.",
+                    "type": "integer"
+                },
                 "rfq_id": {
                     "type": "integer"
                 },
@@ -10372,6 +10562,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "supplier_code": {
+                    "type": "string"
+                },
+                "supplier_name": {
                     "type": "string"
                 },
                 "total_amount": {
@@ -10391,6 +10584,9 @@ const docTemplate = `{
                 },
                 "vat_amount": {
                     "type": "number"
+                },
+                "warehouse_address": {
+                    "type": "string"
                 },
                 "warehouse_code": {
                     "type": "string"
@@ -10811,6 +11007,9 @@ const docTemplate = `{
         "models.UpdatePOLineRequest": {
             "type": "object",
             "properties": {
+                "cost_subgroup_id": {
+                    "type": "integer"
+                },
                 "description": {
                     "type": "string"
                 },

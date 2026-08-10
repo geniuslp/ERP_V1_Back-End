@@ -739,6 +739,15 @@ type PRLineWithPOStatus struct {
 	LastPrice     *float64           `json:"last_price"`      // nullable: no history
 	LastPriceDate *string            `json:"last_price_date"` // nullable, "2006-01-02"
 	PriceHistory  []PriceHistoryItem `json:"price_history"`
+
+	// Cost Code — cost_subgroup_id is carried over to the PO line automatically when this PR
+	// line is converted. job_code/job_name are the primary display fields for the frontend
+	// (job level, not subgroup level); cost_code/cost_subgroup_name are kept for other callers.
+	CostSubgroupID   *int64  `json:"cost_subgroup_id,omitempty"`
+	CostCode         *string `json:"cost_code,omitempty"`          // resolved combined code, e.g. "LE30300"
+	CostSubgroupName *string `json:"cost_subgroup_name,omitempty"` // resolved cost_subgroup.subgroup_name
+	JobCode          *string `json:"job_code,omitempty"`           // resolved cost_job.job_code, e.g. "P"
+	JobName          *string `json:"job_name,omitempty"`           // resolved cost_job.job_name, e.g. "Metal Structure"
 }
 
 type PRLinesWithPOStatusResponse struct {
@@ -773,45 +782,51 @@ type CreatePRLine struct {
 // ─── Purchase Order ───────────────────────────────────────────────────────────
 
 type PurchaseOrder struct {
-	POID            int64     `json:"po_id" db:"po_id"`
-	PONo            string    `json:"po_no" db:"po_no"`
-	PODate          time.Time `json:"po_date" db:"po_date"`
-	SupplierCode    string    `json:"supplier_code" db:"supplier_code"`
-	PRID            *int64    `json:"pr_id,omitempty" db:"pr_id"`
-	PRNo            *string   `json:"pr_no,omitempty"`
-	RFQID           *int64    `json:"rfq_id,omitempty" db:"rfq_id"`
-	Ref             *string   `json:"ref,omitempty" db:"ref"`
-	LocationText    *string   `json:"location_text,omitempty" db:"location_text"`
-	WarehouseCode   *string   `json:"warehouse_code,omitempty" db:"warehouse_code"`
-	ProjectCode     *string   `json:"project_code,omitempty" db:"project_code"`
-	RequestedBy     *int64    `json:"requested_by,omitempty" db:"requested_by"`
-	RequestedByName string    `json:"requested_by_name,omitempty"`
-	ApproverID      *int64    `json:"approver_id,omitempty"`
-	Currency        string    `json:"currency" db:"currency"`
-	TotalAmount     float64   `json:"total_amount" db:"total_amount"`
-	VATAmount       float64   `json:"vat_amount" db:"vat_amount"`
-	NetAmount       float64   `json:"net_amount" db:"net_amount"`
-	ExpectedDate    *string   `json:"expected_date,omitempty" db:"expected_date"`
-	UseDiscount     *bool     `json:"use_discount,omitempty"`
-	DiscountType    *string   `json:"discount_type,omitempty"`
-	DiscountAmount  *float64  `json:"discount_amount,omitempty"`
-	UseVAT          *bool     `json:"use_vat,omitempty"`
-	UseWHT          *bool     `json:"use_wht,omitempty"`
-	WHTAmount       *float64  `json:"wht_amount,omitempty"`
-	Status          string    `json:"status" db:"status"`
-	StatusReceive   string    `json:"status_receive" db:"status_receive"`
-	PaymentTerms    *string   `json:"payment_terms,omitempty" db:"payment_terms"`
-	Remarks         *string   `json:"remarks,omitempty" db:"remarks"`
-	CreatedBy       int64     `json:"created_by" db:"created_by"`
-	CreatedAt       time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
-	CanEditApproved bool      `json:"can_edit_approved"`
-	OfficePhone     *string   `json:"office_phone,omitempty"`
-	Fax             *string   `json:"fax,omitempty"`
-	SalesPerson     *string   `json:"sales_person,omitempty"`
-	ContactEmail    *string   `json:"contact_email,omitempty"`
-	ContactPhone    *string   `json:"contact_phone,omitempty"`
-	Lines           []POLine  `json:"lines,omitempty"`
+	POID             int64     `json:"po_id" db:"po_id"`
+	PONo             string    `json:"po_no" db:"po_no"`
+	PODate           time.Time `json:"po_date" db:"po_date"`
+	SupplierCode     string    `json:"supplier_code" db:"supplier_code"`
+	SupplierName     string    `json:"supplier_name,omitempty"`
+	PRID             *int64    `json:"pr_id,omitempty" db:"pr_id"`
+	PRNo             *string   `json:"pr_no,omitempty"`
+	RFQID            *int64    `json:"rfq_id,omitempty" db:"rfq_id"`
+	Ref              *string   `json:"ref,omitempty" db:"ref"`
+	LocationText     *string   `json:"location_text,omitempty" db:"location_text"`
+	WarehouseCode    *string   `json:"warehouse_code,omitempty" db:"warehouse_code"`
+	WarehouseAddress *string   `json:"warehouse_address,omitempty"`
+	ProjectCode      *string   `json:"project_code,omitempty" db:"project_code"`
+	RequestedBy      *int64    `json:"requested_by,omitempty" db:"requested_by"`
+	RequestedByName  string    `json:"requested_by_name,omitempty"`
+	ApproverID       *int64    `json:"approver_id,omitempty"`
+	Currency         string    `json:"currency" db:"currency"`
+	TotalAmount      float64   `json:"total_amount" db:"total_amount"`
+	VATAmount        float64   `json:"vat_amount" db:"vat_amount"`
+	NetAmount        float64   `json:"net_amount" db:"net_amount"`
+	ExpectedDate     *string   `json:"expected_date,omitempty" db:"expected_date"`
+	UseDiscount      *bool     `json:"use_discount,omitempty"`
+	DiscountType     *string   `json:"discount_type,omitempty"`
+	DiscountAmount   *float64  `json:"discount_amount,omitempty"`
+	UseVAT           *bool     `json:"use_vat,omitempty"`
+	UseWHT           *bool     `json:"use_wht,omitempty"`
+	WHTAmount        *float64  `json:"wht_amount,omitempty"`
+	Status           string    `json:"status" db:"status"`
+	StatusReceive    string    `json:"status_receive" db:"status_receive"`
+	PaymentTerms     *string   `json:"payment_terms,omitempty" db:"payment_terms"`
+	Remarks          *string   `json:"remarks,omitempty" db:"remarks"`
+	CreatedBy        int64     `json:"created_by" db:"created_by"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
+	CanEditApproved  bool      `json:"can_edit_approved"`
+	// RevisionRound is how many times this PO has been edited-and-resent for re-approval
+	// (COUNT of po_edit_log rows for this PO). 0 = original, never edited. po_no itself never
+	// changes; the frontend composes a display suffix like "#R2" from this when > 0.
+	RevisionRound int      `json:"revision_round"`
+	OfficePhone   *string  `json:"office_phone,omitempty"`
+	Fax           *string  `json:"fax,omitempty"`
+	SalesPerson   *string  `json:"sales_person,omitempty"`
+	ContactEmail  *string  `json:"contact_email,omitempty"`
+	ContactPhone  *string  `json:"contact_phone,omitempty"`
+	Lines         []POLine `json:"lines,omitempty"`
 }
 
 type POLine struct {
@@ -838,6 +853,10 @@ type POLine struct {
 	SpecDescription *string  `json:"spec,omitempty"`
 	BrandName       *string  `json:"brand,omitempty"`
 	CurrentStock    float64  `json:"current_stock"`
+
+	// Cost Code (job) — chosen per line item, mirrors purchase_request_line.cost_subgroup_id.
+	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
+	JobCode        *string `json:"job_code,omitempty"` // resolved via cost_subgroup -> cost_group -> cost_job, read-only
 }
 
 type CreatePORequest struct {
@@ -872,6 +891,8 @@ type CreatePOLine struct {
 	WhtRate     *float64 `json:"wht_rate,omitempty"`
 	Description *string  `json:"description,omitempty"`
 	Remarks     *string  `json:"remarks,omitempty"`
+
+	CostSubgroupID *int64 `json:"cost_subgroup_id,omitempty"`
 }
 
 type AddPOLinesRequest struct {
@@ -879,8 +900,9 @@ type AddPOLinesRequest struct {
 }
 
 type UpdatePOLineRequest struct {
-	Description *string `json:"description"`
-	DiscType    *string `json:"disc_type" validate:"omitempty,oneof=pct amt"`
+	Description    *string `json:"description"`
+	DiscType       *string `json:"disc_type" validate:"omitempty,oneof=pct amt"`
+	CostSubgroupID *int64  `json:"cost_subgroup_id"`
 }
 
 // EditApprovedPORequest is the body for PUT /po/{id}/edit-approved — editing a PO that is

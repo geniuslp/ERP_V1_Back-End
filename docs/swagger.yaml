@@ -478,6 +478,8 @@ definitions:
     type: object
   models.CreatePOLine:
     properties:
+      cost_subgroup_id:
+        type: integer
       description:
         type: string
       disc_type:
@@ -1174,6 +1176,9 @@ definitions:
         type: number
       brand:
         type: string
+      cost_subgroup_id:
+        description: Cost Code (job) — chosen per line item, mirrors purchase_request_line.cost_subgroup_id.
+        type: integer
       current_stock:
         type: number
       description:
@@ -1182,6 +1187,9 @@ definitions:
         type: string
       discount:
         type: number
+      job_code:
+        description: resolved via cost_subgroup -> cost_group -> cost_job, read-only
+        type: string
       line_discount:
         type: number
       line_id:
@@ -1377,6 +1385,12 @@ definitions:
         type: integer
       requested_by_name:
         type: string
+      revision_round:
+        description: |-
+          RevisionRound is how many times this PO has been edited-and-resent for re-approval
+          (COUNT of po_edit_log rows for this PO). 0 = original, never edited. po_no itself never
+          changes; the frontend composes a display suffix like "#R2" from this when > 0.
+        type: integer
       rfq_id:
         type: integer
       sales_person:
@@ -1386,6 +1400,8 @@ definitions:
       status_receive:
         type: string
       supplier_code:
+        type: string
+      supplier_name:
         type: string
       total_amount:
         type: number
@@ -1399,6 +1415,8 @@ definitions:
         type: boolean
       vat_amount:
         type: number
+      warehouse_address:
+        type: string
       warehouse_code:
         type: string
       wht_amount:
@@ -1677,6 +1695,8 @@ definitions:
     type: object
   models.UpdatePOLineRequest:
     properties:
+      cost_subgroup_id:
+        type: integer
       description:
         type: string
       disc_type:
@@ -2964,6 +2984,32 @@ paths:
       summary: Get all active materials with detail (paginated)
       tags:
       - Master
+  /master/brands:
+    get:
+      parameters:
+      - description: Spec ID
+        in: query
+        name: spec_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fiber.Map'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List brand rows by spec_id
+      tags:
+      - Master
   /master/cost-code/export:
     get:
       description: Rows are sorted by cost_subgroup.id ASC, preserving the exact row
@@ -3732,8 +3778,39 @@ paths:
       summary: List roles (optionally filtered by department)
       tags:
       - Master
+  /master/specs:
+    get:
+      parameters:
+      - description: Material Name ID
+        in: query
+        name: mat_name_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/fiber.Map'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List spec_size rows by mat_name_id
+      tags:
+      - Master
   /master/subgroups:
     get:
+      parameters:
+      - description: Group ID (filter)
+        in: query
+        name: group_id
+        type: integer
       produces:
       - application/json
       responses:
@@ -3745,7 +3822,7 @@ paths:
             type: array
       security:
       - BearerAuth: []
-      summary: List active subgroups
+      summary: List active subgroups (optionally filtered by group_id)
       tags:
       - Master
   /master/suppliers:
@@ -5657,6 +5734,67 @@ paths:
       security:
       - BearerAuth: []
       summary: List PRs eligible to be linked to a new PO
+      tags:
+      - Purchase Order
+  /po/line-items:
+    get:
+      description: |-
+        Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is
+        not considered), one object per PO with a nested "lines" array. mat_code/job_code filters
+        are applied at the line level: only lines matching the filter appear in "lines", and a PO
+        is dropped from the result entirely if none of its lines match. Pagination (page/page_size)
+        paginates POs, not lines.
+      parameters:
+      - description: po_date >= (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: po_date <= (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: po_no ILIKE filter
+        in: query
+        name: po_no
+        type: string
+      - description: mat_code ILIKE filter — only matching lines are kept, POs with
+          no match are excluded
+        in: query
+        name: mat_code
+        type: string
+      - description: requested_by user id filter
+        in: query
+        name: requested_by
+        type: integer
+      - description: resolved cost_job.job_code filter — only matching lines are kept,
+          POs with no match are excluded
+        in: query
+        name: job_code
+        type: string
+      - description: po.project_code filter
+        in: query
+        name: project_code
+        type: string
+      - default: 1
+        description: page (paginates POs)
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page_size (POs per page)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List approved POs with their line items (grouped by PO)
       tags:
       - Purchase Order
   /po/next-number:

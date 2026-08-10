@@ -25,6 +25,49 @@ func NewPRHandler(db *pgxpool.Pool) *PRHandler {
 	return &PRHandler{db: db}
 }
 
+// validateMatCodesExist checks that every mat_code in matCodes has a matching row in
+// material_code, returning a clear 400 error naming the first missing one instead of letting
+// the INSERT fail on the mat_code FK constraint with a raw Postgres error.
+func validateMatCodesExist(ctx context.Context, db *pgxpool.Pool, matCodes []string) error {
+	seen := make(map[string]bool)
+	var codes []string
+	for _, m := range matCodes {
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		codes = append(codes, m)
+	}
+	if len(codes) == 0 {
+		return nil
+	}
+
+	rows, err := db.Query(ctx, `SELECT mat_code FROM material_code WHERE mat_code = ANY($1)`, codes)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	found := make(map[string]bool)
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return err
+		}
+		found[m] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, m := range codes {
+		if !found[m] {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("Material Code '%s' นี้ไม่มีในระบบ ไม่สามารถบันทึกได้", m))
+		}
+	}
+	return nil
+}
+
 // ListPR godoc
 // NOTE: this handler is currently unreachable — RegisterPRApprovalRoutes (routes/pr.go)
 // registers PRApprovalHandler.List on the same GET /pr path, after this one, and wins.
@@ -183,6 +226,14 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least one line required")
 	}
+	matCodes := make([]string, len(req.Lines))
+	for i, line := range req.Lines {
+		matCodes[i] = line.MatCode
+	}
+	if err := validateMatCodesExist(context.Background(), h.db, matCodes); err != nil {
+		return err
+	}
+
 	for _, line := range req.Lines {
 		if line.CostSubgroupID == nil {
 			continue
@@ -549,7 +600,9 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
         base.status, base.referenced_pos,
         ph.last_price,
         ph.last_price_date,
-        COALESCE(ph.price_history, '[]'::json) AS price_history
+        COALESCE(ph.price_history, '[]'::json) AS price_history,
+        base.cost_subgroup_id, base.cost_code, base.cost_subgroup_name,
+        base.job_code, base.job_name
     FROM (
         SELECT
             prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
@@ -566,7 +619,12 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
                     JSON_BUILD_OBJECT('po_id', po.id, 'po_no', po.po_no, 'qty', pol.qty_ordered)
                 ) FILTER (WHERE pol.id IS NOT NULL),
                 '[]'
-            ) AS referenced_pos
+            ) AS referenced_pos,
+            prl.cost_subgroup_id,
+            csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+            csg.subgroup_name AS cost_subgroup_name,
+            cj.job_code AS job_code,
+            cj.job_name AS job_name
         FROM purchase_request_line prl
         JOIN material_code mc ON mc.mat_code = prl.mat_code
         JOIN mat_name mn       ON mn.id = mc.mat_name_id
@@ -576,9 +634,15 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
               AND pol.status != 'CANCELLED'
               AND ($2::bigint IS NULL OR pol.po_id != $2)
         LEFT JOIN purchase_order po ON po.id = pol.po_id
+        LEFT JOIN cost_subgroup csg  ON csg.id = prl.cost_subgroup_id
+        LEFT JOIN cost_group    cg   ON cg.id = csg.group_id
+        LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
+        LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
         WHERE prl.pr_id = $1
         GROUP BY prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
-                 prl.qty_requested, prl.qty_reserved, prl.qty_ordered, prl.status
+                 prl.qty_requested, prl.qty_reserved, prl.qty_ordered, prl.status,
+                 prl.cost_subgroup_id, csub.subject_code, cj.job_code, cj.job_name, cg.group_code,
+                 csg.subgroup_code, csg.subgroup_name
     ) base
     LEFT JOIN LATERAL (
         SELECT
@@ -627,7 +691,9 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
 		var priceHistJSON []byte
 		if err := rows.Scan(&l.PRLineID, &l.LineNo, &l.MatCode, &l.MatName, &l.Unit,
 			&l.QtyRequested, &l.QtyReserved, &l.QtyOrdered, &l.QtyRemaining, &l.LineStatus, &refJSON,
-			&lastPrice, &lastPriceDate, &priceHistJSON); err != nil {
+			&lastPrice, &lastPriceDate, &priceHistJSON,
+			&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName,
+			&l.JobCode, &l.JobName); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "scan error: "+err.Error())
 		}
 		l.ReferencedPOs = []models.ReferencedPO{}

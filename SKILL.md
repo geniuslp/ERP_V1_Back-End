@@ -228,42 +228,14 @@ ADMIN, SENIOR_TEAM, MANAGER, DIRECTOR, MD, PURCHASING, STOCK, ENGINEERING
 
 ---
 
-## Migration (migrations/)
-
-### Naming convention
-```
-001_master_ddl.sql       ← มีอยู่แล้ว (base)
-002_rfq_handler.sql      ← ถ้าเพิ่ม table ใหม่
-003_borrow_handler.sql
-```
-
-### Template สำหรับ table ใหม่
-```sql
-BEGIN;
-
-CREATE TABLE IF NOT EXISTS public.rfq (
-    rfq_id        BIGSERIAL    PRIMARY KEY,
-    rfq_no        VARCHAR(30)  NOT NULL UNIQUE,
-    supplier_code VARCHAR(20)  NOT NULL REFERENCES public.supplier(supplier_code),
-    status        VARCHAR(20)  NOT NULL DEFAULT 'SENT'
-                      CHECK (status IN ('SENT','RECEIVED','SELECTED','REJECTED')),
-    created_by    BIGINT       NOT NULL REFERENCES public.users(id),
-    created_at    TIMESTAMP    NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_rfq_supplier ON public.rfq(supplier_code);
-CREATE INDEX IF NOT EXISTS idx_rfq_status   ON public.rfq(status);
-
-COMMIT;
-```
-
-### Rules
-- ทุก table ต้องมี `IF NOT EXISTS` — safe to re-run
-- ทุก index ต้องมี `IF NOT EXISTS`
-- FK ที่ circular ให้ใช้ `DO $$ BEGIN IF NOT EXISTS ... END $$`
-- ไม่มี `DROP` ใดๆ เด็ดขาด
-- ครอบด้วย `BEGIN; ... COMMIT;` เสมอ
-- import ผ่าน pgAdmin Query Tool → F5
+## Database changes
+This project does NOT use migration files. When a schema change is needed:
+- Give the user the raw SQL to run (they execute it directly in pgAdmin Query Tool)
+- Always wrap in BEGIN; ... COMMIT; for safety
+- Always use IF NOT EXISTS for new tables/columns/indexes so it's safe to re-run
+- Never assume the SQL has been applied — the user must confirm they ran it before you rely
+  on the new column/table existing
+- Do not create files under migrations/ for future schema changes
 
 ---
 

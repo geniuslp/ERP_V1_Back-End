@@ -33,7 +33,7 @@ func NewMasterHandler(db *pgxpool.Pool) *MasterHandler {
 // @Success      200  {array}  models.MatGroup
 // @Router       /master/groups [get]
 func (h *MasterHandler) ListGroups(c *fiber.Ctx) error {
-	rows, err := h.db.Query(context.Background(), `SELECT group_code, group_name FROM mat_group ORDER BY group_code`)
+	rows, err := h.db.Query(context.Background(), `SELECT id, group_code, group_name FROM mat_group ORDER BY group_code`)
 	if err != nil {
 		return err
 	}
@@ -41,7 +41,7 @@ func (h *MasterHandler) ListGroups(c *fiber.Ctx) error {
 	var items []models.MatGroup
 	for rows.Next() {
 		var m models.MatGroup
-		rows.Scan(&m.GroupCode, &m.GroupName)
+		rows.Scan(&m.Id, &m.GroupCode, &m.GroupName)
 		items = append(items, m)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
@@ -360,10 +360,11 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 }
 
 // ListSubgroups godoc
-// @Summary      List active subgroups
+// @Summary      List active subgroups (optionally filtered by group_id)
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
+// @Param        group_id  query  int  false  "Group ID (filter)"
 // @Success      200  {array}   fiber.Map
 // @Router       /master/subgroups [get]
 func (h *MasterHandler) ListSubgroups(c *fiber.Ctx) error {
@@ -372,8 +373,17 @@ func (h *MasterHandler) ListSubgroups(c *fiber.Ctx) error {
 		SubgroupCode string `json:"subgroup_code"`
 		SubgroupName string `json:"subgroup_name"`
 	}
-	rows, err := h.db.Query(context.Background(),
-		`SELECT id, subgroup_code, subgroup_name FROM subgroup WHERE is_active = true ORDER BY subgroup_code`)
+	groupID := c.QueryInt("group_id", 0)
+	var rows pgx.Rows
+	var err error
+	if groupID > 0 {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, subgroup_code, subgroup_name FROM subgroup WHERE is_active = true AND group_id = $1 ORDER BY subgroup_code`,
+			groupID)
+	} else {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, subgroup_code, subgroup_name FROM subgroup WHERE is_active = true ORDER BY subgroup_code`)
+	}
 	if err != nil {
 		return err
 	}
@@ -418,6 +428,80 @@ func (h *MasterHandler) ListMatNames(c *fiber.Ctx) error {
 		var m matNameItem
 		rows.Scan(&m.ID, &m.MatNameCode, &m.MatName)
 		items = append(items, m)
+	}
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// ListSpecs godoc
+// @Summary      List spec_size rows by mat_name_id
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        mat_name_id  query  int  true  "Material Name ID"
+// @Success      200  {array}   fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Router       /master/specs [get]
+func (h *MasterHandler) ListSpecs(c *fiber.Ctx) error {
+	type specItem struct {
+		ID              int    `json:"id"`
+		SpecCode        string `json:"spec_code"`
+		MatNameID       int    `json:"mat_name_id"`
+		SpecDescription string `json:"spec_description"`
+		IsActive        bool   `json:"is_active"`
+	}
+	matNameID := c.QueryInt("mat_name_id", 0)
+	if matNameID == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "mat_name_id is required")
+	}
+	rows, err := h.db.Query(context.Background(),
+		`SELECT id, spec_code, mat_name_id, spec_description, is_active FROM spec_size WHERE mat_name_id = $1 AND is_active = true ORDER BY spec_code`,
+		matNameID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var items []specItem
+	for rows.Next() {
+		var s specItem
+		rows.Scan(&s.ID, &s.SpecCode, &s.MatNameID, &s.SpecDescription, &s.IsActive)
+		items = append(items, s)
+	}
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// ListBrands godoc
+// @Summary      List brand rows by spec_id
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        spec_id  query  int  true  "Spec ID"
+// @Success      200  {array}   fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Router       /master/brands [get]
+func (h *MasterHandler) ListBrands(c *fiber.Ctx) error {
+	type brandItem struct {
+		ID        int    `json:"id"`
+		BrandCode string `json:"brand_code"`
+		SpecID    int    `json:"spec_id"`
+		BrandName string `json:"brand_name"`
+		IsActive  bool   `json:"is_active"`
+	}
+	specID := c.QueryInt("spec_id", 0)
+	if specID == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "spec_id is required")
+	}
+	rows, err := h.db.Query(context.Background(),
+		`SELECT id, brand_code, spec_id, brand_name, is_active FROM brand WHERE spec_id = $1 AND is_active = true ORDER BY brand_code`,
+		specID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var items []brandItem
+	for rows.Next() {
+		var b brandItem
+		rows.Scan(&b.ID, &b.BrandCode, &b.SpecID, &b.BrandName, &b.IsActive)
+		items = append(items, b)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }

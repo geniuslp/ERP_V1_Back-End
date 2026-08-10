@@ -47,6 +47,14 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "PO not found")
 	}
 
+	matCodes := make([]string, len(req.Lines))
+	for i, line := range req.Lines {
+		matCodes[i] = line.MatCode
+	}
+	if err := validateMatCodesExist(context.Background(), h.db, matCodes); err != nil {
+		return err
+	}
+
 	now := time.Now()
 	var seq int64
 	h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(id),0)+1 FROM grn`).Scan(&seq)
