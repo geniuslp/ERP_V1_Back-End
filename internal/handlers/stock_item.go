@@ -66,9 +66,10 @@ func (h *StockItemHandler) ListCategories(c *fiber.Ctx) error {
 // @Tags         Stock
 // @Security     BearerAuth
 // @Produce      json
-// @Param        search    query  string  false  "Search"
-// @Param        item_type query  string  false  "RETURNABLE|CONSUMABLE"
-// @Param        is_active query  string  false  "true|false"
+// @Param        search         query  string  false  "Search"
+// @Param        item_type      query  string  false  "RETURNABLE|CONSUMABLE"
+// @Param        is_active      query  string  false  "true|false"
+// @Param        warehouse_code query  string  false  "Scope results to one warehouse's stock_item rows (e.g. requisition item picker)"
 // @Param        page      query  int     false  "Page"
 // @Param        page_size query  int     false  "Page size"
 // @Success      200  {object}  fiber.Map
@@ -108,6 +109,11 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 		args = append(args, active)
 		i++
 	}
+	if f.WarehouseCode != "" {
+		where = append(where, fmt.Sprintf("si.warehouse_code = $%d", i))
+		args = append(args, f.WarehouseCode)
+		i++
+	}
 
 	whereClause := strings.Join(where, " AND ")
 
@@ -129,8 +135,10 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 		SELECT si.id, si.mat_code, si.item_name, si.description,
 		       si.category_id, sc.name AS category_name,
 		       si.item_type, si.tracking_type, si.unit, si.qty, si.unit_cost,
-		       si.qr_code,
-		       si.is_active, si.created_at, si.updated_at
+		       si.qr_code, si.warehouse_code, si.location_code,
+		       si.is_active, si.created_at, si.updated_at,
+		       (SELECT file_path FROM stock_item_image
+		        WHERE item_id = si.id AND is_primary = true LIMIT 1) AS thumbnail_url
 		FROM stock_item si
 		LEFT JOIN stock_category sc ON sc.id = si.category_id
 		WHERE %s
@@ -148,7 +156,8 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 			&it.ID, &it.MatCode, &it.ItemName, &it.Description,
 			&it.CategoryID, &it.CategoryName,
 			&it.ItemType, &it.TrackingType, &it.Unit, &it.Qty, &it.UnitCost,
-			&it.QRCode, &it.IsActive, &it.CreatedAt, &it.UpdatedAt,
+			&it.QRCode, &it.WarehouseCode, &it.LocationCode, &it.IsActive, &it.CreatedAt, &it.UpdatedAt,
+			&it.ThumbnailURL,
 		); err != nil {
 			return err
 		}
@@ -191,7 +200,9 @@ func (h *StockItemHandler) GetByID(c *fiber.Ctx) error {
 		       si.category_id, sc.name AS category_name,
 		       si.item_type, si.tracking_type, si.unit, si.qty, si.unit_cost,
 		       si.qr_code,
-		       si.is_active, si.created_at, si.updated_at
+		       si.is_active, si.created_at, si.updated_at,
+		       (SELECT file_path FROM stock_item_image
+		        WHERE item_id = si.id AND is_primary = true LIMIT 1) AS thumbnail_url
 		FROM stock_item si
 		LEFT JOIN stock_category sc ON sc.id = si.category_id
 		WHERE si.id = $1`, id,
@@ -200,6 +211,7 @@ func (h *StockItemHandler) GetByID(c *fiber.Ctx) error {
 		&it.CategoryID, &it.CategoryName,
 		&it.ItemType, &it.TrackingType, &it.Unit, &it.Qty, &it.UnitCost,
 		&it.QRCode, &it.IsActive, &it.CreatedAt, &it.UpdatedAt,
+		&it.ThumbnailURL,
 	)
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "item not found")
@@ -341,51 +353,29 @@ func (h *StockItemHandler) SoftDelete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
-// ImportExcel godoc
-// @Summary      Import Stock Items จาก Excel
-// @Tags         Stock
-// @Security     BearerAuth
-// @Accept       multipart/form-data
-// @Produce      json
-// @Param        file  formData  file  true  "Excel file"
-// @Success      200   {object}  fiber.Map
-// @Router       /stock/items/import [post]
-func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
-	file, err := c.FormFile("file")
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "file is required")
-	}
-	f, err := file.Open()
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "cannot open file")
-	}
-	defer f.Close()
+// parsedStockItemRow is one successfully-parsed data row from the stock item
+// import Excel sheet. Shared between ImportExcel and PreviewImportExcel so
+// the two stay in sync.
+type parsedStockItemRow struct {
+	RowNo    int // 1-based Excel row number
+	ItemName string
+	Qty      float64
+	Unit     string
+	MatCode  string
+	UnitCost float64
+}
 
-	xlsx, err := excelize.OpenReader(f)
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid excel file")
-	}
-
-	sheetName := xlsx.GetSheetName(0)
-	rows, err := xlsx.GetRows(sheetName)
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "cannot read sheet")
-	}
-
-	ctx := context.Background()
-	tx, err := h.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	imported := 0
+// parseStockItemExcelRows reads the stock item import sheet and returns the
+// successfully-parsed rows plus any per-row error messages.
+//
+// Source file has a 3-row merged header (row 1-3); data starts at row 4 (index 3).
+// Columns: 0 no., 1 item, 2 description, 3 qty, 4 unit, 5 unit_code, 6 mat_code,
+// 7 cost_code_material (unused — cost code is now chosen per PR line, not per material),
+// 8 cost_code_labor, 9 unit_price, 10 amount.
+func parseStockItemExcelRows(rows [][]string) ([]parsedStockItemRow, []string) {
+	var parsed []parsedStockItemRow
 	var errs []string
 
-	// Source file has a 3-row merged header (row 1-3); data starts at row 4 (index 3).
-	// Columns: 0 no., 1 item, 2 description, 3 qty, 4 unit, 5 unit_code, 6 mat_code,
-	// 7 cost_code_material (unused — cost code is now chosen per PR line, not per material),
-	// 8 cost_code_labor, 9 unit_price, 10 amount.
 	for rowIdx, row := range rows {
 		if rowIdx < 3 {
 			continue
@@ -427,6 +417,71 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 			}
 		}
 
+		parsed = append(parsed, parsedStockItemRow{
+			RowNo:    rowIdx + 1,
+			ItemName: itemName,
+			Qty:      qty,
+			Unit:     unit,
+			MatCode:  matCode,
+			UnitCost: unitCost,
+		})
+	}
+
+	return parsed, errs
+}
+
+// readStockItemExcelUpload extracts the first sheet's rows from the uploaded
+// "file" form field. Shared between ImportExcel and PreviewImportExcel.
+func readStockItemExcelUpload(c *fiber.Ctx) ([][]string, error) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "file is required")
+	}
+	f, err := file.Open()
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "cannot open file")
+	}
+	defer f.Close()
+
+	xlsx, err := excelize.OpenReader(f)
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "invalid excel file")
+	}
+
+	sheetName := xlsx.GetSheetName(0)
+	rows, err := xlsx.GetRows(sheetName)
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "cannot read sheet")
+	}
+	return rows, nil
+}
+
+// ImportExcel godoc
+// @Summary      Import Stock Items จาก Excel
+// @Tags         Stock
+// @Security     BearerAuth
+// @Accept       multipart/form-data
+// @Produce      json
+// @Param        file  formData  file  true  "Excel file"
+// @Success      200   {object}  fiber.Map
+// @Router       /stock/items/import [post]
+func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
+	rows, err := readStockItemExcelUpload(c)
+	if err != nil {
+		return err
+	}
+
+	parsedRows, errs := parseStockItemExcelRows(rows)
+
+	ctx := context.Background()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	imported := 0
+	for _, row := range parsedRows {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO stock_item (mat_code, item_name, item_type, unit, qty, unit_cost)
 			VALUES ($1,$2,'CONSUMABLE',$3,$4,$5)
@@ -436,10 +491,10 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 			    qty=EXCLUDED.qty,
 			    unit_cost=EXCLUDED.unit_cost,
 			    updated_at=NOW()`,
-			matCode, itemName, unit, qty, unitCost,
+			row.MatCode, row.ItemName, row.Unit, row.Qty, row.UnitCost,
 		)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("row %d: %s", rowIdx+1, err.Error()))
+			errs = append(errs, fmt.Sprintf("row %d: %s", row.RowNo, err.Error()))
 			continue
 		}
 		imported++
@@ -453,6 +508,157 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 		"imported": imported,
 		"errors":   errs,
 	}})
+}
+
+// PreviewImportExcel godoc
+// @Summary      Preview Stock Item import (ตรวจสอบ mat_code + รายละเอียดสินค้าเต็มรูปแบบ กับ material_code master ก่อนบันทึกจริง)
+// @Description  Parses the same Excel file as /stock/items/import but does not write anything. Each row's mat_code is checked against material_code, joined out to mat_group/subgroup/mat_name/spec_size/brand/unit (LEFT JOIN — any link can be null). The file's DESCRIPTION text is compared (whitespace-normalized, case-insensitive) against "mat_name + spec_description" from the master. Per row: code_found, master (object with mat_code/group_name/subgroup_name/mat_name/spec_description/brand_name/unit_name, or null if code_found is false), name_matched, and a derived status ("ok"|"code_not_found"|"name_mismatch"). Response also includes a summary count of ok/code_not_found/name_mismatch.
+// @Tags         Stock
+// @Security     BearerAuth
+// @Accept       multipart/form-data
+// @Produce      json
+// @Param        file  formData  file  true  "Excel file"
+// @Success      200   {object}  fiber.Map
+// @Router       /stock/items/bulk/preview [post]
+func (h *StockItemHandler) PreviewImportExcel(c *fiber.Ctx) error {
+	rows, err := readStockItemExcelUpload(c)
+	if err != nil {
+		return err
+	}
+
+	parsedRows, errs := parseStockItemExcelRows(rows)
+
+	ctx := context.Background()
+
+	matCodes := make([]string, 0, len(parsedRows))
+	seen := map[string]bool{}
+	for _, row := range parsedRows {
+		if !seen[row.MatCode] {
+			seen[row.MatCode] = true
+			matCodes = append(matCodes, row.MatCode)
+		}
+	}
+
+	type masterInfo struct {
+		GroupName       *string
+		MatCode         string
+		SubgroupName    *string
+		MatName         *string
+		SpecDescription *string
+		BrandName       *string
+		UnitName        *string
+	}
+
+	masterByCode := map[string]masterInfo{}
+	if len(matCodes) > 0 {
+		dbRows, qerr := h.db.Query(ctx, `
+			SELECT mc.mat_code, mg.group_name, sg.subgroup_name, mn.mat_name,
+			       ss.spec_description, br.brand_name, u.unit_name
+			FROM material_code mc
+			LEFT JOIN mat_group mg ON mg.id = mc.group_id
+			LEFT JOIN subgroup  sg ON sg.id = mc.subgroup_id
+			LEFT JOIN mat_name   mn ON mn.id = mc.mat_name_id
+			LEFT JOIN spec_size  ss ON ss.id = mc.spec_id
+			LEFT JOIN brand      br ON br.id = mc.brand_id
+			LEFT JOIN unit       u  ON u.id  = mc.unit_id
+			WHERE mc.mat_code = ANY($1) AND mc.is_active = true`,
+			matCodes,
+		)
+		if qerr != nil {
+			return qerr
+		}
+		defer dbRows.Close()
+		for dbRows.Next() {
+			var code string
+			var mi masterInfo
+			if err := dbRows.Scan(&code, &mi.GroupName, &mi.SubgroupName, &mi.MatName,
+				&mi.SpecDescription, &mi.BrandName, &mi.UnitName); err != nil {
+				return err
+			}
+			mi.MatCode = code
+			masterByCode[code] = mi
+		}
+		if err := dbRows.Err(); err != nil {
+			return err
+		}
+	}
+
+	previewRows := make([]fiber.Map, 0, len(parsedRows))
+	okCount, notFoundCount, mismatchCount := 0, 0, 0
+	for _, row := range parsedRows {
+		mi, codeFound := masterByCode[row.MatCode]
+
+		var masterOut any
+		nameMatched := false
+		status := "code_not_found"
+		if codeFound {
+			masterOut = fiber.Map{
+				"mat_code":         mi.MatCode,
+				"group_name":       mi.GroupName,
+				"subgroup_name":    mi.SubgroupName,
+				"mat_name":         mi.MatName,
+				"spec_description": mi.SpecDescription,
+				"brand_name":       mi.BrandName,
+				"unit_name":        mi.UnitName,
+			}
+			masterDescription := strings.TrimSpace(deref(mi.MatName) + " " + deref(mi.SpecDescription))
+			nameMatched = normalizeItemName(row.ItemName) == normalizeItemName(masterDescription)
+			if nameMatched {
+				status = "ok"
+			} else {
+				status = "name_mismatch"
+			}
+		}
+
+		switch status {
+		case "ok":
+			okCount++
+		case "name_mismatch":
+			mismatchCount++
+		case "code_not_found":
+			notFoundCount++
+		}
+
+		previewRows = append(previewRows, fiber.Map{
+			"row_no":       row.RowNo,
+			"mat_code":     row.MatCode,
+			"file_name":    row.ItemName,
+			"qty":          row.Qty,
+			"unit":         row.Unit,
+			"unit_cost":    row.UnitCost,
+			"code_found":   codeFound,
+			"master":       masterOut,
+			"name_matched": nameMatched,
+			"status":       status,
+		})
+	}
+
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"rows": previewRows,
+		"summary": fiber.Map{
+			"total":          len(parsedRows),
+			"ok":             okCount,
+			"code_not_found": notFoundCount,
+			"name_mismatch":  mismatchCount,
+		},
+		"errors": errs,
+	}})
+}
+
+// deref returns the empty string for a nil pointer, otherwise the pointed-to value.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// normalizeItemName trims whitespace and collapses internal whitespace runs
+// to a single space before a case-insensitive comparison, so cosmetic
+// spacing differences between the Excel file and the material master don't
+// register as a name mismatch.
+func normalizeItemName(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }
 
 func getCell(row []string, idx int) string {

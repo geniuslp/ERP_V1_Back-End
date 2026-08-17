@@ -33,7 +33,7 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 	var m models.Memo
 	err := h.db.QueryRow(ctx, `
 		SELECT m.id, m.memo_no, m.title, m.project_code,
-		       m.requested_by, m.approver_id, m.department, m.note, m.status,
+		       m.requested_by, m.approver_id, m.department, m.delivery_location, m.note, m.status,
 		       m.created_at, m.updated_at,
 		       u.full_name   AS requested_by_name,
 		       au.full_name  AS approver_name,
@@ -45,7 +45,7 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 		WHERE m.id = $1`, id,
 	).Scan(
 		&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
-		&m.RequestedBy, &m.ApproverID, &m.Department, &m.Note, &m.Status,
+		&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation, &m.Note, &m.Status,
 		&m.CreatedAt, &m.UpdatedAt,
 		&m.RequestedByName, &m.ApproverName, &m.ProjectName,
 	)
@@ -194,7 +194,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 
 	dataSQL := `
 		SELECT m.id, m.memo_no, m.title, m.project_code,
-		       m.requested_by, m.approver_id, m.department, m.note, m.status,
+		       m.requested_by, m.approver_id, m.department, m.delivery_location, m.note, m.status,
 		       m.created_at, m.updated_at,
 		       u.full_name   AS requested_by_name,
 		       au.full_name  AS approver_name,
@@ -220,7 +220,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 		var m models.Memo
 		if err := rows.Scan(
 			&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
-			&m.RequestedBy, &m.ApproverID, &m.Department, &m.Note, &m.Status,
+			&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation, &m.Note, &m.Status,
 			&m.CreatedAt, &m.UpdatedAt,
 			&m.RequestedByName, &m.ApproverName, &m.ProjectName,
 		); err != nil {
@@ -263,6 +263,7 @@ func (h *MemoHandler) GetByID(c *fiber.Ctx) error {
 
 // Create godoc
 // @Summary      สร้าง Memo ใหม่
+// @Description  รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department
 // @Tags         Memo
 // @Security     BearerAuth
 // @Accept       json
@@ -342,11 +343,11 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	err = tx.QueryRow(ctx, `
 		INSERT INTO public.memo
 		    (memo_no, title, project_code, requested_by, approver_id,
-		     department, note, status, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+		     department, delivery_location, note, status, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
 		RETURNING id`,
 		memoNo, req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
-		req.Department, req.Note, status, claims.UserID,
+		req.Department, req.DeliveryLocation, req.Note, status, claims.UserID,
 	).Scan(&memoID)
 	if err != nil {
 		return err
@@ -410,6 +411,7 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      แก้ไข Memo
+// @Description  รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department
 // @Tags         Memo
 // @Security     BearerAuth
 // @Accept       json
@@ -452,10 +454,10 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 	result, err := tx.Exec(ctx, `
 		UPDATE public.memo
 		SET title=$1, project_code=$2, requested_by=$3, approver_id=$4,
-		    department=$5, note=$6, updated_by=$7, updated_at=NOW()
-		WHERE id=$8`,
+		    department=$5, delivery_location=$6, note=$7, updated_by=$8, updated_at=NOW()
+		WHERE id=$9`,
 		req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
-		req.Department, req.Note, claims.UserID, id,
+		req.Department, req.DeliveryLocation, req.Note, claims.UserID, id,
 	)
 	if err != nil {
 		return err

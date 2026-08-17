@@ -589,13 +589,15 @@ type MaterialFull struct {
 	IsActive        bool    `json:"is_active"`
 }
 
-// MaterialSearchItem is one result of the type-ahead material search (Create PO combobox).
+// MaterialSearchItem is one result of the type-ahead material search (Create PO combobox,
+// and — when warehouse_code is passed — the Requisition item picker).
 type MaterialSearchItem struct {
 	MatCode   string   `json:"mat_code"`
 	MatName   string   `json:"mat_name"`
 	Unit      string   `json:"unit"`
-	LastPrice *float64 `json:"last_price"` // nullable
-	CostCode  *string  `json:"cost_code"`  // nullable
+	LastPrice *float64 `json:"last_price"`          // nullable
+	CostCode  *string  `json:"cost_code"`           // nullable
+	QtyOnHand *float64 `json:"qty_on_hand,omitempty"` // only populated when warehouse_code is passed
 }
 
 type MaterialDetail struct {
@@ -676,6 +678,9 @@ type PurchaseRequest struct {
 	RequiredDate  *string   `json:"required_date,omitempty" db:"required_date"`
 	Status        string    `json:"status" db:"status"`
 	Priority      string    `json:"priority" db:"priority"`
+	OrderType     string    `json:"order_type" db:"order_type"`
+	PRType        string    `json:"pr_type" db:"pr_type"`
+	JobCode       *string   `json:"job_code,omitempty" db:"job_code"`
 	Remarks       *string   `json:"remarks,omitempty" db:"remarks"`
 	CreatedAt     time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
@@ -765,6 +770,9 @@ type CreatePRRequest struct {
 	RequiredDate  *string                `json:"required_date,omitempty"`
 	ProjectCode   *string                `json:"project_code,omitempty"`
 	MemoID        *int64                 `json:"memo_id,omitempty"`
+	OrderType     string                 `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
+	PRType        string                 `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY" — defaults to "PO_WO"
+	JobCode       *string                `json:"job_code,omitempty"`
 	Status        string                 `json:"status"`
 	Remarks       *string                `json:"remarks,omitempty"`
 	CreatedBy     int64                  `json:"created_by" validate:"required"`
@@ -773,6 +781,35 @@ type CreatePRRequest struct {
 }
 
 type CreatePRLine struct {
+	LineNo         int     `json:"line_no"`
+	MatCode        string  `json:"mat_code" validate:"required"`
+	QtyRequested   float64 `json:"qty_requested" validate:"required,gt=0"`
+	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
+}
+
+// UpdatePRRequest edits a PR's header and lines. Only allowed while status='DRAFT' (including
+// freshly-reopened PRs). pr_no, memo_id, and status are not editable here — pr_no is the
+// business key, memo_id linkage and status transitions go through their own dedicated flows.
+type UpdatePRRequest struct {
+	PRDate        string         `json:"pr_date" validate:"required"`
+	RequestedBy   int64          `json:"requested_by" validate:"required"`
+	LocationText  string         `json:"location_text" validate:"required"`
+	WarehouseCode *string        `json:"warehouse_code,omitempty"`
+	RequiredDate  *string        `json:"required_date,omitempty"`
+	ProjectCode   *string        `json:"project_code,omitempty"`
+	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost"
+	PRType        string         `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY"
+	JobCode       *string        `json:"job_code,omitempty"`
+	Remarks       *string        `json:"remarks,omitempty"`
+	Lines         []UpdatePRLine `json:"lines" validate:"required,min=1"`
+}
+
+// UpdatePRLine's ID identifies an existing purchase_request_line row to update in place.
+// Omit/nil means this is a new line to insert. Any existing line belonging to the PR that
+// isn't present in the request's Lines (by ID) is treated as removed — and removal is
+// rejected if a purchase_order_line still references it via pr_line_id.
+type UpdatePRLine struct {
+	ID             *int64  `json:"id,omitempty"`
 	LineNo         int     `json:"line_no"`
 	MatCode        string  `json:"mat_code" validate:"required"`
 	QtyRequested   float64 `json:"qty_requested" validate:"required,gt=0"`
@@ -811,6 +848,7 @@ type PurchaseOrder struct {
 	WHTAmount        *float64  `json:"wht_amount,omitempty"`
 	Status           string    `json:"status" db:"status"`
 	StatusReceive    string    `json:"status_receive" db:"status_receive"`
+	OrderType        string    `json:"order_type" db:"order_type"`
 	PaymentTerms     *string   `json:"payment_terms,omitempty" db:"payment_terms"`
 	Remarks          *string   `json:"remarks,omitempty" db:"remarks"`
 	CreatedBy        int64     `json:"created_by" db:"created_by"`
@@ -822,7 +860,6 @@ type PurchaseOrder struct {
 	// changes; the frontend composes a display suffix like "#R2" from this when > 0.
 	RevisionRound int      `json:"revision_round"`
 	OfficePhone   *string  `json:"office_phone,omitempty"`
-	Fax           *string  `json:"fax,omitempty"`
 	SalesPerson   *string  `json:"sales_person,omitempty"`
 	ContactEmail  *string  `json:"contact_email,omitempty"`
 	ContactPhone  *string  `json:"contact_phone,omitempty"`
@@ -874,6 +911,7 @@ type CreatePORequest struct {
 	PaymentTerms  *string        `json:"payment_terms,omitempty"`
 	Remarks       *string        `json:"remarks,omitempty"`
 	Status        string         `json:"status" validate:"omitempty,oneof=DRAFT PENDING_APPROVAL"`
+	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
 	UseDiscount   *bool          `json:"use_discount,omitempty"`
 	DiscountType  *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
 	UseVAT        *bool          `json:"use_vat,omitempty"`
@@ -1062,19 +1100,20 @@ type PaginatedResponse struct {
 // ─── Memo ──────────────────────────────────────────────────────────────────
 
 type Memo struct {
-	ID          int64     `json:"id"`
-	MemoNo      string    `json:"memo_no"`
-	Title       string    `json:"title"`
-	ProjectCode *string   `json:"project_code"`
-	RequestedBy int64     `json:"requested_by"`
-	ApproverID  *int64    `json:"approver_id"`
-	Department  *string   `json:"department"`
-	Note        *string   `json:"note"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	CreatedBy   *int64    `json:"created_by"`
-	UpdatedBy   *int64    `json:"updated_by"`
+	ID               int64     `json:"id"`
+	MemoNo           string    `json:"memo_no"`
+	Title            string    `json:"title"`
+	ProjectCode      *string   `json:"project_code"`
+	RequestedBy      int64     `json:"requested_by"`
+	ApproverID       *int64    `json:"approver_id"`
+	Department       *string   `json:"department"`
+	DeliveryLocation *string   `json:"delivery_location,omitempty" db:"delivery_location"`
+	Note             *string   `json:"note"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	CreatedBy        *int64    `json:"created_by"`
+	UpdatedBy        *int64    `json:"updated_by"`
 
 	// populated via JOIN (ไม่ได้เก็บใน table)
 	RequestedByName string           `json:"requested_by_name,omitempty"`
@@ -1113,15 +1152,16 @@ type MemoLine struct {
 }
 
 type CreateMemoRequest struct {
-	Title       string            `json:"title"`
-	ProjectCode *string           `json:"project_code"`
-	RequestedBy int64             `json:"requested_by"`
-	ApproverID  *int64            `json:"approver_id"`
-	Department  *string           `json:"department"`
-	Note        *string           `json:"note"`
-	Status      string            `json:"status,omitempty"` // "DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT
-	Lines       []MemoLineRequest `json:"lines"`
-	Attachments []AttachmentRef   `json:"attachments"`
+	Title            string            `json:"title"`
+	ProjectCode      *string           `json:"project_code"`
+	RequestedBy      int64             `json:"requested_by"`
+	ApproverID       *int64            `json:"approver_id"`
+	Department       *string           `json:"department"`
+	DeliveryLocation *string           `json:"delivery_location,omitempty"`
+	Note             *string           `json:"note"`
+	Status           string            `json:"status,omitempty"` // "DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT
+	Lines            []MemoLineRequest `json:"lines"`
+	Attachments      []AttachmentRef   `json:"attachments"`
 }
 
 type CancelMemoRequest struct {

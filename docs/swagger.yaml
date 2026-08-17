@@ -458,6 +458,8 @@ definitions:
         items:
           $ref: '#/definitions/models.AttachmentRef'
         type: array
+      delivery_location:
+        type: string
       department:
         type: string
       lines:
@@ -527,6 +529,9 @@ definitions:
         type: array
       location_text:
         type: string
+      order_type:
+        description: '"stock" | "cost" — defaults to "stock"'
+        type: string
       payment_terms:
         type: string
       pr_id:
@@ -583,6 +588,8 @@ definitions:
         type: array
       created_by:
         type: integer
+      job_code:
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.CreatePRLine'
@@ -592,9 +599,15 @@ definitions:
         type: string
       memo_id:
         type: integer
+      order_type:
+        description: '"stock" | "cost" — defaults to "stock"'
+        type: string
       pr_date:
         type: string
       pr_no:
+        type: string
+      pr_type:
+        description: '"PO_WO" | "PO_ONLY" | "WO_ONLY" — defaults to "PO_WO"'
         type: string
       project_code:
         type: string
@@ -635,6 +648,36 @@ definitions:
       start_date:
         type: string
       status:
+        type: string
+    type: object
+  models.CreateRequisitionLineRequest:
+    properties:
+      mat_code:
+        type: string
+      qty_requested:
+        type: number
+      remarks:
+        type: string
+    type: object
+  models.CreateRequisitionRequest:
+    properties:
+      container_no:
+        type: string
+      is_stock_house:
+        type: boolean
+      lines:
+        items:
+          $ref: '#/definitions/models.CreateRequisitionLineRequest'
+        type: array
+      project_code:
+        type: string
+      purpose:
+        type: string
+      remarks:
+        type: string
+      req_date:
+        type: string
+      warehouse_code:
         type: string
     type: object
   models.CreateReservationRequest:
@@ -698,6 +741,38 @@ definitions:
       to_location:
         type: string
       txn_type:
+        type: string
+    type: object
+  models.CreateStockTransferLineRequest:
+    properties:
+      mat_code:
+        type: string
+      qty_requested:
+        type: number
+      remarks:
+        type: string
+    type: object
+  models.CreateStockTransferRequest:
+    properties:
+      from_project_code:
+        type: string
+      from_warehouse_code:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.CreateStockTransferLineRequest'
+        type: array
+      purpose:
+        type: string
+      remarks:
+        type: string
+      to_project_code:
+        type: string
+      to_warehouse_code:
+        type: string
+      transfer_date:
+        type: string
+      transfer_type:
         type: string
     type: object
   models.CreateSubgroupRequest:
@@ -1072,6 +1147,8 @@ definitions:
         type: string
       created_by:
         type: integer
+      delivery_location:
+        type: string
       department:
         type: string
       id:
@@ -1351,8 +1428,6 @@ definitions:
         type: string
       expected_date:
         type: string
-      fax:
-        type: string
       lines:
         items:
           $ref: '#/definitions/models.POLine'
@@ -1362,6 +1437,8 @@ definitions:
       net_amount:
         type: number
       office_phone:
+        type: string
+      order_type:
         type: string
       payment_terms:
         type: string
@@ -1426,6 +1503,8 @@ definitions:
     properties:
       created_at:
         type: string
+      job_code:
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.PRLine'
@@ -1438,11 +1517,15 @@ definitions:
         type: string
       memo_title:
         type: string
+      order_type:
+        type: string
       pr_date:
         type: string
       pr_id:
         type: integer
       pr_no:
+        type: string
+      pr_type:
         type: string
       priority:
         type: string
@@ -1675,6 +1758,8 @@ definitions:
         items:
           $ref: '#/definitions/models.AttachmentRef'
         type: array
+      delivery_location:
+        type: string
       department:
         type: string
       lines:
@@ -1704,6 +1789,57 @@ definitions:
         - pct
         - amt
         type: string
+    type: object
+  models.UpdatePRLine:
+    properties:
+      cost_subgroup_id:
+        type: integer
+      id:
+        type: integer
+      line_no:
+        type: integer
+      mat_code:
+        type: string
+      qty_requested:
+        type: number
+    required:
+    - mat_code
+    - qty_requested
+    type: object
+  models.UpdatePRRequest:
+    properties:
+      job_code:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.UpdatePRLine'
+        minItems: 1
+        type: array
+      location_text:
+        type: string
+      order_type:
+        description: '"stock" | "cost"'
+        type: string
+      pr_date:
+        type: string
+      pr_type:
+        description: '"PO_WO" | "PO_ONLY" | "WO_ONLY"'
+        type: string
+      project_code:
+        type: string
+      remarks:
+        type: string
+      requested_by:
+        type: integer
+      required_date:
+        type: string
+      warehouse_code:
+        type: string
+    required:
+    - lines
+    - location_text
+    - pr_date
+    - requested_by
     type: object
   models.UpdateProjectReq:
     properties:
@@ -1861,19 +1997,6 @@ definitions:
       role_id:
         type: integer
       role_name:
-        type: string
-    type: object
-  models.Warehouse:
-    properties:
-      address:
-        type: string
-      created_at:
-        type: string
-      is_active:
-        type: boolean
-      warehouse_code:
-        type: string
-      warehouse_name:
         type: string
     type: object
   models.WarehouseFull:
@@ -4864,7 +4987,10 @@ paths:
     get:
       description: Search active materials by mat_code or mat_name for the Create
         PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable).
-        Prefix matches on mat_code rank first.
+        Prefix matches on mat_code rank first. When warehouse_code is passed (e.g.
+        Requisition item picker), results are additionally scoped to materials that
+        have a stock_item row at that warehouse, and each result includes qty_on_hand
+        from that warehouse.
       parameters:
       - description: search term (matches mat_code or mat_name)
         in: query
@@ -4875,6 +5001,11 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: scope results to materials with stock at this warehouse; adds
+          qty_on_hand to each result
+        in: query
+        name: warehouse_code
+        type: string
       produces:
       - application/json
       responses:
@@ -4937,6 +5068,8 @@ paths:
     post:
       consumes:
       - application/json
+      description: รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ
+        department
       parameters:
       - description: ข้อมูล Memo
         in: body
@@ -4998,6 +5131,8 @@ paths:
     put:
       consumes:
       - application/json
+      description: รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ
+        department
       parameters:
       - description: Memo ID
         in: path
@@ -5439,6 +5574,15 @@ paths:
       - Attachments
   /po/{id}/cancel:
     put:
+      description: |-
+        Cancels the PO and all of its lines (status='CANCELLED' on both), which frees
+        up the source PR lines' qty_remaining for re-ordering — PRHandler.LinesWithPOStatus
+        computes qty_ordered/qty_remaining live from purchase_order_line rows, filtering
+        out ones with status='CANCELLED'. status_receive is left untouched: if goods were
+        already received, that's a physical fact recorded in stock_inventory and is not
+        erased by cancelling the PO — a cancelled PO can legitimately still show
+        status_receive='PARTIALLY_RECEIVED'/'RECEIVED' as a historical record. Reversing
+        physically-received stock is a separate stock-adjustment/return flow, not part of this endpoint.
       parameters:
       - description: PO ID
         in: path
@@ -5963,6 +6107,50 @@ paths:
       summary: Get PR detail with lines and attachments
       tags:
       - Purchase Request
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Only allowed while status='DRAFT' (including PRs freshly reopened via
+        PUT /pr/{id}/reopen, which itself guarantees no active PO references any of
+        this PR's lines — see Reopen). Because that guard already holds by the time a
+        PR can reach DRAFT, editing here is fully free: lines are deleted and
+        reinserted from the payload with no FK-safety restrictions. Logs the edit to
+        erp_audit_log. Status stays DRAFT afterward — the user must explicitly call
+        POST /pr/{id}/submit to re-run deductStockOnSubmit against the new
+        qty_requested values and go back to COMPLETED.
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Updated PR data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdatePRRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Edit a DRAFT PR's header and lines
+      tags:
+      - Purchase Request
   /pr/{id}/attachments:
     get:
       parameters:
@@ -6105,6 +6293,45 @@ paths:
       summary: Get PR status history
       tags:
       - Purchase Request
+  /pr/{id}/reopen:
+    put:
+      description: |-
+        Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this
+        PR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system
+        does not auto-cancel anything; the user must cancel the referencing PO(s) manually
+        first. Reverses any stock
+        deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
+        ref_doc_id=id, txn_type='ISSUE') by restoring stock_item.qty and recording an
+        offsetting RETURN transaction, then sets status back to DRAFT. Relies on the
+        confirmed rule that a PR never has duplicate mat_code across its own lines, so
+        reversing by ref_doc_id=pr_id alone (without a pr_line_id column on
+        stock_transaction) is unambiguous.
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reopen a COMPLETED PR back to DRAFT for editing
+      tags:
+      - Purchase Request
   /pr/{id}/submit:
     post:
       parameters:
@@ -6131,8 +6358,8 @@ paths:
       - Purchase Request
   /pr/next-number:
     get:
-      description: Returns the next available PR number for the current month (Buddhist
-        year format)
+      description: 'Returns the next available PR number for the current month: PR<YYYYMM>-<4-digit
+        sequence>, e.g. PR202608-0001. Sequence resets to 0001 each new month.'
       produces:
       - application/json
       responses:
@@ -6145,6 +6372,199 @@ paths:
       summary: Get next PR number
       tags:
       - Purchase Request
+  /requisition:
+    get:
+      parameters:
+      - description: Status
+        in: query
+        name: status
+        type: string
+      - description: Project code
+        in: query
+        name: project_code
+        type: string
+      - description: Warehouse code
+        in: query
+        name: warehouse_code
+        type: string
+      - description: Filter by stock house flag
+        in: query
+        name: is_stock_house
+        type: boolean
+      - description: Date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการใบเบิกของ
+      tags:
+      - Requisition
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Requisition data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateRequisitionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้างใบเบิกของ (DRAFT)
+      tags:
+      - Requisition
+  /requisition/{id}:
+    get:
+      parameters:
+      - description: Requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายละเอียดใบเบิกของ
+      tags:
+      - Requisition
+  /requisition/{id}/cancel:
+    post:
+      parameters:
+      - description: Requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ยกเลิกใบเบิกของ (DRAFT → CANCELLED)
+      tags:
+      - Requisition
+  /requisition/{id}/confirm:
+    post:
+      description: |-
+        One DB transaction. Locks each line's stock_item row (SELECT ... FOR UPDATE), verifies
+        sufficient qty, decrements stock_item.qty at the requisition's warehouse, upserts
+        project_stock for the requisition's project_code, and records a stock_transaction
+        (txn_type=REQUISITION_ISSUE, ref_doc_type=REQUISITION) per line for movement history.
+      parameters:
+      - description: Requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ยืนยันใบเบิกของ (DRAFT → CONFIRMED) — ตัดสต๊อกคลังทันที เพิ่มยอดที่โครงการ
+      tags:
+      - Requisition
+  /requisition/history:
+    get:
+      parameters:
+      - description: Material code
+        in: query
+        name: mat_code
+        type: string
+      - description: Date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ประวัติการเบิกของ (จาก stock_transaction)
+      tags:
+      - Requisition
   /role-menu-permissions:
     get:
       produces:
@@ -6305,6 +6725,212 @@ paths:
       summary: Toggle role active status
       tags:
       - Roles
+  /stock-transfer:
+    get:
+      parameters:
+      - description: Transfer type
+        in: query
+        name: transfer_type
+        type: string
+      - description: Status
+        in: query
+        name: status
+        type: string
+      - description: From warehouse code
+        in: query
+        name: from_warehouse_code
+        type: string
+      - description: To warehouse code
+        in: query
+        name: to_warehouse_code
+        type: string
+      - description: Date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการใบย้ายคลัง
+      tags:
+      - StockTransfer
+    post:
+      consumes:
+      - application/json
+      description: transfer_type WH_TO_WH requires from_warehouse_code+to_warehouse_code;
+        WH_TO_PROJECT requires from_warehouse_code+to_project_code; PROJECT_TO_WH
+        requires from_project_code+to_warehouse_code.
+      parameters:
+      - description: Transfer data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateStockTransferRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้างใบย้ายคลัง (DRAFT)
+      tags:
+      - StockTransfer
+  /stock-transfer/{id}:
+    get:
+      parameters:
+      - description: Transfer ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายละเอียดใบย้ายคลัง
+      tags:
+      - StockTransfer
+  /stock-transfer/{id}/cancel:
+    post:
+      parameters:
+      - description: Transfer ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ยกเลิกใบย้ายคลัง (DRAFT เท่านั้น)
+      tags:
+      - StockTransfer
+  /stock-transfer/{id}/confirm:
+    post:
+      description: |-
+        One DB transaction. Locks each line's source stock_item row (SELECT ... FOR UPDATE),
+        verifies sufficient qty, moves stock according to transfer_type (WH_TO_WH: deduct
+        source warehouse item, credit destination warehouse item; WH_TO_PROJECT: deduct
+        source warehouse item, credit project_stock; PROJECT_TO_WH: deduct project_stock,
+        credit destination warehouse item), and records a stock_transaction per line
+        (ref_doc_type=STOCK_TRANSFER) for the shared movement history.
+      parameters:
+      - description: Transfer ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ยืนยันรับของ / ยืนยันการย้ายคลัง (DRAFT → CONFIRMED)
+      tags:
+      - StockTransfer
+  /stock-transfer/history:
+    get:
+      description: |-
+        Reads stock_transaction WHERE ref_doc_type IN ('STOCK_TRANSFER','REQUISITION'),
+        joined to stock_item for mat_code/name and to warehouse/project for from/to display
+        names (a location can be either, so both are LEFT JOINed and whichever matches is used).
+      parameters:
+      - description: 'Filter: STOCK_TRANSFER or REQUISITION'
+        in: query
+        name: ref_doc_type
+        type: string
+      - description: Material code
+        in: query
+        name: mat_code
+        type: string
+      - description: Date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ประวัติการเคลื่อนไหว (Requisition + Stock Transfer รวมกัน)
+      tags:
+      - StockTransfer
   /stock/borrow:
     get:
       parameters:
@@ -6647,6 +7273,11 @@ paths:
         in: query
         name: is_active
         type: string
+      - description: Scope results to one warehouse's stock_item rows (e.g. requisition
+          item picker)
+        in: query
+        name: warehouse_code
+        type: string
       - description: Page
         in: query
         name: page
@@ -6753,6 +7384,153 @@ paths:
       security:
       - BearerAuth: []
       summary: แก้ไข Stock Item
+      tags:
+      - Stock
+  /stock/items/{id}/images:
+    get:
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List images for a stock item
+      tags:
+      - Stock
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload one or more images (multipart field "files"); auto-marks
+        the first as primary if none exists yet
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Image files
+        in: formData
+        name: files
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Upload images for a stock item
+      tags:
+      - Stock
+  /stock/items/{id}/images/{image_id}:
+    delete:
+      description: Removes the DB record and the file on disk (best-effort); promotes
+        the next image to primary if the deleted one was primary
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Image ID
+        in: path
+        name: image_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a stock item image
+      tags:
+      - Stock
+  /stock/items/{id}/images/{image_id}/primary:
+    put:
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Image ID
+        in: path
+        name: image_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Set an image as the primary/thumbnail image
+      tags:
+      - Stock
+  /stock/items/bulk/preview:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Parses the same Excel file as /stock/items/import but does not
+        write anything. Each row''s mat_code is checked against material_code, joined
+        out to mat_group/subgroup/mat_name/spec_size/brand/unit (LEFT JOIN — any link
+        can be null). The file''s DESCRIPTION text is compared (whitespace-normalized,
+        case-insensitive) against "mat_name + spec_description" from the master. Per
+        row: code_found, master (object with mat_code/group_name/subgroup_name/mat_name/spec_description/brand_name/unit_name,
+        or null if code_found is false), name_matched, and a derived status ("ok"|"code_not_found"|"name_mismatch").
+        Response also includes a summary count of ok/code_not_found/name_mismatch.'
+      parameters:
+      - description: Excel file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Preview Stock Item import (ตรวจสอบ mat_code + รายละเอียดสินค้าเต็มรูปแบบ
+        กับ material_code master ก่อนบันทึกจริง)
       tags:
       - Stock
   /stock/items/import:

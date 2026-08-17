@@ -98,7 +98,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	args = append(args, size, offset)
 	rows, err := h.db.Query(context.Background(), `
 		SELECT po.id, po.po_no, po.po_date, po.supplier_code, s.supplier_name,
-		       po.status, po.status_receive, po.currency, po.total_amount, po.vat_amount, po.net_amount,
+		       po.status, po.status_receive, po.order_type, po.currency, po.total_amount, po.vat_amount, po.net_amount,
 		       po.expected_date::text, po.created_at, po.updated_at, po.project_code,
 		       COALESCE(cu.full_name, '') AS created_by_name,
 		       COALESCE(uu.full_name, '') AS updated_by_name,
@@ -128,6 +128,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		SupplierName  *string   `json:"supplier_name,omitempty"`
 		Status        string    `json:"status"`
 		StatusReceive string    `json:"status_receive"`
+		OrderType     string    `json:"order_type"`
 		Currency      string    `json:"currency"`
 		TotalAmount   float64   `json:"total_amount"`
 		VATAmount     float64   `json:"vat_amount"`
@@ -149,7 +150,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		var r PORow
 		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierCode, &r.SupplierName,
-			&r.Status, &r.StatusReceive, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
+			&r.Status, &r.StatusReceive, &r.OrderType, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode,
 			&r.CreatedByName, &r.UpdatedByName, &r.JobNames, &r.RevisionRound); err != nil {
 			return err
@@ -259,7 +260,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 
 	poArgs := append(append([]any{}, args...), size, offset)
 	poRows, err := h.db.Query(context.Background(), `
-		SELECT po.id, po.po_no, po.po_date, po.supplier_code, s.supplier_name,
+		SELECT po.id, po.po_no, po.po_date, po.supplier_code, s.supplier_name, s.contact_phone,
 		       COALESCE(u.full_name, ''), po.project_code, po.status,
 		       po.total_amount, po.discount_amount, po.vat_amount, po.net_amount, po.currency
 		FROM purchase_order po
@@ -289,6 +290,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		PODate         time.Time     `json:"po_date"`
 		SupplierCode   string        `json:"supplier_code"`
 		SupplierName   *string       `json:"supplier_name,omitempty"`
+		ContactPhone   *string       `json:"contact_phone,omitempty"`
 		RequestedBy    string        `json:"requested_by"`
 		ProjectCode    *string       `json:"project_code,omitempty"`
 		Status         string        `json:"status"`
@@ -305,7 +307,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 	groupByID := make(map[int64]*POGroup, size)
 	for poRows.Next() {
 		var g POGroup
-		if err := poRows.Scan(&g.POID, &g.PONo, &g.PODate, &g.SupplierCode, &g.SupplierName,
+		if err := poRows.Scan(&g.POID, &g.PONo, &g.PODate, &g.SupplierCode, &g.SupplierName, &g.ContactPhone,
 			&g.RequestedBy, &g.ProjectCode, &g.Status,
 			&g.TotalAmount, &g.DiscountAmount, &g.VATAmount, &g.NetAmount, &g.Currency); err != nil {
 			return err
@@ -391,10 +393,10 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       po.expected_date::text,
 		       po.use_discount, po.discount_type, po.discount_amount,
 		       po.use_vat, po.use_wht, po.wht_amount,
-		       po.status, po.status_receive, po.payment_terms, po.remarks,
+		       po.status, po.status_receive, po.order_type, po.payment_terms, po.remarks,
 		       po.created_by, po.created_at, po.updated_at,
 		       COALESCE(s.supplier_name, ''),
-		       s.office_phone, s.fax, s.sales_person,
+		       s.office_phone, s.sales_person,
 		       s.contact_email, s.contact_phone,
 		       pr.pr_no, w.address,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
@@ -414,10 +416,10 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		&po.ExpectedDate,
 		&po.UseDiscount, &po.DiscountType, &po.DiscountAmount,
 		&po.UseVAT, &po.UseWHT, &po.WHTAmount,
-		&po.Status, &po.StatusReceive, &po.PaymentTerms, &po.Remarks,
+		&po.Status, &po.StatusReceive, &po.OrderType, &po.PaymentTerms, &po.Remarks,
 		&po.CreatedBy, &po.CreatedAt, &po.UpdatedAt,
 		&po.SupplierName,
-		&po.OfficePhone, &po.Fax, &po.SalesPerson,
+		&po.OfficePhone, &po.SalesPerson,
 		&po.ContactEmail, &po.ContactPhone,
 		&po.PRNo, &po.WarehouseAddress,
 		&po.RevisionRound); err != nil {
@@ -586,6 +588,16 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		req.Currency = "THB"
 	}
 
+	if req.OrderType == "" {
+		req.OrderType = "stock"
+	}
+	if req.OrderType != "stock" && req.OrderType != "cost" {
+		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	}
+	if req.OrderType == "cost" && (req.PRID == nil || *req.PRID == 0) {
+		return fiber.NewError(fiber.StatusBadRequest, "pr_id is required when order_type is 'cost'")
+	}
+
 	ctx := context.Background()
 
 	if req.PRID != nil {
@@ -684,13 +696,13 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		  (po_no, po_date, supplier_code, pr_id, rfq_id, location_text, warehouse_code, project_code, requested_by, approver_id, ref, currency,
 		   total_amount, vat_amount, net_amount, expected_date,
 		   use_discount, discount_type, discount_amount, use_vat, use_wht, wht_amount,
-		   status, payment_terms, remarks, created_by)
-		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+		   status, order_type, payment_terms, remarks, created_by)
+		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
 		RETURNING id`,
 		poNo, req.SupplierCode, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref, req.Currency,
 		totalAmount, vatAmount, netAmount, req.ExpectedDate,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
-		status, req.PaymentTerms, req.Remarks, claims.UserID,
+		status, req.OrderType, req.PaymentTerms, req.Remarks, claims.UserID,
 	).Scan(&poID)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
@@ -945,8 +957,8 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "approver not found")
 	}
 
-	var currentStatus string
-	if err := h.db.QueryRow(ctx, `SELECT status FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus); err != nil {
+	var currentStatus, currentOrderType string
+	if err := h.db.QueryRow(ctx, `SELECT status, order_type FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus, &currentOrderType); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if currentStatus != "DRAFT" {
@@ -955,6 +967,17 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 			detail += " — use PUT /po/{id}/edit-approved instead"
 		}
 		return fiber.NewError(fiber.StatusBadRequest, detail)
+	}
+
+	orderType := req.OrderType
+	if orderType == "" {
+		orderType = currentOrderType
+	}
+	if orderType != "stock" && orderType != "cost" {
+		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	}
+	if orderType == "cost" && (req.PRID == nil || *req.PRID == 0) {
+		return fiber.NewError(fiber.StatusBadRequest, "pr_id is required when order_type is 'cost'")
 	}
 
 	projectCode, requestedBy, warehouseCode, err := h.resolvePOAutoFields(ctx, req.PRID, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
@@ -1030,12 +1053,14 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		    currency=$10, expected_date=$11, payment_terms=$12, remarks=$13,
 		    total_amount=$14, vat_amount=$15, net_amount=$16, status=$17,
 		    use_discount=$18, discount_type=$19, discount_amount=$20, use_vat=$21, use_wht=$22, wht_amount=$23,
-		    updated_at=NOW(), updated_by=$24
-		WHERE id=$25`,
+		    order_type=$24,
+		    updated_at=NOW(), updated_by=$25
+		WHERE id=$26`,
 		req.SupplierCode, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref,
 		req.Currency, req.ExpectedDate, req.PaymentTerms, req.Remarks,
 		totalAmount, vatAmount, netAmount, newStatus,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
+		orderType,
 		claims.UserID, poID,
 	); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {

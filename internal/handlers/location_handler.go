@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 
 	"erp-api/internal/middleware"
 	"erp-api/internal/models"
@@ -30,21 +31,29 @@ func scanLocation(l *models.LocationFull, row interface {
 }
 
 // ListLocations godoc
-// @Summary      List all active locations
+// @Summary      List locations (dropdown/autocomplete)
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        type  query  string  false  "location_type filter (department|project|site)"
+// @Param        search         query  string  false  "Search by location_name/location_code"
+// @Param        location_type  query  string  false  "location_type filter"
+// @Param        type           query  string  false  "Deprecated alias of location_type"
+// @Param        is_active      query  string  false  "Filter by active flag (default true)"
 // @Success      200   {object}  fiber.Map
 // @Failure      500   {object}  fiber.Map
 // @Router       /master/locations [get]
 func (h *LocationHandler) ListLocations(c *fiber.Ctx) error {
-	locType := c.Query("type")
+	search := c.Query("search")
+	locType := c.Query("location_type", c.Query("type"))
+	isActive := c.Query("is_active", "true")
+
 	rows, err := h.db.Query(context.Background(), `
 		SELECT `+locationCols+`
 		FROM location
-		WHERE ($1 = '' OR location_type = $1) AND is_active = true
-		ORDER BY location_name`, locType)
+		WHERE ($1 = '' OR location_type = $1)
+		  AND ($2 = '' OR is_active = $2::bool)
+		  AND ($3 = '' OR location_name ILIKE '%'||$3||'%' OR location_code ILIKE '%'||$3||'%')
+		ORDER BY location_name`, locType, isActive, search)
 	if err != nil {
 		return err
 	}
@@ -89,7 +98,7 @@ func (h *LocationHandler) GetLocation(c *fiber.Ctx) error {
 // @Security     BearerAuth
 // @Accept       json
 // @Produce      json
-// @Param        body  body  models.CreateLocationReq  true  "Location data"
+// @Param        body  body  models.CreateLocationReq  true  "Location data (location_name required; location_code auto-generated if omitted)"
 // @Success      201   {object}  models.LocationFull
 // @Failure      400   {object}  fiber.Map
 // @Failure      409   {object}  fiber.Map
@@ -99,18 +108,31 @@ func (h *LocationHandler) CreateLocation(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.LocationCode == "" || req.LocationName == "" || req.LocationType == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "location_code, location_name and location_type are required")
+	if req.LocationName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "location_name is required")
+	}
+	if req.LocationType == "" {
+		req.LocationType = "SITE"
 	}
 
+	ctx := context.Background()
 	claims := middleware.GetClaims(c)
 
+	locCode := req.LocationCode
+	if locCode == "" {
+		var seq int64
+		if err := h.db.QueryRow(ctx, `SELECT COALESCE(MAX(id),0)+1 FROM location`).Scan(&seq); err != nil {
+			return err
+		}
+		locCode = fmt.Sprintf("LOC-%06d", seq)
+	}
+
 	var l models.LocationFull
-	err := scanLocation(&l, h.db.QueryRow(context.Background(), `
+	err := scanLocation(&l, h.db.QueryRow(ctx, `
 		INSERT INTO location (location_code, location_name, location_type, parent_id, is_active, created_by, updated_by)
 		VALUES ($1, $2, $3, $4, true, $5, $5)
 		RETURNING `+locationCols,
-		req.LocationCode, req.LocationName, req.LocationType, req.ParentId, claims.UserID))
+		locCode, req.LocationName, req.LocationType, req.ParentId, claims.UserID))
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return fiber.NewError(fiber.StatusConflict, "location_code already exists")
@@ -177,8 +199,24 @@ func (h *LocationHandler) DeleteLocation(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
 	}
 	claims := middleware.GetClaims(c)
+	ctx := context.Background()
 
-	tag, err := h.db.Exec(context.Background(),
+	var locCode string
+	if err := h.db.QueryRow(ctx, `SELECT location_code FROM location WHERE id=$1`, id).Scan(&locCode); err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "location not found")
+	}
+
+	var inUse bool
+	if err := h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM project WHERE location_code=$1 AND is_active=true)`, locCode,
+	).Scan(&inUse); err != nil {
+		return err
+	}
+	if inUse {
+		return fiber.NewError(fiber.StatusConflict, "location is referenced by an active project")
+	}
+
+	tag, err := h.db.Exec(ctx,
 		`UPDATE location SET is_active=false, updated_at=NOW(), updated_by=$2 WHERE id=$1`,
 		id, claims.UserID)
 	if err != nil {

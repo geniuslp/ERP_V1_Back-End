@@ -47,6 +47,7 @@
 | [pr_attachment](#pr_attachment) | PR | ไฟล์แนบ PR |
 | [pr_status_log](#pr_status_log) | PR | log สถานะ PR |
 | [project](#project) | Master | โครงการ |
+| [project_stock](#project_stock) | Stock | ยอดวัสดุคงเหลือที่โครงการ (จาก requisition/stock_transfer) |
 | [purchase_order](#purchase_order) | PO | ใบสั่งซื้อ |
 | [purchase_order_line](#purchase_order_line) | PO | รายการใน PO |
 | [purchase_request](#purchase_request) | PR | ใบขอซื้อ |
@@ -65,6 +66,12 @@
 | [stock_item](#stock_item) | Stock | รายการวัสดุในคลัง (qty จริง) |
 | [stock_reservation](#stock_reservation) | Stock | การจองวัสดุ |
 | [stock_transaction](#stock_transaction) | Stock | transaction stock_item |
+| [stock_transfer](#stock_transfer) | Stock | ใบย้ายคลัง (WH_TO_WH / WH_TO_PROJECT / PROJECT_TO_WH) |
+| [stock_transfer_line](#stock_transfer_line) | Stock | รายการใน stock_transfer |
+| [stock_transfer_status_log](#stock_transfer_status_log) | Stock | log สถานะ stock_transfer |
+| [requisition](#requisition) | Stock | ใบเบิกของ (คลัง → โครงการ) |
+| [requisition_line](#requisition_line) | Stock | รายการใน requisition |
+| [requisition_status_log](#requisition_status_log) | Stock | log สถานะ requisition |
 | [storage_zone](#storage_zone) | Master | โซนคลัง |
 | [subgroup](#subgroup) | Material | กลุ่มย่อยวัสดุ |
 | [supplier](#supplier) | Master | ซัพพลายเออร์ |
@@ -82,9 +89,15 @@
 - `stock_item.qty` — qty จริงของวัสดุในคลัง ใช้ตัดเมื่อ borrow/requisition อนุมัติ
 - `inventory.qty_on_hand` — ใช้กับ PR/PO flow (mat_code based) คนละตัวกับ stock_item
 - `material_code.mat_code` ≠ `stock_item.mat_code` — ใช้ค่าเดียวกันแต่คนละตาราง ไม่มี FK ข้าม
+- 🔴 **`stock_item.mat_code` ไม่ใช่ unique เดี่ยวๆ อีกต่อไป** (2026-08-16) — เปลี่ยนจาก
+  `UNIQUE(mat_code)` เป็น `UNIQUE(mat_code, warehouse_code)` เพื่อให้ mat_code เดียวกันมีแถวคนละ
+  warehouse ได้ (จำเป็นสำหรับ `stock_transfer` แบบ WH_TO_WH) — โค้ดที่เคย `SELECT ... WHERE
+  mat_code=$1` แบบไม่ระบุ warehouse_code ต้องเช็คว่าอาจได้มากกว่า 1 แถวถ้ามีหลาย warehouse ในอนาคต
+  (ปัจจุบันมี warehouse เดียว `WH01` ในข้อมูลจริง จึงยังไม่เจอปัญหานี้)
 - `borrow_type` — `'BORROW'` = ขอยืม/เบิก, `'RETURN'` = คืน
 - `borrow_line.mat_type` — `'RETURNABLE'` = ต้องคืน, `'CONSUMABLE'` = ไม่ต้องคืน
 - `grn` มี `quality_status`, `confirmed_by`, `delivery_note` — ใช้ schema นี้ ไม่ใช่ inventory table
+- `purchase_request.order_type` — `'stock'` = ซื้อเข้าคลัง (warehouse), `'cost'` = ซื้อเข้าโครงการ (project cost) — คนละความหมายกับ `pr_type`
 
 ---
 
@@ -476,6 +489,7 @@ title        varchar(200)NOT NULL
 project_code varchar(20) nullable
 requested_by bigint      NOT NULL  — FK → users.id
 department   varchar(100)nullable
+delivery_location varchar(255) nullable
 note         text        nullable
 status       varchar(20) NOT NULL  DEFAULT 'DRAFT'
 approver_id  bigint      nullable
@@ -505,6 +519,14 @@ updated_by  bigint      nullable
 
 > ⚠️ menu_code ต้องใช้รูปแบบ MENU_XXX_YYY (UPPER_SNAKE) ให้ consistent
 > ปัจจุบัน id=43 ('stock-receiving') และ id=44 ('stock-receiving-history') ยังเป็น kebab-case อยู่
+
+> ⚠️ Memo menu ถูก rename + reorder แล้ว (ค่าปัจจุบันจริงจาก DB):
+> - `MENU_MEMO` → menu_name = "ใบบันทึกขอซื้อ (Memo)", sort_order = 1
+> - `MENU_MEMO_LIST` → menu_name = "รายการใบบันทึกขอซื้อ", sort_order = 1
+> - `MENU_MEMO_CREATE` → menu_name = "สร้างใบบันทึกขอซื้อ", sort_order = 2
+> - `MENU_MEMO_APPROVAL` → menu_name = "อนุมัติใบบันทึกขอซื้อ", sort_order = 3
+> - `MENU_PR` → sort_order = 2
+> - `MENU_PO` → sort_order = 3
 
 ---
 
@@ -666,6 +688,8 @@ warehouse_code varchar(20) nullable
 required_date  date        nullable
 status         varchar(20) NOT NULL  DEFAULT 'DRAFT'
 priority       varchar(20) DEFAULT 'NORMAL'  — LOW|NORMAL|HIGH|URGENT
+order_type     varchar(10) NOT NULL  DEFAULT 'stock'  — CHECK IN ('stock','cost') — 'stock' = ซื้อเข้าคลัง, 'cost' = ซื้อเข้าโครงการ (cost)
+pr_type        varchar(10) NOT NULL  DEFAULT 'PO_WO'  — CHECK IN ('PO_WO','PO_ONLY','WO_ONLY') — เก็บไว้เฉยๆ ยังไม่มีโมดูล WO จริง ไม่มี logic ต่อ
 remarks        text        nullable
 project_code   varchar(20) nullable
 memo_id        bigint      nullable  — FK → memo.id
@@ -841,6 +865,124 @@ remarks       text          nullable
 txn_date      date          NOT NULL  DEFAULT CURRENT_DATE
 created_at    timestamp     NOT NULL  DEFAULT now()
 created_by    bigint        NOT NULL
+```
+
+---
+
+### stock_transfer
+ใบย้ายคลัง (ย้ายคลัง). `transfer_type` กำหนดว่า field ไหนของ from_*/to_* ต้องมีค่า:
+`WH_TO_WH` → from_warehouse_code + to_warehouse_code, `WH_TO_PROJECT` → from_warehouse_code +
+to_project_code, `PROJECT_TO_WH` → from_project_code + to_warehouse_code.
+```
+id                   bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+transfer_no          varchar(30)   NOT NULL
+transfer_type        varchar(20)   NOT NULL  — WH_TO_WH | WH_TO_PROJECT | PROJECT_TO_WH
+transfer_date        date          NOT NULL  DEFAULT CURRENT_DATE
+from_warehouse_code  varchar(20)   nullable
+from_project_code    varchar(20)   nullable
+to_warehouse_code    varchar(20)   nullable
+to_project_code      varchar(20)   nullable
+requested_by         bigint        NOT NULL
+purpose              text          nullable
+remarks              text          nullable
+status               varchar(20)   NOT NULL  DEFAULT 'DRAFT' — DRAFT | CONFIRMED | CANCELLED
+checked_by           bigint        nullable
+checked_at           timestamp     nullable
+created_at           timestamp     NOT NULL  DEFAULT now()
+updated_at           timestamp     NOT NULL  DEFAULT now()
+created_by           bigint        NOT NULL
+updated_by           bigint        nullable
+```
+
+### stock_transfer_line
+```
+id             bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+transfer_id    bigint        NOT NULL  — FK → stock_transfer.id
+line_no        integer       NOT NULL
+item_id        bigint        NOT NULL  — FK → stock_item.id (source item for WH_TO_WH/WH_TO_PROJECT,
+                                          destination item for PROJECT_TO_WH — see StockTransferHandler.Create)
+mat_code       varchar(30)   NOT NULL
+unit           varchar(50)   nullable
+qty_requested  numeric(18,4) NOT NULL
+qty_confirmed  numeric(18,4) nullable
+remarks        text          nullable
+```
+
+### stock_transfer_status_log
+```
+id           bigint      NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+transfer_id  bigint      NOT NULL  — FK → stock_transfer.id
+from_status  varchar(20) nullable
+to_status    varchar(20) NOT NULL
+changed_by   bigint      NOT NULL
+changed_at   timestamp   NOT NULL  DEFAULT now()
+remarks      text        nullable
+```
+
+---
+
+### requisition
+ใบเบิกของ (คลัง → โครงการ). ตารางนี้มีอยู่ใน DB ก่อนหน้านี้แล้ว (ไม่ใช่ table ใหม่จาก session นี้)
+แยกออกจาก `stock_transfer` โดยเจตนา — คนละ status flow, header ผูก project_code+warehouse_code
+ตรงๆ ไม่มี transfer_type.
+```
+id             bigint        NOT NULL  PK  (nextval requisition_id_seq)
+req_no         varchar(30)   NOT NULL  UNIQUE
+project_code   varchar(20)   NOT NULL  — FK → project.project_code
+warehouse_code varchar(20)   NOT NULL
+requester_id   bigint        NOT NULL  — FK → users.id
+req_date       date          NOT NULL  DEFAULT CURRENT_DATE
+purpose        text          nullable
+status         varchar(20)   NOT NULL  DEFAULT 'DRAFT' — DRAFT | SUBMITTED | ISSUED | CANCELLED
+checked_by     bigint        nullable  — FK → users.id
+checked_at     timestamp     nullable
+remarks        text          nullable
+created_at     timestamp     NOT NULL  DEFAULT now()
+updated_at     timestamp     NOT NULL  DEFAULT now()
+created_by     bigint        NOT NULL
+updated_by     bigint        nullable
+```
+
+### requisition_line
+```
+id             bigint        NOT NULL  PK  (nextval requisition_line_id_seq)
+req_id         bigint        NOT NULL  — FK → requisition.id
+line_no        integer       nullable
+stock_item_id  bigint        nullable  — FK → stock_item.id
+mat_code       varchar(20)   NOT NULL
+unit           varchar(50)   nullable
+qty_requested  numeric(18,4) NOT NULL
+qty_issued     numeric(18,4) NOT NULL  DEFAULT 0
+unit_cost      numeric(18,4) nullable
+total_cost     numeric(18,4) nullable
+remarks        text          nullable
+```
+
+### requisition_status_log
+```
+id           bigint      NOT NULL  PK  (nextval requisition_status_log_id_seq)
+req_id       bigint      NOT NULL  — FK → requisition.id
+from_status  varchar(30) nullable
+to_status    varchar(30) NOT NULL
+changed_by   bigint      NOT NULL  — FK → users.id
+changed_at   timestamp   NOT NULL  DEFAULT now()
+remarks      text        nullable
+```
+
+---
+
+### project_stock
+ยอดวัสดุคงเหลือที่โครงการ อัปเดตโดย `RequisitionHandler.Issue` และ
+`StockTransferHandler.Confirm` (WH_TO_PROJECT เพิ่ม, PROJECT_TO_WH ลด) — ไม่มี handler CRUD ตรงๆ
+ของตัวเอง เขียนผ่าน helper `addToProjectStock`/`deductProjectStock` เท่านั้น.
+```
+id           bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+project_code varchar(20)   NOT NULL
+mat_code     varchar(30)   NOT NULL
+unit         varchar(50)   nullable
+qty_on_hand  numeric(18,4) NOT NULL  DEFAULT 0
+updated_at   timestamp     NOT NULL  DEFAULT now()
+-- UNIQUE (project_code, mat_code)
 ```
 
 ---

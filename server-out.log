@@ -1,0 +1,86 @@
+
+ ┌───────────────────────────────────────────────────┐ 
+ │                    ERP API v2                     │ 
+ │                   Fiber v2.52.5                   │ 
+ │               http://127.0.0.1:8080               │ 
+ │       (bound on host 0.0.0.0 and port 8080)       │ 
+ │                                                   │ 
+ │ Handlers ........... 336  Processes ........... 1 │ 
+ │ Prefork ....... Disabled  PID .............. 2816 │ 
+ └───────────────────────────────────────────────────┘ 
+
+[15:24:40] 200 GET /health       508.2µs
+[15:25:29] 204 OPTIONS /api/v1/stock/items/20/images       611.2µs
+[15:25:29] 201 POST /api/v1/stock/items/20/images     11.3164ms
+[15:25:29] 200 GET /uploads/stock/20/1786436729927030200_482382.png     84.6385ms
+[15:43:42] 204 OPTIONS /api/v1/stock/categories       623.9µs
+[15:43:42] 204 OPTIONS /api/v1/stock/items            0s
+[15:43:42] 204 OPTIONS /api/v1/stock/items            0s
+[15:43:42] 204 OPTIONS /api/v1/stock/categories            0s
+[15:43:42] 200 GET /api/v1/stock/categories      3.4907ms
+[15:43:42] 200 GET /api/v1/stock/categories       464.7µs
+[15:43:42] 200 GET /api/v1/stock/items      9.1867ms
+[15:43:42] 200 GET /api/v1/stock/items         510µs
+[15:43:53] 204 OPTIONS /api/v1/master/cost-code/list            0s
+[15:43:53] 204 OPTIONS /api/v1/master/cost-code/list            0s
+[15:43:53] 200 GET /api/v1/master/cost-code/list     14.6806ms
+[15:43:53] 200 GET /api/v1/master/cost-code/list      1.7158ms
+[15:44:05] 204 OPTIONS /api/v1/users/allUser       875.2µs
+[15:44:05] 204 OPTIONS /api/v1/master/projects            0s
+[15:44:05] 204 OPTIONS /api/v1/pr/next-number            0s
+[15:44:05] 204 OPTIONS /api/v1/master/warehouses            0s
+[15:44:05] 200 GET /api/v1/master/warehouses      5.7624ms
+[15:44:05] 200 GET /api/v1/master/warehouses       503.7µs
+[15:44:05] 200 GET /api/v1/pr/next-number     10.0498ms
+[15:44:05] 200 GET /api/v1/users/allUser     11.6515ms
+[15:44:05] 200 GET /api/v1/pr/next-number       644.3µs
+[15:44:05] 200 GET /api/v1/users/allUser      9.3981ms
+[15:44:05] 200 GET /api/v1/master/projects     26.8089ms
+[15:44:05] 200 GET /api/v1/master/projects      2.2607ms
+[15:44:08] 204 OPTIONS /api/v1/master/subgroups            0s
+[15:44:08] 204 OPTIONS /api/v1/master/allMaterial            0s
+[15:44:08] 200 GET /api/v1/master/subgroups      3.3837ms
+[15:44:08] 200 GET /api/v1/master/allMaterial    111.1211ms
+[15:44:10] 204 OPTIONS /api/v1/stock/inventory/batch-lookup            0s
+[15:44:10] 200 POST /api/v1/stock/inventory/batch-lookup      4.7608ms
+[15:44:11] 204 OPTIONS /api/v1/master/cost-code/full            0s
+[15:44:11] 200 GET /api/v1/master/cost-code/full      3.7486ms
+[15:44:19] 204 OPTIONS /api/v1/master/cost-code/list            0s
+[15:44:19] 204 OPTIONS /api/v1/master/cost-code/list            0s
+[15:44:19] 200 GET /api/v1/master/cost-code/list       2.631ms
+[15:44:19] 200 GET /api/v1/master/cost-code/list      1.5072ms
+[15:44:24] 204 OPTIONS /api/v1/master/suppliers            0s
+[15:44:24] 204 OPTIONS /api/v1/users/allUser            0s
+[15:44:24] 204 OPTIONS /api/v1/master/eligible-approvers            0s
+[15:44:24] 204 OPTIONS /api/v1/po/available-prs            0s
+[15:44:24] 204 OPTIONS /api/v1/master/warehouses            0s
+[15:44:24] 204 OPTIONS /api/v1/po/next-number            0s
+[15:44:24] 204 OPTIONS /api/v1/master/projects            0s
+[15:44:24] 200 GET /api/v1/master/warehouses       426.2µs
+[15:44:24] 200 GET /api/v1/master/suppliers      6.0483ms
+[15:44:24] 200 GET /api/v1/master/eligible-approvers      6.8011ms
+[15:44:24] 200 GET /api/v1/users/allUser      9.2828ms
+[15:44:24] 200 GET /api/v1/master/warehouses       2.033ms
+[15:44:24] 200 GET /api/v1/master/suppliers      2.7395ms
+[15:44:24] 200 GET /api/v1/users/allUser      1.0972ms
+[15:44:24] 200 GET /api/v1/po/available-prs     15.0422ms
+[15:44:24] 200 GET /api/v1/po/available-prs            0s
+[15:44:24] 200 GET /api/v1/master/projects     11.4788ms
+[15:44:24] 200 GET /api/v1/master/eligible-approvers      7.5331ms
+[15:44:24] 200 GET /api/v1/master/projects      1.5404ms
+[15:44:24] 200 GET /api/v1/po/next-number     63.3556ms
+[15:44:24] 200 GET /api/v1/po/next-number            0s
+[16:53:31] 204 OPTIONS /api/v1/approval-config            0s
+[16:53:31] 204 OPTIONS /api/v1/permissions/effective            0s
+[16:53:31] 204 OPTIONS /api/v1/approval-config            0s
+[16:53:31] 204 OPTIONS /api/v1/menus            0s
+[16:53:31] 204 OPTIONS /api/v1/permissions/effective            0s
+[16:53:31] 204 OPTIONS /api/v1/menus            0s
+[16:53:31] 401 GET /api/v1/approval-config            0s
+[16:53:31] 401 GET /api/v1/approval-config            0s
+[16:53:31] 204 OPTIONS /api/v1/auth/refresh            0s
+[16:53:31] 200 GET /api/v1/menus      3.7531ms
+[16:53:31] 401 POST /api/v1/auth/refresh            0s
+[16:53:31] 200 GET /api/v1/menus       351.7µs
+[16:53:31] 200 GET /api/v1/permissions/effective     10.5941ms
+[16:53:31] 200 GET /api/v1/permissions/effective      1.0195ms

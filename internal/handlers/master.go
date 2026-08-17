@@ -181,12 +181,13 @@ func (h *MasterHandler) GetMaterial(c *fiber.Ctx) error {
 
 // SearchMaterials godoc
 // @Summary      Type-ahead material search
-// @Description  Search active materials by mat_code or mat_name for the Create PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable). Prefix matches on mat_code rank first.
+// @Description  Search active materials by mat_code or mat_name for the Create PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable). Prefix matches on mat_code rank first. When warehouse_code is passed (e.g. Requisition item picker), results are additionally scoped to materials that have a stock_item row at that warehouse, and each result includes qty_on_hand from that warehouse.
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        q      query  string  true   "search term (matches mat_code or mat_name)"
-// @Param        limit  query  int     false  "max results, default 20, cap 50"
+// @Param        q               query  string  true   "search term (matches mat_code or mat_name)"
+// @Param        limit           query  int     false  "max results, default 20, cap 50"
+// @Param        warehouse_code  query  string  false  "scope results to materials with stock at this warehouse; adds qty_on_hand to each result"
 // @Success      200    {object}  fiber.Map
 // @Failure      500    {object}  fiber.Map
 // @Router       /materials/search [get]
@@ -204,13 +205,16 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 		limit = 50
 	}
 
-	rows, err := h.db.Query(context.Background(), `
+	warehouseCode := strings.TrimSpace(c.Query("warehouse_code"))
+
+	baseQuery := `
     SELECT
         mc.mat_code,
         mn.mat_name,
         u.unit_name AS unit,
         lp.last_price,
         csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code
+        %s
     FROM material_code mc
     JOIN mat_name mn ON mn.id = mc.mat_name_id
     JOIN unit u      ON u.id  = mc.unit_id
@@ -229,13 +233,33 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
     LEFT JOIN cost_group    cg  ON cg.id  = csg.group_id
     LEFT JOIN cost_job      cj  ON cj.id  = cg.job_id
     LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
+    %s
     WHERE mc.is_active = true
-      AND (mc.mat_code ILIKE '%' || $1 || '%'
-           OR mn.mat_name ILIKE '%' || $1 || '%')
+      AND (mc.mat_code ILIKE '%%' || $1 || '%%'
+           OR mn.mat_name ILIKE '%%' || $1 || '%%')
+      %s
     ORDER BY
-        (mc.mat_code ILIKE $1 || '%') DESC,
+        (mc.mat_code ILIKE $1 || '%%') DESC,
         mn.mat_name ASC
-    LIMIT $2`, q, limit)
+    LIMIT $2`
+
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if warehouseCode == "" {
+		query := fmt.Sprintf(baseQuery, "", "", "")
+		rows, err = h.db.Query(context.Background(), query, q, limit)
+	} else {
+		// INNER JOIN stock_item scoped to warehouse_code — only materials with an actual
+		// stock_item row at that warehouse are returned, per requisition's hard requirement
+		// that a requisition draws from exactly one warehouse.
+		query := fmt.Sprintf(baseQuery,
+			", si.qty AS qty_on_hand",
+			"JOIN stock_item si ON si.mat_code = mc.mat_code AND si.warehouse_code = $3",
+			"")
+		rows, err = h.db.Query(context.Background(), query, q, limit, warehouseCode)
+	}
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "query error: "+err.Error())
 	}
@@ -244,8 +268,14 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 	items := make([]models.MaterialSearchItem, 0, limit)
 	for rows.Next() {
 		var m models.MaterialSearchItem
-		if err := rows.Scan(&m.MatCode, &m.MatName, &m.Unit, &m.LastPrice, &m.CostCode); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "scan error: "+err.Error())
+		if warehouseCode == "" {
+			if err := rows.Scan(&m.MatCode, &m.MatName, &m.Unit, &m.LastPrice, &m.CostCode); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "scan error: "+err.Error())
+			}
+		} else {
+			if err := rows.Scan(&m.MatCode, &m.MatName, &m.Unit, &m.LastPrice, &m.CostCode, &m.QtyOnHand); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "scan error: "+err.Error())
+			}
 		}
 		items = append(items, m)
 	}
@@ -696,15 +726,24 @@ func (h *MasterHandler) CreateLocation(c *fiber.Ctx) error {
 // ─── Warehouse ───────────────────────────────────────────────────────────────
 
 // ListWarehouses godoc
-// @Summary      List warehouses
+// @Summary      List warehouses (dropdown/autocomplete)
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Success      200  {array}  models.Warehouse
+// @Param        search     query  string  false  "Search by warehouse_name/warehouse_code"
+// @Param        is_active  query  string  false  "Filter by active flag (default true)"
+// @Success      200  {object}  fiber.Map
 // @Router       /master/warehouses [get]
 func (h *MasterHandler) ListWarehouses(c *fiber.Ctx) error {
-	rows, err := h.db.Query(context.Background(),
-		`SELECT warehouse_code, warehouse_name, address, is_active, created_at FROM warehouse WHERE is_active=true ORDER BY warehouse_name`)
+	search := c.Query("search")
+	isActive := c.Query("is_active", "true")
+
+	rows, err := h.db.Query(context.Background(), `
+		SELECT warehouse_code, warehouse_name, address, is_active, created_at
+		FROM warehouse
+		WHERE ($1 = '' OR is_active = $1::bool)
+		  AND ($2 = '' OR warehouse_name ILIKE '%'||$2||'%' OR warehouse_code ILIKE '%'||$2||'%')
+		ORDER BY warehouse_name`, isActive, search)
 	if err != nil {
 		return err
 	}

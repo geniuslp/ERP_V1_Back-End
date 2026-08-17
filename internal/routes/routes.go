@@ -121,12 +121,15 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	// Purchase Request
 	pr := api.Group("/pr")
+	pr.Use(jwt)
 	pr.Get("/list-test", func(c *fiber.Ctx) error {
 		return c.SendString("list works")
 	})
 	pr.Get("/next-number", prH.NextNumber)
 	pr.Post("/", prH.Create)
+	pr.Put("/:id", prH.Update)
 	pr.Post("/:id/submit", prH.Submit)
+	pr.Put("/:id/reopen", prH.Reopen)
 	pr.Get("/:id/logs", prH.GetLogs)
 	pr.Get("/:id/lines-with-po-status", prH.LinesWithPOStatus)
 	pr.Post("/:id/attachments", attachH.Add)
@@ -158,6 +161,11 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	po.Post("/:id/attachments", attachH.AddPO)
 	po.Get("/:id/attachments", attachH.ListPO)
 	po.Delete("/:id/attachments/:attach_id", attachH.DeletePO)
+	// TODO: RegisterPOApprovalRoutes registers GET "/" and GET "/:id" again on the same
+	// group — poH.List/poH.Get above (lines 149-150) win since Fiber matches the first
+	// registered route, so POApprovalHandler.List/GetDetail are currently unreachable dead
+	// code. Needs a separate task to resolve (same bug class as the PR module's shadowed
+	// route, see CLAUDE.md).
 	RegisterPOApprovalRoutes(po, db)
 
 	// Memo
@@ -253,6 +261,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	// Stock Management
 	stockItemH := handlers.NewStockItemHandler(db)
+	stockItemImgH := handlers.NewStockItemImageHandler(db)
 	stockInvH := handlers.NewStockInventoryHandler(db)
 	stockTxnH := handlers.NewStockTransactionHandler(db)
 	stockBorrowH := handlers.NewStockBorrowHandler(db)
@@ -266,9 +275,15 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	stock.Get("/lookup", stockItemH.Lookup)
 	stock.Post("/items", stockItemH.Create)
 	stock.Post("/items/import", stockItemH.ImportExcel)
+	stock.Post("/items/bulk/preview", stockItemH.PreviewImportExcel)
 	stock.Get("/items/:id", stockItemH.GetByID)
 	stock.Put("/items/:id", stockItemH.Update)
 	stock.Delete("/items/:id", stockItemH.SoftDelete)
+
+	stock.Post("/items/:id/images", stockItemImgH.UploadImages)
+	stock.Get("/items/:id/images", stockItemImgH.ListImages)
+	stock.Put("/items/:id/images/:image_id/primary", stockItemImgH.SetPrimary)
+	stock.Delete("/items/:id/images/:image_id", stockItemImgH.DeleteImage)
 
 	// Inventory
 	stock.Get("/inventory", stockInvH.List)
@@ -294,6 +309,26 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	stock.Get("/reservations", stockResH.List)
 	stock.Post("/reservations", stockResH.Create)
 	stock.Post("/reservations/:id/cancel", stockResH.Cancel)
+
+	// Requisition (ใบเบิกของ)
+	requisitionH := handlers.NewRequisitionHandler(db)
+	requisition := api.Group("/requisition", jwt)
+	requisition.Get("/", requisitionH.List)
+	requisition.Post("/", requisitionH.Create)
+	requisition.Get("/history", requisitionH.History)
+	requisition.Get("/:id", requisitionH.Get)
+	requisition.Post("/:id/confirm", middleware.RequireRole("STOCK", "ADMIN"), requisitionH.Confirm)
+	requisition.Post("/:id/cancel", requisitionH.Cancel)
+
+	// Stock Transfer (ย้ายคลัง)
+	stockTransferH := handlers.NewStockTransferHandler(db)
+	stockTransfer := api.Group("/stock-transfer", jwt)
+	stockTransfer.Get("/history", stockTransferH.History) // static route before :id
+	stockTransfer.Get("/", stockTransferH.List)
+	stockTransfer.Post("/", stockTransferH.Create)
+	stockTransfer.Get("/:id", stockTransferH.Get)
+	stockTransfer.Post("/:id/confirm", middleware.RequireRole("STOCK", "ADMIN"), stockTransferH.Confirm)
+	stockTransfer.Post("/:id/cancel", stockTransferH.Cancel)
 
 	// Role-Menu Permissions
 	roleMenuH := handlers.NewRoleMenuPermissionHandler(db)

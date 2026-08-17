@@ -47,6 +47,7 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName:      "ERP API v2",
 		ErrorHandler: middleware.ErrorHandler,
+		BodyLimit:    50 * 1024 * 1024, // 50MB — ปรับตามขนาดไฟล์ที่คาดว่าจะใหญ่สุด
 	})
 
 	app.Use(recover.New())

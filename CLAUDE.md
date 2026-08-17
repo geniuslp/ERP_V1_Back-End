@@ -250,6 +250,8 @@ PR (DRAFT)
 - **Borrow**: `DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, BORROWED, RETURNED, PARTIALLY_RETURNED, CANCELLED`
 - **Stock Count**: `DRAFT, IN_PROGRESS, COMPLETED`
 - **Memo**: `DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, CANCELLED`
+- **Requisition** (ใบเบิกของ, `internal/handlers/requisition.go`): `DRAFT, SUBMITTED, ISSUED, CANCELLED`
+- **Stock Transfer**: `DRAFT / CONFIRMED / CANCELLED`
 - **Approval action** (`approval_log.action`): `SUBMIT, APPROVE, REJECT, RETURN, CANCEL, ESCALATE, COMMENT`
 - **Approval request status** (`approval_request.status`): `PENDING, APPROVED, REJECTED, CANCELLED, ESCALATED`
 
@@ -496,6 +498,73 @@ now writes real per-location stock, not just a flat `stock_item.qty` bump
   see "Session learnings (2026-07-27)" #3 above) — that legacy flow explicitly does **not** touch
   stock. The prohibition there is unchanged; it does not apply to `GoodsReceiptHandler`, which is
   the intended, decided-on path for stock to move on receipt.
+
+---
+
+## 🧭 Session learnings (2026-08-16) — Stock Requisition + Stock Transfer
+
+### 1. Two separate systems, not one — despite similar names
+`internal/handlers/requisition.go` (ใบเบิกของ, คลัง→โครงการ) and
+`internal/handlers/stock_transfer.go` (ย้ายคลัง, WH↔WH/project) are **deliberately separate**,
+each with its own DB tables and status flow:
+- `requisition` / `requisition_line` / `requisition_status_log` — pre-existing tables (already in
+  the DB before this session), status `DRAFT → SUBMITTED → ISSUED / CANCELLED`.
+- `stock_transfer` / `stock_transfer_line` / `stock_transfer_status_log` — status
+  `DRAFT → CONFIRMED / CANCELLED`, `transfer_type` = `WH_TO_WH | WH_TO_PROJECT | PROJECT_TO_WH`.
+They only share `stock_transaction` for movement history (`ref_doc_type = 'REQUISITION'` vs
+`'STOCK_TRANSFER'`) via `GET /stock-transfer/history`, which reads both. Do **not** try to merge
+these into one table later without a deliberate decision — they were kept apart because
+`requisition` already existed with a different shape and re-doing it wasn't worth the churn.
+
+### 2. `stock_item.mat_code` uniqueness was changed — check before assuming single-warehouse
+Before this session, `stock_item` had `UNIQUE(mat_code)` — **one row per mat_code system-wide**,
+which made cross-warehouse transfer impossible (you can't have the same mat_code in two
+warehouses). Changed to `UNIQUE(mat_code, warehouse_code)`. Any old code doing
+`SELECT ... FROM stock_item WHERE mat_code=$1` without also filtering `warehouse_code` will
+silently break (or return the wrong row / error on multiple rows) once a second warehouse exists
+with real data — currently only `WH01` is in use, so this hasn't surfaced yet, but it will the
+moment `WH02`+ gets stock. Audit any handler that queries `stock_item` by `mat_code` alone before
+relying on it for a multi-warehouse scenario.
+
+### 3. Movement math works on `stock_item.qty` directly, not `stock_inventory`
+Both Requisition Issue and Stock Transfer Confirm decrement/increment `stock_item.qty` directly
+(`SELECT ... FOR UPDATE` + `UPDATE stock_item SET qty=...`) — they do **not** touch
+`stock_inventory.qty_on_hand`. This matches the schema actually given for these two features
+(`stock_transfer_line`/`requisition_line` have no `location_code` column, so there's no
+sub-location breakdown to update) but is **inconsistent** with `stock_borrow.go` and
+`stock_inventory.go`'s `Transfer`, which write `stock_inventory.qty_on_hand` per
+`(item_id, location_code)` instead and never roll that up into `stock_item.qty`. This drift
+between `stock_item.qty` and `stock_inventory.qty_on_hand` already existed before this session
+(no trigger keeps them in sync) — it is not something this session introduced or fixed, just
+another instance of it. Don't assume either column is authoritative without checking which flow
+last touched the item.
+
+### 4. `stock_transaction.txn_type` CHECK constraint is stricter than the constants suggest
+The live CHECK constraint only allows `IN, OUT, TRANSFER, ADJUST_PLUS, ADJUST_MINUS, BORROW_OUT,
+BORROW_RETURN` — **not** `ISSUE`/`RECEIVE`/`RETURN`, even though `stock_constants.go` defines
+`TxnTypeIssue = "ISSUE"` etc. and `pr.go` inserts using `TxnTypeIssue`. This looks like existing
+drift between the constants file and the DB constraint (not something fixed in this session,
+flagging for whoever investigates why PR-driven stock issue inserts might be failing). Requisition
+Issue and Stock Transfer Confirm use the constraint-legal literal values directly
+(`'OUT'`, `'IN'`, `'TRANSFER'`) rather than the `TxnType*` constants — do the same for any new
+insert into `stock_transaction` until the constants/constraint mismatch is resolved.
+
+### 5. No granular per-warehouse permission check exists yet
+The task asked for "caller must have rights on `to_warehouse_code`" style checks using the 4-layer
+RBAC (`role_menu_permissions`/`user_menu_permissions`/`dept_menu_permissions`). No middleware or
+handler in this codebase enforces that anywhere yet (confirmed — `internal/middleware` only
+exports `RequireRole`; the permission tables have no handler built on them, matching the
+"Menu/Permission handler ยังไม่มี" TODO below). `Requisition.Issue` and `StockTransfer.Confirm`
+use `middleware.RequireRole("STOCK", "ADMIN")` instead, matching how `stock_borrow.go`'s `Approve`
+gates its confirm-style action. Building real per-warehouse permission checks is a separate,
+larger task — don't assume it's covered.
+
+### 6. Menu rows already existed
+`MENU_STOCK_REQUISITION` (id 46), `MENU_STOCK_TRANSFER` (id 47), `MENU_STOCK_HISTORY` (id 48)
+already existed under the `MENU_STOCK` (id 13, "คลังสินค้า") parent menu before this session — no
+SQL needed to create them. However `role_menus` has **zero** rows for these 3 menu IDs, meaning no
+role currently has menu-level access to them via the role-based path; someone needs to wire that
+up (outside this session's scope — it's a data/admin-UI task, not a code change).
 
 ---
 

@@ -81,6 +81,8 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		ProjectCode  *string `json:"project_code"`
 		Remarks      *string `json:"remarks"`
 		PRDate       string  `json:"pr_date"`
+		PRType       string  `json:"pr_type"`
+		JobCode      *string `json:"job_code,omitempty"`
 	}
 
 	rows, err := h.db.Query(context.Background(), `
@@ -88,7 +90,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
        COALESCE(u1.full_name, '') AS requested_by,
        NULL::text                 AS approver_name,
        pr.location_text, pr.project_code, pr.remarks,
-       pr.pr_date::text
+       pr.pr_date::text, pr.pr_type, pr.job_code
 FROM purchase_request pr
 LEFT JOIN users u1 ON u1.id = pr.requested_by
 WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)
@@ -105,7 +107,7 @@ LIMIT $2 OFFSET $3`,
 	for rows.Next() {
 		var item PRListItem
 		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
-			&item.LocationText, &item.ProjectCode, &item.Remarks, &item.PRDate)
+			&item.LocationText, &item.ProjectCode, &item.Remarks, &item.PRDate, &item.PRType, &item.JobCode)
 		items = append(items, item)
 	}
 
@@ -181,6 +183,8 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		WarehouseName *string        `json:"warehouse_name"`
 		Remarks       *string        `json:"remarks"`
 		PRDate        string         `json:"pr_date"`
+		PRType        string         `json:"pr_type"`
+		JobCode       *string        `json:"job_code,omitempty"`
 		Lines         []PRLineItem   `json:"lines"`
 		Attachments   []PRAttachItem `json:"attachments"`
 	}
@@ -191,7 +195,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
 		       NULL AS approver_id, NULL AS approver_name,
 		       pr.location_text, pr.project_code, pr.warehouse_code, w.warehouse_name, pr.remarks,
-		       pr.pr_date::text
+		       pr.pr_date::text, pr.pr_type, pr.job_code
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
 		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
@@ -204,7 +208,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	if err := row.Scan(
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode,
-		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate,
+		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.PRType, &pr.JobCode,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")

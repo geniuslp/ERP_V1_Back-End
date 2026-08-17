@@ -4720,7 +4720,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Search active materials by mat_code or mat_name for the Create PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable). Prefix matches on mat_code rank first.",
+                "description": "Search active materials by mat_code or mat_name for the Create PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable). Prefix matches on mat_code rank first. When warehouse_code is passed (e.g. Requisition item picker), results are additionally scoped to materials that have a stock_item row at that warehouse, and each result includes qty_on_hand from that warehouse.",
                 "produces": [
                     "application/json"
                 ],
@@ -4740,6 +4740,12 @@ const docTemplate = `{
                         "type": "integer",
                         "description": "max results, default 20, cap 50",
                         "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "scope results to materials with stock at this warehouse; adds qty_on_hand to each result",
+                        "name": "warehouse_code",
                         "in": "query"
                     }
                 ],
@@ -4832,6 +4838,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department",
                 "consumes": [
                     "application/json"
                 ],
@@ -4901,6 +4908,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department",
                 "consumes": [
                     "application/json"
                 ],
@@ -5838,6 +5846,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Cancels the PO and all of its lines (status='CANCELLED' on both), which frees\nup the source PR lines' qty_remaining for re-ordering — PRHandler.LinesWithPOStatus\ncomputes qty_ordered/qty_remaining live from purchase_order_line rows, filtering\nout ones with status='CANCELLED'. status_receive is left untouched: if goods were\nalready received, that's a physical fact recorded in stock_inventory and is not\nerased by cancelling the PO — a cancelled PO can legitimately still show\nstatus_receive='PARTIALLY_RECEIVED'/'RECEIVED' as a historical record. Reversing\nphysically-received stock is a separate stock-adjustment/return flow, not part of this endpoint.",
                 "produces": [
                     "application/json"
                 ],
@@ -6360,7 +6369,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the next available PR number for the current month (Buddhist year format)",
+                "description": "Returns the next available PR number for the current month: PR\u003cYYYYMM\u003e-\u003c4-digit sequence\u003e, e.g. PR202608-0001. Sequence resets to 0001 each new month.",
                 "produces": [
                     "application/json"
                 ],
@@ -6404,6 +6413,62 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Only allowed while status='DRAFT' (including PRs freshly reopened via\nPUT /pr/{id}/reopen, which itself guarantees no active PO references any of\nthis PR's lines — see Reopen). Because that guard already holds by the time a\nPR can reach DRAFT, editing here is fully free: lines are deleted and\nreinserted from the payload with no FK-safety restrictions. Logs the edit to\nerp_audit_log. Status stays DRAFT afterward — the user must explicitly call\nPOST /pr/{id}/submit to re-run deductStockOnSubmit against the new\nqty_requested values and go back to COMPLETED.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Request"
+                ],
+                "summary": "Edit a DRAFT PR's header and lines",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PR ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Updated PR data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdatePRRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -6638,6 +6703,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/pr/{id}/reopen": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system\ndoes not auto-cancel anything; the user must cancel the referencing PO(s) manually\nfirst. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='ISSUE') by restoring stock_item.qty and recording an\noffsetting RETURN transaction, then sets status back to DRAFT. Relies on the\nconfirmed rule that a PR never has duplicate mat_code across its own lines, so\nreversing by ref_doc_id=pr_id alone (without a pr_line_id column on\nstock_transaction) is unambiguous.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Request"
+                ],
+                "summary": "Reopen a COMPLETED PR back to DRAFT for editing",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PR ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/pr/{id}/submit": {
             "post": {
                 "security": [
@@ -6670,6 +6781,308 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/requisition": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Requisition"
+                ],
+                "summary": "รายการใบเบิกของ",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project code",
+                        "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Warehouse code",
+                        "name": "warehouse_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Filter by stock house flag",
+                        "name": "is_stock_house",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Requisition"
+                ],
+                "summary": "สร้างใบเบิกของ (DRAFT)",
+                "parameters": [
+                    {
+                        "description": "Requisition data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateRequisitionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/requisition/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Requisition"
+                ],
+                "summary": "ประวัติการเบิกของ (จาก stock_transaction)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Material code",
+                        "name": "mat_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/requisition/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Requisition"
+                ],
+                "summary": "รายละเอียดใบเบิกของ",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/requisition/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Requisition"
+                ],
+                "summary": "ยกเลิกใบเบิกของ (DRAFT → CANCELLED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/requisition/{id}/confirm": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One DB transaction. Locks each line's stock_item row (SELECT ... FOR UPDATE), verifies\nsufficient qty, decrements stock_item.qty at the requisition's warehouse, upserts\nproject_stock for the requisition's project_code, and records a stock_transaction\n(txn_type=REQUISITION_ISSUE, ref_doc_type=REQUISITION) per line for movement history.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Requisition"
+                ],
+                "summary": "ยืนยันใบเบิกของ (DRAFT → CONFIRMED) — ตัดสต๊อกคลังทันที เพิ่มยอดที่โครงการ",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -6916,6 +7329,316 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfer": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StockTransfer"
+                ],
+                "summary": "รายการใบย้ายคลัง",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Transfer type",
+                        "name": "transfer_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "From warehouse code",
+                        "name": "from_warehouse_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "To warehouse code",
+                        "name": "to_warehouse_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "transfer_type WH_TO_WH requires from_warehouse_code+to_warehouse_code; WH_TO_PROJECT requires from_warehouse_code+to_project_code; PROJECT_TO_WH requires from_project_code+to_warehouse_code.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StockTransfer"
+                ],
+                "summary": "สร้างใบย้ายคลัง (DRAFT)",
+                "parameters": [
+                    {
+                        "description": "Transfer data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateStockTransferRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfer/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Reads stock_transaction WHERE ref_doc_type IN ('STOCK_TRANSFER','REQUISITION'),\njoined to stock_item for mat_code/name and to warehouse/project for from/to display\nnames (a location can be either, so both are LEFT JOINed and whichever matches is used).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StockTransfer"
+                ],
+                "summary": "ประวัติการเคลื่อนไหว (Requisition + Stock Transfer รวมกัน)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter: STOCK_TRANSFER or REQUISITION",
+                        "name": "ref_doc_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Material code",
+                        "name": "mat_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfer/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StockTransfer"
+                ],
+                "summary": "รายละเอียดใบย้ายคลัง",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Transfer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfer/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StockTransfer"
+                ],
+                "summary": "ยกเลิกใบย้ายคลัง (DRAFT เท่านั้น)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Transfer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfer/{id}/confirm": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One DB transaction. Locks each line's source stock_item row (SELECT ... FOR UPDATE),\nverifies sufficient qty, moves stock according to transfer_type (WH_TO_WH: deduct\nsource warehouse item, credit destination warehouse item; WH_TO_PROJECT: deduct\nsource warehouse item, credit project_stock; PROJECT_TO_WH: deduct project_stock,\ncredit destination warehouse item), and records a stock_transaction per line\n(ref_doc_type=STOCK_TRANSFER) for the shared movement history.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StockTransfer"
+                ],
+                "summary": "ยืนยันรับของ / ยืนยันการย้ายคลัง (DRAFT → CONFIRMED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Transfer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -7489,6 +8212,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Scope results to one warehouse's stock_item rows (e.g. requisition item picker)",
+                        "name": "warehouse_code",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Page",
                         "name": "page",
@@ -7540,6 +8269,43 @@ const docTemplate = `{
                 "responses": {
                     "201": {
                         "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/items/bulk/preview": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Parses the same Excel file as /stock/items/import but does not write anything. Each row's mat_code is checked against material_code, joined out to mat_group/subgroup/mat_name/spec_size/brand/unit (LEFT JOIN — any link can be null). The file's DESCRIPTION text is compared (whitespace-normalized, case-insensitive) against \"mat_name + spec_description\" from the master. Per row: code_found, master (object with mat_code/group_name/subgroup_name/mat_name/spec_description/brand_name/unit_name, or null if code_found is false), name_matched, and a derived status (\"ok\"|\"code_not_found\"|\"name_mismatch\"). Response also includes a summary count of ok/code_not_found/name_mismatch.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Preview Stock Item import (ตรวจสอบ mat_code + รายละเอียดสินค้าเต็มรูปแบบ กับ material_code master ก่อนบันทึกจริง)",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "Excel file",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -7683,6 +8449,186 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/items/{id}/images": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "List images for a stock item",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upload one or more images (multipart field \"files\"); auto-marks the first as primary if none exists yet",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Upload images for a stock item",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "Image files",
+                        "name": "files",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/items/{id}/images/{image_id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes the DB record and the file on disk (best-effort); promotes the next image to primary if the deleted one was primary",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Delete a stock item image",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Image ID",
+                        "name": "image_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/items/{id}/images/{image_id}/primary": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Set an image as the primary/thumbnail image",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Image ID",
+                        "name": "image_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -9167,6 +10113,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.AttachmentRef"
                     }
                 },
+                "delivery_location": {
+                    "type": "string"
+                },
                 "department": {
                     "type": "string"
                 },
@@ -9273,6 +10222,10 @@ const docTemplate = `{
                 "location_text": {
                     "type": "string"
                 },
+                "order_type": {
+                    "description": "\"stock\" | \"cost\" — defaults to \"stock\"",
+                    "type": "string"
+                },
                 "payment_terms": {
                     "type": "string"
                 },
@@ -9359,6 +10312,9 @@ const docTemplate = `{
                 "created_by": {
                     "type": "integer"
                 },
+                "job_code": {
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
                     "minItems": 1,
@@ -9372,10 +10328,18 @@ const docTemplate = `{
                 "memo_id": {
                     "type": "integer"
                 },
+                "order_type": {
+                    "description": "\"stock\" | \"cost\" — defaults to \"stock\"",
+                    "type": "string"
+                },
                 "pr_date": {
                     "type": "string"
                 },
                 "pr_no": {
+                    "type": "string"
+                },
+                "pr_type": {
+                    "description": "\"PO_WO\" | \"PO_ONLY\" | \"WO_ONLY\" — defaults to \"PO_WO\"",
                     "type": "string"
                 },
                 "project_code": {
@@ -9426,6 +10390,52 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CreateRequisitionLineRequest": {
+            "type": "object",
+            "properties": {
+                "mat_code": {
+                    "type": "string"
+                },
+                "qty_requested": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CreateRequisitionRequest": {
+            "type": "object",
+            "properties": {
+                "container_no": {
+                    "type": "string"
+                },
+                "is_stock_house": {
+                    "type": "boolean"
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CreateRequisitionLineRequest"
+                    }
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "purpose": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "req_date": {
+                    "type": "string"
+                },
+                "warehouse_code": {
                     "type": "string"
                 }
             }
@@ -9520,6 +10530,55 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "txn_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CreateStockTransferLineRequest": {
+            "type": "object",
+            "properties": {
+                "mat_code": {
+                    "type": "string"
+                },
+                "qty_requested": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CreateStockTransferRequest": {
+            "type": "object",
+            "properties": {
+                "from_project_code": {
+                    "type": "string"
+                },
+                "from_warehouse_code": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CreateStockTransferLineRequest"
+                    }
+                },
+                "purpose": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "to_project_code": {
+                    "type": "string"
+                },
+                "to_warehouse_code": {
+                    "type": "string"
+                },
+                "transfer_date": {
+                    "type": "string"
+                },
+                "transfer_type": {
                     "type": "string"
                 }
             }
@@ -10074,6 +11133,9 @@ const docTemplate = `{
                 "created_by": {
                     "type": "integer"
                 },
+                "delivery_location": {
+                    "type": "string"
+                },
                 "department": {
                     "type": "string"
                 },
@@ -10494,9 +11556,6 @@ const docTemplate = `{
                 "expected_date": {
                     "type": "string"
                 },
-                "fax": {
-                    "type": "string"
-                },
                 "lines": {
                     "type": "array",
                     "items": {
@@ -10510,6 +11569,9 @@ const docTemplate = `{
                     "type": "number"
                 },
                 "office_phone": {
+                    "type": "string"
+                },
+                "order_type": {
                     "type": "string"
                 },
                 "payment_terms": {
@@ -10602,6 +11664,9 @@ const docTemplate = `{
                 "created_at": {
                     "type": "string"
                 },
+                "job_code": {
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
                     "items": {
@@ -10620,6 +11685,9 @@ const docTemplate = `{
                 "memo_title": {
                     "type": "string"
                 },
+                "order_type": {
+                    "type": "string"
+                },
                 "pr_date": {
                     "type": "string"
                 },
@@ -10627,6 +11695,9 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "pr_no": {
+                    "type": "string"
+                },
+                "pr_type": {
                     "type": "string"
                 },
                 "priority": {
@@ -10977,6 +12048,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.AttachmentRef"
                     }
                 },
+                "delivery_location": {
+                    "type": "string"
+                },
                 "department": {
                     "type": "string"
                 },
@@ -11019,6 +12093,80 @@ const docTemplate = `{
                         "pct",
                         "amt"
                     ]
+                }
+            }
+        },
+        "models.UpdatePRLine": {
+            "type": "object",
+            "required": [
+                "mat_code",
+                "qty_requested"
+            ],
+            "properties": {
+                "cost_subgroup_id": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "line_no": {
+                    "type": "integer"
+                },
+                "mat_code": {
+                    "type": "string"
+                },
+                "qty_requested": {
+                    "type": "number"
+                }
+            }
+        },
+        "models.UpdatePRRequest": {
+            "type": "object",
+            "required": [
+                "lines",
+                "location_text",
+                "pr_date",
+                "requested_by"
+            ],
+            "properties": {
+                "job_code": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/models.UpdatePRLine"
+                    }
+                },
+                "location_text": {
+                    "type": "string"
+                },
+                "order_type": {
+                    "description": "\"stock\" | \"cost\"",
+                    "type": "string"
+                },
+                "pr_date": {
+                    "type": "string"
+                },
+                "pr_type": {
+                    "description": "\"PO_WO\" | \"PO_ONLY\" | \"WO_ONLY\"",
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "requested_by": {
+                    "type": "integer"
+                },
+                "required_date": {
+                    "type": "string"
+                },
+                "warehouse_code": {
+                    "type": "string"
                 }
             }
         },
@@ -11258,26 +12406,6 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "role_name": {
-                    "type": "string"
-                }
-            }
-        },
-        "models.Warehouse": {
-            "type": "object",
-            "properties": {
-                "address": {
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "is_active": {
-                    "type": "boolean"
-                },
-                "warehouse_code": {
-                    "type": "string"
-                },
-                "warehouse_name": {
                     "type": "string"
                 }
             }

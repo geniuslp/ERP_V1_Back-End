@@ -14,6 +14,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -167,7 +168,7 @@ func (h *PRHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 	row := h.db.QueryRow(context.Background(), `
 		SELECT pr.id, pr.pr_no, pr.pr_date, pr.requested_by, pr.location_text, pr.warehouse_code, pr.project_code,
-		       pr.required_date::text, pr.status, pr.priority, pr.remarks, pr.created_at, pr.updated_at,
+		       pr.required_date::text, pr.status, pr.priority, pr.order_type, pr.pr_type, pr.job_code, pr.remarks, pr.created_at, pr.updated_at,
 		       w.warehouse_name
 		FROM purchase_request pr
 		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
@@ -175,7 +176,7 @@ func (h *PRHandler) Get(c *fiber.Ctx) error {
 
 	var pr models.PurchaseRequest
 	if err := row.Scan(&pr.PRID, &pr.PRNo, &pr.PRDate, &pr.RequestedBy, &pr.LocationText,
-		&pr.WarehouseCode, &pr.ProjectCode, &pr.RequiredDate, &pr.Status, &pr.Priority, &pr.Remarks, &pr.CreatedAt, &pr.UpdatedAt,
+		&pr.WarehouseCode, &pr.ProjectCode, &pr.RequiredDate, &pr.Status, &pr.Priority, &pr.OrderType, &pr.PRType, &pr.JobCode, &pr.Remarks, &pr.CreatedAt, &pr.UpdatedAt,
 		&pr.WarehouseName); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
@@ -249,6 +250,20 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
+	if req.OrderType == "" {
+		req.OrderType = "stock"
+	}
+	if req.OrderType != "stock" && req.OrderType != "cost" {
+		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	}
+
+	if req.PRType == "" {
+		req.PRType = "PO_WO"
+	}
+	if req.PRType != "PO_WO" && req.PRType != "PO_ONLY" && req.PRType != "WO_ONLY" {
+		return fiber.NewError(fiber.StatusBadRequest, "pr_type must be 'PO_WO', 'PO_ONLY', or 'WO_ONLY'")
+	}
+
 	if req.MemoID != nil {
 		var existingPRNo string
 		err := h.db.QueryRow(context.Background(),
@@ -258,6 +273,18 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusConflict, "memo already used by PR "+existingPRNo)
 		} else if err != pgx.ErrNoRows {
 			return err
+		}
+
+		// Snapshot the memo's delivery_location into location_text at selection time —
+		// only when the memo actually has one set, otherwise keep the client-supplied value.
+		var memoDeliveryLocation *string
+		if err := h.db.QueryRow(context.Background(),
+			`SELECT delivery_location FROM public.memo WHERE id = $1`, *req.MemoID,
+		).Scan(&memoDeliveryLocation); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "memo not found")
+		}
+		if memoDeliveryLocation != nil && strings.TrimSpace(*memoDeliveryLocation) != "" {
+			req.LocationText = *memoDeliveryLocation
 		}
 	}
 
@@ -272,11 +299,11 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	err = tx.QueryRow(context.Background(), `
 		INSERT INTO purchase_request
 		    (pr_no, pr_date, requested_by, location_text, warehouse_code, required_date,
-		     project_code, status, remarks, memo_id, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now(),$11,$11)
+		     project_code, status, order_type, pr_type, job_code, remarks, memo_id, created_at, updated_at, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now(),$14,$14)
 		RETURNING id`,
 		req.PRNo, req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
-		req.RequiredDate, req.ProjectCode, req.Status, req.Remarks, req.MemoID, req.CreatedBy,
+		req.RequiredDate, req.ProjectCode, req.Status, req.OrderType, req.PRType, req.JobCode, req.Remarks, req.MemoID, req.CreatedBy,
 	).Scan(&prID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
@@ -483,6 +510,312 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 	return nil, nil
 }
 
+// Reopen godoc
+// @Summary      Reopen a COMPLETED PR back to DRAFT for editing
+// @Description  Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this
+// @Description  PR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system
+// @Description  does not auto-cancel anything; the user must cancel the referencing PO(s) manually
+// @Description  first. Reverses any stock
+// @Description  deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
+// @Description  ref_doc_id=id, txn_type='ISSUE') by restoring stock_item.qty and recording an
+// @Description  offsetting RETURN transaction, then sets status back to DRAFT. Relies on the
+// @Description  confirmed rule that a PR never has duplicate mat_code across its own lines, so
+// @Description  reversing by ref_doc_id=pr_id alone (without a pr_line_id column on
+// @Description  stock_transaction) is unambiguous.
+// @Tags         Purchase Request
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "PR ID"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /pr/{id}/reopen [put]
+func (h *PRHandler) Reopen(c *fiber.Ctx) error {
+	claims := middleware.GetClaims(c)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid PR id")
+	}
+	var userID int64
+	if claims != nil {
+		userID = claims.UserID
+	}
+	ctx := context.Background()
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var currentStatus, prNo string
+	if err := tx.QueryRow(ctx,
+		`SELECT status, pr_no FROM purchase_request WHERE id=$1 FOR UPDATE`, id,
+	).Scan(&currentStatus, &prNo); err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "PR not found")
+	}
+	if currentStatus != "COMPLETED" {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot reopen PR in status: %s", currentStatus))
+	}
+
+	blockRows, err := tx.Query(ctx, `
+		SELECT DISTINCT po.po_no
+		FROM purchase_order_line pol
+		JOIN purchase_order po ON po.id = pol.po_id
+		JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
+		WHERE prl.pr_id = $1 AND po.status != 'CANCELLED'
+		ORDER BY po.po_no`, id)
+	if err != nil {
+		return err
+	}
+	var blockingPONos []string
+	for blockRows.Next() {
+		var poNo string
+		if err := blockRows.Scan(&poNo); err != nil {
+			blockRows.Close()
+			return err
+		}
+		blockingPONos = append(blockingPONos, poNo)
+	}
+	blockRows.Close()
+	if len(blockingPONos) > 0 {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+			"กรุณายกเลิก PO ต่อไปนี้ก่อนแก้ไข PR: %s", strings.Join(blockingPONos, ", ")))
+	}
+
+	issueRows, err := tx.Query(ctx, `
+		SELECT item_id, qty FROM stock_transaction
+		WHERE ref_doc_type = 'PR' AND ref_doc_id = $1 AND txn_type = $2`, id, TxnTypeIssue)
+	if err != nil {
+		return err
+	}
+	type issuedQty struct {
+		ItemID int64
+		Qty    float64
+	}
+	var issued []issuedQty
+	for issueRows.Next() {
+		var q issuedQty
+		if err := issueRows.Scan(&q.ItemID, &q.Qty); err != nil {
+			issueRows.Close()
+			return err
+		}
+		issued = append(issued, q)
+	}
+	issueRows.Close()
+
+	for _, q := range issued {
+		if _, err := tx.Exec(ctx,
+			`UPDATE stock_item SET qty = qty + $1, updated_at = NOW() WHERE id = $2`,
+			q.Qty, q.ItemID,
+		); err != nil {
+			return err
+		}
+
+		txnNo, err := generateTxnNo(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO stock_transaction
+			    (txn_no, txn_type, item_id, qty, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
+			VALUES ($1,$2,$3,$4,'PR',$5,'คืน stock จากการ reopen PR',CURRENT_DATE,$6)`,
+			txnNo, TxnTypeReturn, q.ItemID, q.Qty, id, userID,
+		); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE purchase_request SET status='DRAFT', updated_at=NOW() WHERE id=$1`, id,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+		VALUES ($1,$2,'DRAFT',$3,'reopened for editing')`, id, currentStatus, userID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
+		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
+		id, userID, fmt.Sprintf(`{"pr_no":"%s","status":"DRAFT","action":"reopen"}`, prNo),
+	); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "message": "PR reopened for editing"})
+}
+
+// Update godoc
+// @Summary      Edit a DRAFT PR's header and lines
+// @Description  Only allowed while status='DRAFT' (including PRs freshly reopened via
+// @Description  PUT /pr/{id}/reopen, which itself guarantees no active PO references any of
+// @Description  this PR's lines — see Reopen). Because that guard already holds by the time a
+// @Description  PR can reach DRAFT, editing here is fully free: lines are deleted and
+// @Description  reinserted from the payload with no FK-safety restrictions. Logs the edit to
+// @Description  erp_audit_log. Status stays DRAFT afterward — the user must explicitly call
+// @Description  POST /pr/{id}/submit to re-run deductStockOnSubmit against the new
+// @Description  qty_requested values and go back to COMPLETED.
+// @Tags         Purchase Request
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int                    true  "PR ID"
+// @Param        body  body  models.UpdatePRRequest true  "Updated PR data"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /pr/{id} [put]
+func (h *PRHandler) Update(c *fiber.Ctx) error {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
+	prID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid PR id")
+	}
+
+	var req models.UpdatePRRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if len(req.Lines) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "at least one line required")
+	}
+	for i, l := range req.Lines {
+		if l.MatCode == "" {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: mat_code is required", i))
+		}
+		if l.QtyRequested <= 0 {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: qty_requested must be > 0", i))
+		}
+	}
+	{
+		matCodes := make([]string, len(req.Lines))
+		for i, l := range req.Lines {
+			matCodes[i] = l.MatCode
+		}
+		if err := validateMatCodesExist(context.Background(), h.db, matCodes); err != nil {
+			return err
+		}
+	}
+	for _, l := range req.Lines {
+		if l.CostSubgroupID == nil {
+			continue
+		}
+		var exists bool
+		if err := h.db.QueryRow(context.Background(),
+			`SELECT EXISTS(SELECT 1 FROM cost_subgroup WHERE id = $1)`, *l.CostSubgroupID,
+		).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cost_subgroup_id %d not found for mat_code %s", *l.CostSubgroupID, l.MatCode))
+		}
+	}
+
+	ctx := context.Background()
+
+	if req.ProjectCode != nil && strings.TrimSpace(*req.ProjectCode) != "" {
+		var exists bool
+		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, *req.ProjectCode).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid project_code")
+		}
+	}
+
+	var currentStatus, prNo, currentOrderType, currentPRType string
+	if err := h.db.QueryRow(ctx, `SELECT status, pr_no, order_type, pr_type FROM purchase_request WHERE id=$1`, prID).Scan(&currentStatus, &prNo, &currentOrderType, &currentPRType); err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "PR not found")
+	}
+	if currentStatus != "DRAFT" {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR must be DRAFT to edit (current status: %s)", currentStatus))
+	}
+
+	orderType := req.OrderType
+	if orderType == "" {
+		orderType = currentOrderType
+	}
+	if orderType != "stock" && orderType != "cost" {
+		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	}
+
+	prType := req.PRType
+	if prType == "" {
+		prType = currentPRType
+	}
+	if prType != "PO_WO" && prType != "PO_ONLY" && prType != "WO_ONLY" {
+		return fiber.NewError(fiber.StatusBadRequest, "pr_type must be 'PO_WO', 'PO_ONLY', or 'WO_ONLY'")
+	}
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE purchase_request SET
+		    pr_date=$1, requested_by=$2, location_text=$3, warehouse_code=$4,
+		    required_date=$5, project_code=$6, order_type=$7, pr_type=$8, job_code=$9, remarks=$10, updated_at=NOW(), updated_by=$11
+		WHERE id=$12`,
+		req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
+		req.RequiredDate, req.ProjectCode, orderType, prType, req.JobCode, req.Remarks, claims.UserID, prID,
+	); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to update PR: "+err.Error())
+	}
+
+	// No active PO can reference any of this PR's lines at this point (guaranteed by the
+	// Reopen guard), so lines can simply be wiped and reinserted from the payload.
+	if _, err := tx.Exec(ctx, `DELETE FROM purchase_request_line WHERE pr_id=$1`, prID); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to clear lines: "+err.Error())
+	}
+
+	for i, line := range req.Lines {
+		lineNo := line.LineNo
+		if lineNo == 0 {
+			lineNo = i + 1
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id)
+			VALUES ($1,$2,$3,$4,'OPEN',$5)`,
+			prID, lineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID,
+		); err != nil {
+			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code", i))
+			}
+			return fiber.NewError(fiber.StatusInternalServerError, "line insert error: "+err.Error())
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
+		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
+		prID, claims.UserID, fmt.Sprintf(`{"pr_no":"%s","action":"edit","status":"DRAFT"}`, prNo),
+	); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "audit log error: "+err.Error())
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "PR updated",
+		"data":    fiber.Map{"pr_id": prID, "status": "DRAFT"},
+	})
+}
+
 // GetPRLogs godoc
 // @Summary      Get PR status history
 // @Tags         Purchase Request
@@ -521,7 +854,7 @@ func (h *PRHandler) GetLogs(c *fiber.Ctx) error {
 
 // NextNumber godoc
 // @Summary      Get next PR number
-// @Description  Returns the next available PR number for the current month (Buddhist year format)
+// @Description  Returns the next available PR number for the current month: PR<YYYYMM>-<4-digit sequence>, e.g. PR202608-0001. Sequence resets to 0001 each new month.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
@@ -529,8 +862,7 @@ func (h *PRHandler) GetLogs(c *fiber.Ctx) error {
 // @Router       /pr/next-number [get]
 func (h *PRHandler) NextNumber(c *fiber.Ctx) error {
 	now := time.Now()
-	gregorianYear := now.Year() % 100
-	prefix := fmt.Sprintf("PR%02d%02d", gregorianYear, int(now.Month()))
+	prefix := fmt.Sprintf("PR%04d%02d", now.Year(), int(now.Month()))
 	pattern := prefix + "-%"
 
 	var lastNo string
@@ -543,12 +875,12 @@ func (h *PRHandler) NextNumber(c *fiber.Ctx) error {
 
 	var next string
 	if err != nil {
-		// No existing row → start at 001
-		next = fmt.Sprintf("%s-001", prefix)
+		// No existing row this month → start at 0001
+		next = fmt.Sprintf("%s-0001", prefix)
 	} else {
 		parts := strings.Split(lastNo, "-")
 		seq, _ := strconv.Atoi(parts[len(parts)-1])
-		next = fmt.Sprintf("%s-%03d", prefix, seq+1)
+		next = fmt.Sprintf("%s-%04d", prefix, seq+1)
 	}
 
 	return c.JSON(fiber.Map{

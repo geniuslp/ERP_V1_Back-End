@@ -16,21 +16,36 @@ type StockCategory struct {
 // ── StockItem ──────────────────────────────────────────────
 
 type StockItem struct {
-	ID           int64     `json:"id"`
-	MatCode      string    `json:"mat_code"`
-	ItemName     string    `json:"item_name"`
-	Description  *string   `json:"description"`
-	CategoryID   *int64    `json:"category_id"`
-	CategoryName *string   `json:"category_name"`
-	ItemType     string    `json:"item_type"`     // RETURNABLE | CONSUMABLE
-	TrackingType string    `json:"tracking_type"` // sku | serial
-	Unit         string    `json:"unit"`
-	Qty          float64   `json:"qty"`
-	UnitCost     float64   `json:"unit_cost"`
-	QRCode       *string   `json:"qr_code"`
-	IsActive     bool      `json:"is_active"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID            int64     `json:"id"`
+	MatCode       string    `json:"mat_code"`
+	ItemName      string    `json:"item_name"`
+	Description   *string   `json:"description"`
+	CategoryID    *int64    `json:"category_id"`
+	CategoryName  *string   `json:"category_name"`
+	ItemType      string    `json:"item_type"`     // RETURNABLE | CONSUMABLE
+	TrackingType  string    `json:"tracking_type"` // sku | serial
+	Unit          string    `json:"unit"`
+	Qty           float64   `json:"qty"`
+	UnitCost      float64   `json:"unit_cost"`
+	QRCode        *string   `json:"qr_code"`
+	WarehouseCode *string   `json:"warehouse_code,omitempty"`
+	LocationCode  *string   `json:"location_code,omitempty"`
+	IsActive      bool      `json:"is_active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	ThumbnailURL  *string   `json:"thumbnail_url"`
+}
+
+// ── StockItemImage ─────────────────────────────────────────
+
+type StockItemImage struct {
+	ID        int64     `json:"id"`
+	ItemID    int64     `json:"item_id"`
+	FilePath  string    `json:"file_path"`
+	FileName  *string   `json:"file_name"`
+	IsPrimary bool      `json:"is_primary"`
+	SortOrder int       `json:"sort_order"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type CreateStockItemRequest struct {
@@ -47,11 +62,12 @@ type CreateStockItemRequest struct {
 type UpdateStockItemRequest = CreateStockItemRequest
 
 type StockItemListFilter struct {
-	Search   string `query:"search"`
-	ItemType string `query:"item_type"`
-	IsActive string `query:"is_active"`
-	Page     int    `query:"page"`
-	PageSize int    `query:"page_size"`
+	Search        string `query:"search"`
+	ItemType      string `query:"item_type"`
+	IsActive      string `query:"is_active"`
+	WarehouseCode string `query:"warehouse_code"`
+	Page          int    `query:"page"`
+	PageSize      int    `query:"page_size"`
 }
 
 // ── StockInventory ─────────────────────────────────────────
@@ -122,12 +138,12 @@ type StockTransaction struct {
 	CreatedAt     time.Time `json:"created_at"`
 
 	// Populated only when ref_doc_type = 'GRN' — joined through grn -> purchase_order.
-	GRNPOID          *int64   `json:"po_id,omitempty"`
-	GRNPONo          *string  `json:"po_no,omitempty"`
-	GRNScoreQuality  *int     `json:"score_quality,omitempty"`
-	GRNScoreQuantity *int     `json:"score_quantity,omitempty"`
-	GRNScoreOntime   *int     `json:"score_ontime,omitempty"`
-	GRNScoreNotes    *string  `json:"score_notes,omitempty"`
+	GRNPOID          *int64  `json:"po_id,omitempty"`
+	GRNPONo          *string `json:"po_no,omitempty"`
+	GRNScoreQuality  *int    `json:"score_quality,omitempty"`
+	GRNScoreQuantity *int    `json:"score_quantity,omitempty"`
+	GRNScoreOntime   *int    `json:"score_ontime,omitempty"`
+	GRNScoreNotes    *string `json:"score_notes,omitempty"`
 }
 
 type CreateStockTransactionRequest struct {
@@ -272,4 +288,156 @@ type StockReservationFilter struct {
 	DateTo   string `query:"date_to"`
 	Page     int    `query:"page"`
 	PageSize int    `query:"page_size"`
+}
+
+// ── Requisition (ใบเบิกของ) ────────────────────────────────
+// Uses the existing `requisition` / `requisition_line` / `requisition_status_log`
+// tables (pre-existing in DB, own status flow — see CLAUDE.md).
+
+type Requisition struct {
+	ID            int64             `json:"id"`
+	ReqNo         string            `json:"req_no"`
+	ProjectCode   string            `json:"project_code"`
+	ProjectName   *string           `json:"project_name,omitempty"`
+	WarehouseCode string            `json:"warehouse_code"`
+	WarehouseName *string           `json:"warehouse_name,omitempty"`
+	RequesterID   int64             `json:"requester_id"`
+	RequesterName *string           `json:"requester_name,omitempty"`
+	ReqDate       string            `json:"req_date"`
+	Purpose       *string           `json:"purpose"`
+	Status        string            `json:"status"` // DRAFT | CONFIRMED | CANCELLED
+	CheckedBy     *int64            `json:"checked_by"`
+	CheckedByName *string           `json:"checked_by_name,omitempty"`
+	CheckedAt     *time.Time        `json:"checked_at"`
+	Remarks       *string           `json:"remarks"`
+	IsStockHouse  bool              `json:"is_stock_house"`
+	ContainerNo   *string           `json:"container_no,omitempty"`
+	Lines         []RequisitionLine `json:"lines,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+}
+
+type RequisitionLine struct {
+	ID           int64    `json:"id"`
+	ReqID        int64    `json:"req_id"`
+	LineNo       int      `json:"line_no"`
+	StockItemID  *int64   `json:"stock_item_id"`
+	MatCode      string   `json:"mat_code"`
+	ItemName     *string  `json:"item_name,omitempty"`
+	Unit         *string  `json:"unit"`
+	QtyRequested float64  `json:"qty_requested"`
+	QtyIssued    float64  `json:"qty_issued"`
+	UnitCost     *float64 `json:"unit_cost"`
+	TotalCost    *float64 `json:"total_cost"`
+	Remarks      *string  `json:"remarks"`
+}
+
+type CreateRequisitionRequest struct {
+	ProjectCode   string                         `json:"project_code"`
+	WarehouseCode string                         `json:"warehouse_code"`
+	ReqDate       *string                        `json:"req_date"`
+	Purpose       *string                        `json:"purpose"`
+	Remarks       *string                        `json:"remarks"`
+	IsStockHouse  bool                           `json:"is_stock_house"`
+	ContainerNo   *string                        `json:"container_no,omitempty"`
+	Lines         []CreateRequisitionLineRequest `json:"lines"`
+}
+
+type CreateRequisitionLineRequest struct {
+	MatCode      string  `json:"mat_code"`
+	QtyRequested float64 `json:"qty_requested"`
+	Remarks      *string `json:"remarks"`
+}
+
+type RequisitionFilter struct {
+	Status        string `query:"status"`
+	ProjectCode   string `query:"project_code"`
+	WarehouseCode string `query:"warehouse_code"`
+	IsStockHouse  string `query:"is_stock_house"`
+	DateFrom      string `query:"date_from"`
+	DateTo        string `query:"date_to"`
+	Page          int    `query:"page"`
+	PageSize      int    `query:"page_size"`
+}
+
+// ── Stock Transfer (ย้ายคลัง) ──────────────────────────────
+// transfer_type: WH_TO_WH | WH_TO_PROJECT | PROJECT_TO_WH
+
+type StockTransfer struct {
+	ID                int64               `json:"id"`
+	TransferNo        string              `json:"transfer_no"`
+	TransferType      string              `json:"transfer_type"`
+	TransferDate      string              `json:"transfer_date"`
+	FromWarehouseCode *string             `json:"from_warehouse_code"`
+	FromProjectCode   *string             `json:"from_project_code"`
+	ToWarehouseCode   *string             `json:"to_warehouse_code"`
+	ToProjectCode     *string             `json:"to_project_code"`
+	FromWarehouseName *string             `json:"from_warehouse_name,omitempty"`
+	FromProjectName   *string             `json:"from_project_name,omitempty"`
+	ToWarehouseName   *string             `json:"to_warehouse_name,omitempty"`
+	ToProjectName     *string             `json:"to_project_name,omitempty"`
+	RequestedBy       int64               `json:"requested_by"`
+	RequestedByName   *string             `json:"requested_by_name,omitempty"`
+	Purpose           *string             `json:"purpose"`
+	Remarks           *string             `json:"remarks"`
+	Status            string              `json:"status"` // DRAFT | CONFIRMED | CANCELLED
+	CheckedBy         *int64              `json:"checked_by"`
+	CheckedByName     *string             `json:"checked_by_name,omitempty"`
+	CheckedAt         *time.Time          `json:"checked_at"`
+	Lines             []StockTransferLine `json:"lines,omitempty"`
+	CreatedAt         time.Time           `json:"created_at"`
+	UpdatedAt         time.Time           `json:"updated_at"`
+}
+
+type StockTransferLine struct {
+	ID           int64    `json:"id"`
+	TransferID   int64    `json:"transfer_id"`
+	LineNo       int      `json:"line_no"`
+	ItemID       int64    `json:"item_id"`
+	MatCode      string   `json:"mat_code"`
+	ItemName     *string  `json:"item_name,omitempty"`
+	Unit         *string  `json:"unit"`
+	QtyRequested float64  `json:"qty_requested"`
+	QtyConfirmed *float64 `json:"qty_confirmed"`
+	Remarks      *string  `json:"remarks"`
+}
+
+type CreateStockTransferRequest struct {
+	TransferType      string                           `json:"transfer_type"`
+	TransferDate      *string                          `json:"transfer_date"`
+	FromWarehouseCode *string                          `json:"from_warehouse_code"`
+	FromProjectCode   *string                          `json:"from_project_code"`
+	ToWarehouseCode   *string                          `json:"to_warehouse_code"`
+	ToProjectCode     *string                          `json:"to_project_code"`
+	Purpose           *string                          `json:"purpose"`
+	Remarks           *string                          `json:"remarks"`
+	Lines             []CreateStockTransferLineRequest `json:"lines"`
+}
+
+type CreateStockTransferLineRequest struct {
+	MatCode      string  `json:"mat_code"`
+	QtyRequested float64 `json:"qty_requested"`
+	Remarks      *string `json:"remarks"`
+}
+
+type StockTransferFilter struct {
+	TransferType      string `query:"transfer_type"`
+	Status            string `query:"status"`
+	FromWarehouseCode string `query:"from_warehouse_code"`
+	ToWarehouseCode   string `query:"to_warehouse_code"`
+	DateFrom          string `query:"date_from"`
+	DateTo            string `query:"date_to"`
+	Page              int    `query:"page"`
+	PageSize          int    `query:"page_size"`
+}
+
+// ── Project Stock (ยอดคงเหลือที่หน้างาน) ────────────────────
+
+type ProjectStock struct {
+	ID          int64     `json:"id"`
+	ProjectCode string    `json:"project_code"`
+	MatCode     string    `json:"mat_code"`
+	Unit        *string   `json:"unit"`
+	QtyOnHand   float64   `json:"qty_on_hand"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }

@@ -213,14 +213,12 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		Status               string         `json:"status"`
 		SupplierCode         string         `json:"supplier_code"`
 		SupplierName         string         `json:"supplier_name"`
-		SupplierShortName    *string        `json:"supplier_short_name,omitempty"`
 		SupplierTaxID        *string        `json:"supplier_tax_id,omitempty"`
 		SupplierAddress      *string        `json:"supplier_address,omitempty"`
 		SupplierContactName  *string        `json:"supplier_contact_name,omitempty"`
 		SupplierContactPhone *string        `json:"supplier_contact_phone,omitempty"`
 		SupplierContactEmail *string        `json:"supplier_contact_email,omitempty"`
 		SupplierOfficePhone  *string        `json:"supplier_office_phone,omitempty"`
-		SupplierFax          *string        `json:"supplier_fax,omitempty"`
 		SupplierSalesPerson  *string        `json:"supplier_sales_person,omitempty"`
 		SupplierPaymentTerms *string        `json:"supplier_payment_terms,omitempty"`
 		PaymentTerms         *string        `json:"payment_terms"`
@@ -258,8 +256,8 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		SELECT
 		    po.id, po.po_no, po.po_date::text, po.status,
 		    po.supplier_code, COALESCE(s.supplier_name, po.supplier_code) AS supplier_name,
-		    s.supplier_short_name, s.tax_id, s.address, s.contact_name, s.contact_phone, s.contact_email,
-		    s.office_phone, s.fax, s.sales_person, s.payment_terms AS supplier_payment_terms,
+		    s.tax_id, s.address, s.contact_name, s.contact_phone, s.contact_email,
+		    s.office_phone, s.sales_person, s.payment_terms AS supplier_payment_terms,
 		    po.payment_terms, po.delivery_address, po.location_text, po.warehouse_code, po.project_code, po.pr_id,
 		    pr.pr_no, pr.pr_date::text,
 		    po.requested_by, COALESCE(ru.full_name, '') AS requested_by_name,
@@ -286,8 +284,8 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	if err := row.Scan(
 		&po.ID, &po.PONo, &po.PODate, &po.Status,
 		&po.SupplierCode, &po.SupplierName,
-		&po.SupplierShortName, &po.SupplierTaxID, &po.SupplierAddress, &po.SupplierContactName,
-		&po.SupplierContactPhone, &po.SupplierContactEmail, &po.SupplierOfficePhone, &po.SupplierFax,
+		&po.SupplierTaxID, &po.SupplierAddress, &po.SupplierContactName,
+		&po.SupplierContactPhone, &po.SupplierContactEmail, &po.SupplierOfficePhone,
 		&po.SupplierSalesPerson, &po.SupplierPaymentTerms,
 		&po.PaymentTerms, &po.DeliveryAddress, &po.LocationText, &po.WarehouseCode, &po.ProjectCode, &po.PRID,
 		&po.PRNo, &po.PRDate,
@@ -481,6 +479,14 @@ func (h *POApprovalHandler) Reject(c *fiber.Ctx) error {
 
 // CancelPO godoc
 // @Summary      Cancel an approved purchase order
+// @Description  Cancels the PO and all of its lines (status='CANCELLED' on both), which frees
+// @Description  up the source PR lines' qty_remaining for re-ordering — PRHandler.LinesWithPOStatus
+// @Description  computes qty_ordered/qty_remaining live from purchase_order_line rows, filtering
+// @Description  out ones with status='CANCELLED'. status_receive is left untouched: if goods were
+// @Description  already received, that's a physical fact recorded in stock_inventory and is not
+// @Description  erased by cancelling the PO — a cancelled PO can legitimately still show
+// @Description  status_receive='PARTIALLY_RECEIVED'/'RECEIVED' as a historical record. Reversing
+// @Description  physically-received stock is a separate stock-adjustment/return flow, not part of this endpoint.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -506,9 +512,16 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 		userID = claims.UserID
 	}
 
+	ctx := context.Background()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	var status string
-	if err := h.db.QueryRow(context.Background(),
-		`SELECT status FROM purchase_order WHERE id = $1`, id,
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM purchase_order WHERE id = $1 FOR UPDATE`, id,
 	).Scan(&status); err != nil {
 		log.Printf("❌ PO cancel fetch error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
@@ -517,11 +530,32 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "only approved POs can be cancelled")
 	}
 
-	if _, err := h.db.Exec(context.Background(),
+	if _, err := tx.Exec(ctx,
 		`UPDATE purchase_order SET status = 'CANCELLED', updated_at = NOW(), updated_by = $1 WHERE id = $2`,
 		userID, id,
 	); err != nil {
 		log.Printf("❌ PO cancel update error: %v", err)
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE purchase_order_line SET status = 'CANCELLED' WHERE po_id = $1 AND status != 'CANCELLED'`,
+		id,
+	); err != nil {
+		log.Printf("❌ PO cancel line update error: %v", err)
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO po_status_log (po_id, from_status, to_status, changed_by, remarks)
+		 VALUES ($1,$2,'CANCELLED',$3,'PO cancelled')`,
+		id, status, userID,
+	); err != nil {
+		log.Printf("❌ PO cancel log error: %v", err)
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
