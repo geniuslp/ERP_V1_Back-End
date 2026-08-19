@@ -101,6 +101,7 @@ var docTypeTable = map[string]string{
 	"MEMO":   "memo",
 	"BORROW": "borrow",
 	"PO":     "purchase_order",
+	"WO":     "work_order",
 }
 
 // docTypePK maps a doc_type to the primary key column of its docTypeTable entry.

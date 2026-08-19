@@ -480,8 +480,6 @@ definitions:
     type: object
   models.CreatePOLine:
     properties:
-      cost_subgroup_id:
-        type: integer
       description:
         type: string
       disc_type:
@@ -560,6 +558,16 @@ definitions:
       use_wht:
         type: boolean
       warehouse_code:
+        type: string
+      work_type:
+        description: ประเภทงาน
+        enum:
+        - P
+        - E
+        - S
+        - F
+        - G
+        - H
         type: string
     required:
     - lines
@@ -937,6 +945,86 @@ definitions:
     - warehouse_code
     - warehouse_name
     type: object
+  models.CreateWorkOrderRequest:
+    properties:
+      advance_amount:
+        type: number
+      advance_deduct_pct:
+        type: number
+      advance_pct:
+        type: number
+      authorized_by:
+        type: integer
+      contact_person:
+        type: string
+      contract_amount:
+        type: number
+      contract_description:
+        type: string
+      contract_type:
+        enum:
+        - LABOR_ONLY
+        - LABOR_MATERIAL
+        type: string
+      cost_code:
+        type: string
+      duration_days:
+        type: integer
+      employer_name:
+        type: string
+      end_date:
+        type: string
+      other_deduction_note:
+        type: string
+      other_terms:
+        type: string
+      penalty_pct_per_day:
+        type: number
+      progress_payment_note:
+        type: string
+      project_code:
+        type: string
+      project_scope_text:
+        type: string
+      ref_no:
+        type: string
+      remarks:
+        type: string
+      retention_pct:
+        type: number
+      section_head_id:
+        type: integer
+      start_date:
+        type: string
+      supplier_address:
+        type: string
+      supplier_code:
+        type: string
+      supplier_name:
+        type: string
+      supplier_phone:
+        type: string
+      vat_rate:
+        type: number
+      warranty_years:
+        type: integer
+      wht_rate:
+        type: number
+      wo_date:
+        type: string
+      work_system:
+        enum:
+        - P
+        - E
+        - S
+        type: string
+    required:
+    - contract_amount
+    - contract_type
+    - employer_name
+    - supplier_name
+    - work_system
+    type: object
   models.CreateZoneReq:
     properties:
       warehouse_id:
@@ -1112,24 +1200,36 @@ definitions:
       unit_code:
         type: string
     type: object
-  models.MaterialFull:
+  models.MaterialDetailFull:
     properties:
+      brand_id:
+        type: integer
       brand_name:
         type: string
+      group_id:
+        type: integer
       group_name:
         type: string
+      id:
+        type: integer
       is_active:
         type: boolean
       mat_code:
         type: string
-      mat_name_en:
+      mat_name:
         type: string
-      mat_name_th:
-        type: string
+      mat_name_id:
+        type: integer
       spec_description:
         type: string
+      spec_id:
+        type: integer
+      subgroup_id:
+        type: integer
       subgroup_name:
         type: string
+      unit_id:
+        type: integer
       unit_name:
         type: string
     type: object
@@ -1253,9 +1353,6 @@ definitions:
         type: number
       brand:
         type: string
-      cost_subgroup_id:
-        description: Cost Code (job) — chosen per line item, mirrors purchase_request_line.cost_subgroup_id.
-        type: integer
       current_stock:
         type: number
       description:
@@ -1264,9 +1361,6 @@ definitions:
         type: string
       discount:
         type: number
-      job_code:
-        description: resolved via cost_subgroup -> cost_group -> cost_job, read-only
-        type: string
       line_discount:
         type: number
       line_id:
@@ -1498,6 +1592,9 @@ definitions:
         type: string
       wht_amount:
         type: number
+      work_type:
+        description: 'header-level ประเภทงาน: P|E|S|F|G|H'
+        type: string
     type: object
   models.PurchaseRequest:
     properties:
@@ -1724,31 +1821,22 @@ definitions:
       is_active:
         type: boolean
     type: object
-  models.UpdateMaterialRequest:
+  models.UpdateMaterialFullRequest:
     properties:
-      brand_name:
-        maxLength: 200
-        type: string
+      brand_id:
+        type: integer
+      group_id:
+        type: integer
       is_active:
         type: boolean
-      mat_name_th:
-        maxLength: 500
-        type: string
-      spec_description:
-        maxLength: 500
-        type: string
-      subgroup_name:
-        maxLength: 200
-        type: string
-      unit_name:
-        maxLength: 200
-        type: string
-    required:
-    - brand_name
-    - mat_name_th
-    - spec_description
-    - subgroup_name
-    - unit_name
+      mat_name_id:
+        type: integer
+      spec_id:
+        type: integer
+      subgroup_id:
+        type: integer
+      unit_id:
+        type: integer
     type: object
   models.UpdateMemoRequest:
     properties:
@@ -1780,8 +1868,6 @@ definitions:
     type: object
   models.UpdatePOLineRequest:
     properties:
-      cost_subgroup_id:
-        type: integer
       description:
         type: string
       disc_type:
@@ -3133,6 +3219,48 @@ paths:
       summary: List brand rows by spec_id
       tags:
       - Master
+  /master/brands/{id}:
+    put:
+      consumes:
+      - application/json
+      description: Updates brand.brand_name only — brand_code (the stable identifier
+        used in mat_code composition) is never changed here. Affects every material_code
+        row linked to this brand.
+      parameters:
+      - description: Brand ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New brand_name
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            brand_name:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a brand's display name
+      tags:
+      - Master
   /master/cost-code/export:
     get:
       description: Rows are sorted by cost_subgroup.id ASC, preserving the exact row
@@ -3377,6 +3505,48 @@ paths:
       summary: List material groups
       tags:
       - Master
+  /master/groups/{id}:
+    put:
+      consumes:
+      - application/json
+      description: Updates mat_group.group_name only — group_code (the stable identifier
+        used in mat_code composition) is never changed here. Affects every material_code
+        row linked to this group.
+      parameters:
+      - description: Group ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New group_name
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            group_name:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a material group's display name
+      tags:
+      - Master
   /master/locations:
     get:
       parameters:
@@ -3532,6 +3702,48 @@ paths:
       summary: List mat_names by subgroup_id
       tags:
       - Master
+  /master/mat-names/{id}:
+    put:
+      consumes:
+      - application/json
+      description: Updates mat_name.mat_name only — mat_name_code (the stable identifier
+        used in mat_code composition) is never changed here. Affects every material_code
+        row linked to this mat_name.
+      parameters:
+      - description: Mat_name ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New mat_name
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            mat_name:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a mat_name's display name
+      tags:
+      - Master
   /master/materials:
     get:
       parameters:
@@ -3615,21 +3827,31 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.MaterialFull'
+            $ref: '#/definitions/models.MaterialDetailFull'
         "404":
           description: Not Found
           schema:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Get material by code
+      summary: Get material detail by code (id+name for every FK, for the edit page)
       tags:
       - Master
     put:
       consumes:
       - application/json
-      description: Updates subgroup_name, mat_name_th, spec_description, brand_name,
-        unit_name and is_active in one transaction. Codes (and mat_code) are not changed.
+      description: |-
+        Partial update — only fields present in the body are changed. Reassigns which
+        existing group/subgroup/mat_name/spec/brand/unit row this material points to
+        (by id); it does not rename shared master rows, and mat_code is never accepted
+        from the client. If any of group_id/subgroup_id/mat_name_id/spec_id/brand_id/
+        unit_id changes, mat_code is auto-regenerated server-side as
+        group_code+subgroup_code+mat_name_code+spec_code+brand_code+unit_code (the
+        confirmed composition rule), and the change is cascaded in the same
+        transaction to every table that references mat_code — including stock_item,
+        which has no FK and would otherwise silently lose its link to this material.
+        If the regenerated code would collide with a different existing material, the
+        update is rejected with 409.
       parameters:
       - description: mat_code
         in: path
@@ -3641,7 +3863,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/models.UpdateMaterialRequest'
+          $ref: '#/definitions/models.UpdateMaterialFullRequest'
       produces:
       - application/json
       responses:
@@ -3657,9 +3879,13 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Update material names (full transaction)
+      summary: Update a material's group/subgroup/mat_name/spec/brand/unit/is_active
       tags:
       - Master
   /master/materials/bulk:
@@ -3927,6 +4153,48 @@ paths:
       summary: List spec_size rows by mat_name_id
       tags:
       - Master
+  /master/specs/{id}:
+    put:
+      consumes:
+      - application/json
+      description: Updates spec_size.spec_description only — spec_code (the stable
+        identifier used in mat_code composition) is never changed here. Affects every
+        material_code row linked to this spec.
+      parameters:
+      - description: Spec ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New spec_description
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            spec_description:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a spec_size's display description
+      tags:
+      - Master
   /master/subgroups:
     get:
       parameters:
@@ -3946,6 +4214,55 @@ paths:
       security:
       - BearerAuth: []
       summary: List active subgroups (optionally filtered by group_id)
+      tags:
+      - Master
+  /master/subgroups/{id}:
+    put:
+      consumes:
+      - application/json
+      description: 'Updates subgroup.subgroup_name and, if provided, subgroup.group_id
+        (reassigns the parent mat_group). subgroup_code is never changed here. Note:
+        material_code rows carry their own independent group_id — reassigning a subgroup''s
+        parent does not retroactively change group_id on any material_code row that
+        already uses this subgroup, so it can leave a subgroup pointing at a different
+        group than some of its materials'' own group_id. This mirrors the existing
+        schema (no enforced consistency between the two), not a new limitation introduced
+        here.'
+      parameters:
+      - description: Subgroup ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New subgroup_name (required) and optional group_id
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            group_id:
+              type: integer
+            subgroup_name:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a subgroup's display name and/or reassign its parent group
       tags:
       - Master
   /master/suppliers:
@@ -4121,11 +4438,53 @@ paths:
           description: OK
           schema:
             items:
-              $ref: '#/definitions/models.Unit'
+              $ref: '#/definitions/fiber.Map'
             type: array
       security:
       - BearerAuth: []
       summary: List units of measure
+      tags:
+      - Master
+  /master/units/{id}:
+    put:
+      consumes:
+      - application/json
+      description: Updates unit.unit_name only — unit_code (the stable identifier
+        used in mat_code composition) is never changed here. Affects every material_code
+        row linked to this unit.
+      parameters:
+      - description: Unit ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New unit_name
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            unit_name:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a unit's display name
       tags:
       - Master
   /master/warehouses:
@@ -5884,9 +6243,9 @@ paths:
     get:
       description: |-
         Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is
-        not considered), one object per PO with a nested "lines" array. mat_code/job_code filters
-        are applied at the line level: only lines matching the filter appear in "lines", and a PO
-        is dropped from the result entirely if none of its lines match. Pagination (page/page_size)
+        not considered), one object per PO with a nested "lines" array. mat_code filter is applied
+        at the line level: only lines matching the filter appear in "lines", and a PO is dropped
+        from the result entirely if none of its lines match. Pagination (page/page_size)
         paginates POs, not lines.
       parameters:
       - description: po_date >= (YYYY-MM-DD)
@@ -5910,11 +6269,6 @@ paths:
         in: query
         name: requested_by
         type: integer
-      - description: resolved cost_job.job_code filter — only matching lines are kept,
-          POs with no match are excluded
-        in: query
-        name: job_code
-        type: string
       - description: po.project_code filter
         in: query
         name: project_code
@@ -8065,6 +8419,132 @@ paths:
       summary: List users
       tags:
       - Users
+  /work-order:
+    get:
+      parameters:
+      - description: Status
+        in: query
+        name: status
+        type: string
+      - description: Project code
+        in: query
+        name: project_code
+        type: string
+      - description: Search by wo_no/supplier_name/employer_name
+        in: query
+        name: search
+        type: string
+      - description: Date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการหนังสือสั่งจ้าง
+      tags:
+      - WorkOrder
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Work Order data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateWorkOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้างหนังสือสั่งจ้าง (DRAFT)
+      tags:
+      - WorkOrder
+  /work-order/{id}:
+    get:
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายละเอียดหนังสือสั่งจ้าง
+      tags:
+      - WorkOrder
+  /work-order/{id}/submit:
+    post:
+      description: |-
+        Opens the step-1 approval_request if doc_type='WO' step 1 is configured in
+        approval_config; otherwise the status change happens with no approval request
+        (mirrors MemoHandler.Submit's hasConfig guard). Actual approve/reject happens via
+        PUT /approval/WO/{id}/approve|reject (GenericApprovalHandler), not here.
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ยื่นขออนุมัติหนังสือสั่งจ้าง (DRAFT/REJECTED → PENDING_APPROVAL)
+      tags:
+      - WorkOrder
 securityDefinitions:
   BearerAuth:
     description: Type "Bearer {token}"

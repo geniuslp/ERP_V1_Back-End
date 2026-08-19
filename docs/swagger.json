@@ -1739,6 +1739,69 @@
                 }
             }
         },
+        "/master/brands/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates brand.brand_name only — brand_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this brand.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Update a brand's display name",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Brand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New brand_name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "brand_name": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/cost-code/export": {
             "get": {
                 "security": [
@@ -2122,6 +2185,69 @@
                 }
             }
         },
+        "/master/groups/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates mat_group.group_name only — group_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this group.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Update a material group's display name",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Group ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New group_name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "group_name": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/locations": {
             "get": {
                 "security": [
@@ -2372,6 +2498,69 @@
                 }
             }
         },
+        "/master/mat-names/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates mat_name.mat_name only — mat_name_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this mat_name.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Update a mat_name's display name",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Mat_name ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New mat_name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "mat_name": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/materials": {
             "get": {
                 "security": [
@@ -2601,7 +2790,7 @@
                 "tags": [
                     "Master"
                 ],
-                "summary": "Get material by code",
+                "summary": "Get material detail by code (id+name for every FK, for the edit page)",
                 "parameters": [
                     {
                         "type": "string",
@@ -2615,7 +2804,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.MaterialFull"
+                            "$ref": "#/definitions/models.MaterialDetailFull"
                         }
                     },
                     "404": {
@@ -2632,7 +2821,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates subgroup_name, mat_name_th, spec_description, brand_name, unit_name and is_active in one transaction. Codes (and mat_code) are not changed.",
+                "description": "Partial update — only fields present in the body are changed. Reassigns which\nexisting group/subgroup/mat_name/spec/brand/unit row this material points to\n(by id); it does not rename shared master rows, and mat_code is never accepted\nfrom the client. If any of group_id/subgroup_id/mat_name_id/spec_id/brand_id/\nunit_id changes, mat_code is auto-regenerated server-side as\ngroup_code+subgroup_code+mat_name_code+spec_code+brand_code+unit_code (the\nconfirmed composition rule), and the change is cascaded in the same\ntransaction to every table that references mat_code — including stock_item,\nwhich has no FK and would otherwise silently lose its link to this material.\nIf the regenerated code would collide with a different existing material, the\nupdate is rejected with 409.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2642,7 +2831,7 @@
                 "tags": [
                     "Master"
                 ],
-                "summary": "Update material names (full transaction)",
+                "summary": "Update a material's group/subgroup/mat_name/spec/brand/unit/is_active",
                 "parameters": [
                     {
                         "type": "string",
@@ -2657,7 +2846,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/models.UpdateMaterialRequest"
+                            "$ref": "#/definitions/models.UpdateMaterialFullRequest"
                         }
                     }
                 ],
@@ -2676,6 +2865,12 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -2998,6 +3193,69 @@
                 }
             }
         },
+        "/master/specs/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates spec_size.spec_description only — spec_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this spec.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Update a spec_size's display description",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Spec ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New spec_description",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "spec_description": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/subgroups": {
             "get": {
                 "security": [
@@ -3028,6 +3286,72 @@
                             "items": {
                                 "$ref": "#/definitions/fiber.Map"
                             }
+                        }
+                    }
+                }
+            }
+        },
+        "/master/subgroups/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates subgroup.subgroup_name and, if provided, subgroup.group_id (reassigns the parent mat_group). subgroup_code is never changed here. Note: material_code rows carry their own independent group_id — reassigning a subgroup's parent does not retroactively change group_id on any material_code row that already uses this subgroup, so it can leave a subgroup pointing at a different group than some of its materials' own group_id. This mirrors the existing schema (no enforced consistency between the two), not a new limitation introduced here.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Update a subgroup's display name and/or reassign its parent group",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Subgroup ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New subgroup_name (required) and optional group_id",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "group_id": {
+                                    "type": "integer"
+                                },
+                                "subgroup_name": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -3315,8 +3639,71 @@
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.Unit"
+                                "$ref": "#/definitions/fiber.Map"
                             }
+                        }
+                    }
+                }
+            }
+        },
+        "/master/units/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates unit.unit_name only — unit_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this unit.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Update a unit's display name",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Unit ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New unit_name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "unit_name": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -5323,7 +5710,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is\nnot considered), one object per PO with a nested \"lines\" array. mat_code/job_code filters\nare applied at the line level: only lines matching the filter appear in \"lines\", and a PO\nis dropped from the result entirely if none of its lines match. Pagination (page/page_size)\npaginates POs, not lines.",
+                "description": "Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is\nnot considered), one object per PO with a nested \"lines\" array. mat_code filter is applied\nat the line level: only lines matching the filter appear in \"lines\", and a PO is dropped\nfrom the result entirely if none of its lines match. Pagination (page/page_size)\npaginates POs, not lines.",
                 "produces": [
                     "application/json"
                 ],
@@ -5360,12 +5747,6 @@
                         "type": "integer",
                         "description": "requested_by user id filter",
                         "name": "requested_by",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "resolved cost_job.job_code filter — only matching lines are kept, POs with no match are excluded",
-                        "name": "job_code",
                         "in": "query"
                     },
                     {
@@ -9434,6 +9815,201 @@
                     }
                 }
             }
+        },
+        "/work-order": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "รายการหนังสือสั่งจ้าง",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project code",
+                        "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search by wo_no/supplier_name/employer_name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "สร้างหนังสือสั่งจ้าง (DRAFT)",
+                "parameters": [
+                    {
+                        "description": "Work Order data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateWorkOrderRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/work-order/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "รายละเอียดหนังสือสั่งจ้าง",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/work-order/{id}/submit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Opens the step-1 approval_request if doc_type='WO' step 1 is configured in\napproval_config; otherwise the status change happens with no approval request\n(mirrors MemoHandler.Submit's hasConfig guard). Actual approve/reject happens via\nPUT /approval/WO/{id}/approve|reject (GenericApprovalHandler), not here.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "ยื่นขออนุมัติหนังสือสั่งจ้าง (DRAFT/REJECTED → PENDING_APPROVAL)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -10145,9 +10721,6 @@
                 "unit_price"
             ],
             "properties": {
-                "cost_subgroup_id": {
-                    "type": "integer"
-                },
                 "description": {
                     "type": "string"
                 },
@@ -10262,6 +10835,18 @@
                 },
                 "warehouse_code": {
                     "type": "string"
+                },
+                "work_type": {
+                    "description": "ประเภทงาน",
+                    "type": "string",
+                    "enum": [
+                        "P",
+                        "E",
+                        "S",
+                        "F",
+                        "G",
+                        "H"
+                    ]
                 }
             }
         },
@@ -10810,6 +11395,123 @@
                 }
             }
         },
+        "models.CreateWorkOrderRequest": {
+            "type": "object",
+            "required": [
+                "contract_amount",
+                "contract_type",
+                "employer_name",
+                "supplier_name",
+                "work_system"
+            ],
+            "properties": {
+                "advance_amount": {
+                    "type": "number"
+                },
+                "advance_deduct_pct": {
+                    "type": "number"
+                },
+                "advance_pct": {
+                    "type": "number"
+                },
+                "authorized_by": {
+                    "type": "integer"
+                },
+                "contact_person": {
+                    "type": "string"
+                },
+                "contract_amount": {
+                    "type": "number"
+                },
+                "contract_description": {
+                    "type": "string"
+                },
+                "contract_type": {
+                    "type": "string",
+                    "enum": [
+                        "LABOR_ONLY",
+                        "LABOR_MATERIAL"
+                    ]
+                },
+                "cost_code": {
+                    "type": "string"
+                },
+                "duration_days": {
+                    "type": "integer"
+                },
+                "employer_name": {
+                    "type": "string"
+                },
+                "end_date": {
+                    "type": "string"
+                },
+                "other_deduction_note": {
+                    "type": "string"
+                },
+                "other_terms": {
+                    "type": "string"
+                },
+                "penalty_pct_per_day": {
+                    "type": "number"
+                },
+                "progress_payment_note": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "project_scope_text": {
+                    "type": "string"
+                },
+                "ref_no": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "retention_pct": {
+                    "type": "number"
+                },
+                "section_head_id": {
+                    "type": "integer"
+                },
+                "start_date": {
+                    "type": "string"
+                },
+                "supplier_address": {
+                    "type": "string"
+                },
+                "supplier_code": {
+                    "type": "string"
+                },
+                "supplier_name": {
+                    "type": "string"
+                },
+                "supplier_phone": {
+                    "type": "string"
+                },
+                "vat_rate": {
+                    "type": "number"
+                },
+                "warranty_years": {
+                    "type": "integer"
+                },
+                "wht_rate": {
+                    "type": "number"
+                },
+                "wo_date": {
+                    "type": "string"
+                },
+                "work_system": {
+                    "type": "string",
+                    "enum": [
+                        "P",
+                        "E",
+                        "S"
+                    ]
+                }
+            }
+        },
         "models.CreateZoneReq": {
             "type": "object",
             "properties": {
@@ -11074,14 +11776,23 @@
                 }
             }
         },
-        "models.MaterialFull": {
+        "models.MaterialDetailFull": {
             "type": "object",
             "properties": {
+                "brand_id": {
+                    "type": "integer"
+                },
                 "brand_name": {
                     "type": "string"
                 },
+                "group_id": {
+                    "type": "integer"
+                },
                 "group_name": {
                     "type": "string"
+                },
+                "id": {
+                    "type": "integer"
                 },
                 "is_active": {
                     "type": "boolean"
@@ -11089,17 +11800,26 @@
                 "mat_code": {
                     "type": "string"
                 },
-                "mat_name_en": {
+                "mat_name": {
                     "type": "string"
                 },
-                "mat_name_th": {
-                    "type": "string"
+                "mat_name_id": {
+                    "type": "integer"
                 },
                 "spec_description": {
                     "type": "string"
                 },
+                "spec_id": {
+                    "type": "integer"
+                },
+                "subgroup_id": {
+                    "type": "integer"
+                },
                 "subgroup_name": {
                     "type": "string"
+                },
+                "unit_id": {
+                    "type": "integer"
                 },
                 "unit_name": {
                     "type": "string"
@@ -11288,10 +12008,6 @@
                 "brand": {
                     "type": "string"
                 },
-                "cost_subgroup_id": {
-                    "description": "Cost Code (job) — chosen per line item, mirrors purchase_request_line.cost_subgroup_id.",
-                    "type": "integer"
-                },
                 "current_stock": {
                     "type": "number"
                 },
@@ -11303,10 +12019,6 @@
                 },
                 "discount": {
                     "type": "number"
-                },
-                "job_code": {
-                    "description": "resolved via cost_subgroup -\u003e cost_group -\u003e cost_job, read-only",
-                    "type": "string"
                 },
                 "line_discount": {
                     "type": "number"
@@ -11649,6 +12361,10 @@
                 },
                 "wht_amount": {
                     "type": "number"
+                },
+                "work_type": {
+                    "description": "header-level ประเภทงาน: P|E|S|F|G|H",
+                    "type": "string"
                 }
             }
         },
@@ -11995,38 +12711,29 @@
                 }
             }
         },
-        "models.UpdateMaterialRequest": {
+        "models.UpdateMaterialFullRequest": {
             "type": "object",
-            "required": [
-                "brand_name",
-                "mat_name_th",
-                "spec_description",
-                "subgroup_name",
-                "unit_name"
-            ],
             "properties": {
-                "brand_name": {
-                    "type": "string",
-                    "maxLength": 200
+                "brand_id": {
+                    "type": "integer"
+                },
+                "group_id": {
+                    "type": "integer"
                 },
                 "is_active": {
                     "type": "boolean"
                 },
-                "mat_name_th": {
-                    "type": "string",
-                    "maxLength": 500
+                "mat_name_id": {
+                    "type": "integer"
                 },
-                "spec_description": {
-                    "type": "string",
-                    "maxLength": 500
+                "spec_id": {
+                    "type": "integer"
                 },
-                "subgroup_name": {
-                    "type": "string",
-                    "maxLength": 200
+                "subgroup_id": {
+                    "type": "integer"
                 },
-                "unit_name": {
-                    "type": "string",
-                    "maxLength": 200
+                "unit_id": {
+                    "type": "integer"
                 }
             }
         },
@@ -12075,9 +12782,6 @@
         "models.UpdatePOLineRequest": {
             "type": "object",
             "properties": {
-                "cost_subgroup_id": {
-                    "type": "integer"
-                },
                 "description": {
                     "type": "string"
                 },

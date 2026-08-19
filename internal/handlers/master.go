@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
+	"erp-api/internal/middleware"
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xuri/excelize/v2"
 )
@@ -45,6 +48,46 @@ func (h *MasterHandler) ListGroups(c *fiber.Ctx) error {
 		items = append(items, m)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// UpdateMatGroup godoc
+// @Summary      Update a material group's display name
+// @Description  Updates mat_group.group_name only — group_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this group.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int  true  "Group ID"
+// @Param        body  body  object{group_name=string}  true  "New group_name"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/groups/{id} [put]
+func (h *MasterHandler) UpdateMatGroup(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req struct {
+		GroupName string `json:"group_name"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	req.GroupName = strings.TrimSpace(req.GroupName)
+	if req.GroupName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "group_name is required")
+	}
+
+	var m models.MatGroup
+	err = h.db.QueryRow(context.Background(),
+		`UPDATE mat_group SET group_name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, group_code, group_name`,
+		req.GroupName, id,
+	).Scan(&m.Id, &m.GroupCode, &m.GroupName)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("mat_group %d not found", id))
+	}
+	return c.JSON(fiber.Map{"success": true, "data": m})
 }
 
 // ─── Materials ────────────────────────────────────────────────────────────────
@@ -156,24 +199,42 @@ func (h *MasterHandler) GetMaterialStats(c *fiber.Ctx) error {
 }
 
 // GetMaterial godoc
-// @Summary      Get material by code
+// @Summary      Get material detail by code (id+name for every FK, for the edit page)
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
 // @Param        code  path  string  true  "material code"
-// @Success      200   {object}  models.MaterialFull
+// @Success      200   {object}  models.MaterialDetailFull
 // @Failure      404   {object}  fiber.Map
 // @Router       /master/materials/{code} [get]
 func (h *MasterHandler) GetMaterial(c *fiber.Ctx) error {
 	code := c.Params("code")
 	row := h.db.QueryRow(context.Background(), `
-		SELECT mat_code, group_name, subgroup_name, mat_name_th, mat_name_en,
-		       spec_description, brand_name, unit_name, is_active
-		FROM v_material_full WHERE mat_code = $1`, code)
+		SELECT mc.id, mc.mat_code, mc.is_active,
+		       mg.id, mg.group_name,
+		       sg.id, sg.subgroup_name,
+		       mn.id, mn.mat_name,
+		       ss.id, ss.spec_description,
+		       br.id, br.brand_name,
+		       u.id,  u.unit_name
+		FROM material_code mc
+		JOIN mat_group mg ON mg.id = mc.group_id
+		JOIN subgroup  sg ON sg.id = mc.subgroup_id
+		JOIN mat_name  mn ON mn.id = mc.mat_name_id
+		JOIN spec_size ss ON ss.id = mc.spec_id
+		JOIN brand     br ON br.id = mc.brand_id
+		JOIN unit      u  ON u.id  = mc.unit_id
+		WHERE mc.mat_code = $1`, code)
 
-	var m models.MaterialFull
-	if err := row.Scan(&m.MatCode, &m.GroupName, &m.SubgroupName, &m.MatNameTH, &m.MatNameEN,
-		&m.SpecDescription, &m.BrandName, &m.UnitName, &m.IsActive); err != nil {
+	var m models.MaterialDetailFull
+	if err := row.Scan(&m.ID, &m.MatCode, &m.IsActive,
+		&m.GroupID, &m.GroupName,
+		&m.SubgroupID, &m.SubgroupName,
+		&m.MatNameID, &m.MatName,
+		&m.SpecID, &m.SpecDescription,
+		&m.BrandID, &m.BrandName,
+		&m.UnitID, &m.UnitName,
+	); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "material not found")
 	}
 	return c.JSON(fiber.Map{"success": true, "data": m})
@@ -427,6 +488,69 @@ func (h *MasterHandler) ListSubgroups(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }
 
+// UpdateSubgroup godoc
+// @Summary      Update a subgroup's display name and/or reassign its parent group
+// @Description  Updates subgroup.subgroup_name and, if provided, subgroup.group_id (reassigns the parent mat_group). subgroup_code is never changed here. Note: material_code rows carry their own independent group_id — reassigning a subgroup's parent does not retroactively change group_id on any material_code row that already uses this subgroup, so it can leave a subgroup pointing at a different group than some of its materials' own group_id. This mirrors the existing schema (no enforced consistency between the two), not a new limitation introduced here.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int  true  "Subgroup ID"
+// @Param        body  body  object{subgroup_name=string,group_id=int}  true  "New subgroup_name (required) and optional group_id"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/subgroups/{id} [put]
+func (h *MasterHandler) UpdateSubgroup(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req struct {
+		SubgroupName string `json:"subgroup_name"`
+		GroupID      *int64 `json:"group_id,omitempty"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	req.SubgroupName = strings.TrimSpace(req.SubgroupName)
+	if req.SubgroupName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "subgroup_name is required")
+	}
+
+	ctx := context.Background()
+	if req.GroupID != nil {
+		var exists bool
+		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mat_group WHERE id = $1)`, *req.GroupID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("group_id %d not found", *req.GroupID))
+		}
+	}
+
+	type subgroupItem struct {
+		ID           int64  `json:"id"`
+		SubgroupCode string `json:"subgroup_code"`
+		SubgroupName string `json:"subgroup_name"`
+		GroupID      int64  `json:"group_id"`
+	}
+	var s subgroupItem
+	err = h.db.QueryRow(ctx, `
+		UPDATE subgroup SET
+		    subgroup_name = $1,
+		    group_id      = COALESCE($2, group_id),
+		    updated_at    = NOW()
+		WHERE id = $3
+		RETURNING id, subgroup_code, subgroup_name, group_id`,
+		req.SubgroupName, req.GroupID, id,
+	).Scan(&s.ID, &s.SubgroupCode, &s.SubgroupName, &s.GroupID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("subgroup %d not found", id))
+	}
+	return c.JSON(fiber.Map{"success": true, "data": s})
+}
+
 // ListMatNames godoc
 // @Summary      List mat_names by subgroup_id
 // @Tags         Master
@@ -460,6 +584,51 @@ func (h *MasterHandler) ListMatNames(c *fiber.Ctx) error {
 		items = append(items, m)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// UpdateMatName godoc
+// @Summary      Update a mat_name's display name
+// @Description  Updates mat_name.mat_name only — mat_name_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this mat_name.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int  true  "Mat_name ID"
+// @Param        body  body  object{mat_name=string}  true  "New mat_name"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/mat-names/{id} [put]
+func (h *MasterHandler) UpdateMatName(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req struct {
+		MatName string `json:"mat_name"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	req.MatName = strings.TrimSpace(req.MatName)
+	if req.MatName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "mat_name is required")
+	}
+
+	type matNameItem struct {
+		ID          int64  `json:"id"`
+		MatNameCode string `json:"mat_name_code"`
+		MatName     string `json:"mat_name"`
+	}
+	var m matNameItem
+	err = h.db.QueryRow(context.Background(),
+		`UPDATE mat_name SET mat_name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, mat_name_code, mat_name`,
+		req.MatName, id,
+	).Scan(&m.ID, &m.MatNameCode, &m.MatName)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("mat_name %d not found", id))
+	}
+	return c.JSON(fiber.Map{"success": true, "data": m})
 }
 
 // ListSpecs godoc
@@ -499,6 +668,51 @@ func (h *MasterHandler) ListSpecs(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }
 
+// UpdateSpecSize godoc
+// @Summary      Update a spec_size's display description
+// @Description  Updates spec_size.spec_description only — spec_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this spec.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int  true  "Spec ID"
+// @Param        body  body  object{spec_description=string}  true  "New spec_description"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/specs/{id} [put]
+func (h *MasterHandler) UpdateSpecSize(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req struct {
+		SpecDescription string `json:"spec_description"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	req.SpecDescription = strings.TrimSpace(req.SpecDescription)
+	if req.SpecDescription == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "spec_description is required")
+	}
+
+	type specItem struct {
+		ID              int64  `json:"id"`
+		SpecCode        string `json:"spec_code"`
+		SpecDescription string `json:"spec_description"`
+	}
+	var s specItem
+	err = h.db.QueryRow(context.Background(),
+		`UPDATE spec_size SET spec_description = $1, updated_at = NOW() WHERE id = $2 RETURNING id, spec_code, spec_description`,
+		req.SpecDescription, id,
+	).Scan(&s.ID, &s.SpecCode, &s.SpecDescription)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("spec_size %d not found", id))
+	}
+	return c.JSON(fiber.Map{"success": true, "data": s})
+}
+
 // ListBrands godoc
 // @Summary      List brand rows by spec_id
 // @Tags         Master
@@ -536,6 +750,51 @@ func (h *MasterHandler) ListBrands(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }
 
+// UpdateBrand godoc
+// @Summary      Update a brand's display name
+// @Description  Updates brand.brand_name only — brand_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this brand.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int  true  "Brand ID"
+// @Param        body  body  object{brand_name=string}  true  "New brand_name"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/brands/{id} [put]
+func (h *MasterHandler) UpdateBrand(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req struct {
+		BrandName string `json:"brand_name"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	req.BrandName = strings.TrimSpace(req.BrandName)
+	if req.BrandName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "brand_name is required")
+	}
+
+	type brandDetail struct {
+		ID        int64  `json:"id"`
+		BrandCode string `json:"brand_code"`
+		BrandName string `json:"brand_name"`
+	}
+	var b brandDetail
+	err = h.db.QueryRow(context.Background(),
+		`UPDATE brand SET brand_name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, brand_code, brand_name`,
+		req.BrandName, id,
+	).Scan(&b.ID, &b.BrandCode, &b.BrandName)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("brand %d not found", id))
+	}
+	return c.JSON(fiber.Map{"success": true, "data": b})
+}
+
 // ─── Units ────────────────────────────────────────────────────────────────────
 
 // ListUnits godoc
@@ -543,18 +802,68 @@ func (h *MasterHandler) ListBrands(c *fiber.Ctx) error {
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Success      200  {array}  models.Unit
+// @Success      200  {array}  fiber.Map
 // @Router       /master/units [get]
 func (h *MasterHandler) ListUnits(c *fiber.Ctx) error {
-	rows, _ := h.db.Query(context.Background(), `SELECT unit_code, unit_name FROM unit ORDER BY unit_code`)
+	type unitItem struct {
+		ID       int    `json:"id"`
+		UnitCode string `json:"unit_code"`
+		UnitName string `json:"unit_name"`
+	}
+	rows, _ := h.db.Query(context.Background(), `SELECT id, unit_code, unit_name FROM unit ORDER BY unit_code`)
 	defer rows.Close()
-	var items []models.Unit
+	var items []unitItem
 	for rows.Next() {
-		var u models.Unit
-		rows.Scan(&u.UnitCode, &u.UnitName)
+		var u unitItem
+		rows.Scan(&u.ID, &u.UnitCode, &u.UnitName)
 		items = append(items, u)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// UpdateUnit godoc
+// @Summary      Update a unit's display name
+// @Description  Updates unit.unit_name only — unit_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this unit.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int  true  "Unit ID"
+// @Param        body  body  object{unit_name=string}  true  "New unit_name"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/units/{id} [put]
+func (h *MasterHandler) UpdateUnit(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req struct {
+		UnitName string `json:"unit_name"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	req.UnitName = strings.TrimSpace(req.UnitName)
+	if req.UnitName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "unit_name is required")
+	}
+
+	type unitDetail struct {
+		ID       int64  `json:"id"`
+		UnitCode string `json:"unit_code"`
+		UnitName string `json:"unit_name"`
+	}
+	var u unitDetail
+	err = h.db.QueryRow(context.Background(),
+		`UPDATE unit SET unit_name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, unit_code, unit_name`,
+		req.UnitName, id,
+	).Scan(&u.ID, &u.UnitCode, &u.UnitName)
+	if err != nil {
+		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("unit %d not found", id))
+	}
+	return c.JSON(fiber.Map{"success": true, "data": u})
 }
 
 // ─── Roles ───────────────────────────────────────────────────────────────────
@@ -1237,39 +1546,153 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 }
 
 // UpdateMaterial godoc
-// @Summary      Update material names (full transaction)
-// @Description  Updates subgroup_name, mat_name_th, spec_description, brand_name, unit_name and is_active in one transaction. Codes (and mat_code) are not changed.
+// materialCodeCascadeTables lists every table with a (non-deferrable-by-default, now made
+// DEFERRABLE INITIALLY IMMEDIATE — see the one-time ALTER TABLE run alongside this handler)
+// FK to material_code(mat_code), plus stock_item which has no FK at all. All are cascaded
+// to the new mat_code, inside the same transaction as the material_code update itself, using
+// SET CONSTRAINTS ... DEFERRED so the intermediate (old-code-missing) state within the
+// transaction doesn't trip the FK checks before COMMIT.
+var materialCodeCascadeTables = []string{
+	"stock_item", "borrow_line", "grn_line", "inventory", "inventory_transaction",
+	"purchase_order_line", "purchase_request_line", "rfq_line", "stock_count_line",
+}
+
+// materialCodeCascadeConstraints are the FK constraint names deferred for the cascade —
+// only material_code's own dependents, not every constraint in the database.
+var materialCodeCascadeConstraints = []string{
+	"borrow_line_mat_code_fkey", "grn_line_mat_code_fkey", "inventory_mat_code_fkey",
+	"inventory_transaction_mat_code_fkey", "purchase_order_line_mat_code_fkey",
+	"purchase_request_line_mat_code_fkey", "rfq_line_mat_code_fkey", "stock_count_line_mat_code_fkey",
+}
+
+// UpdateMaterial godoc
+// @Summary      Update a material's group/subgroup/mat_name/spec/brand/unit/is_active
+// @Description  Partial update — only fields present in the body are changed. Reassigns which
+// @Description  existing group/subgroup/mat_name/spec/brand/unit row this material points to
+// @Description  (by id); it does not rename shared master rows, and mat_code is never accepted
+// @Description  from the client. If any of group_id/subgroup_id/mat_name_id/spec_id/brand_id/
+// @Description  unit_id changes, mat_code is auto-regenerated server-side as
+// @Description  group_code+subgroup_code+mat_name_code+spec_code+brand_code+unit_code (the
+// @Description  confirmed composition rule), and the change is cascaded in the same
+// @Description  transaction to every table that references mat_code — including stock_item,
+// @Description  which has no FK and would otherwise silently lose its link to this material.
+// @Description  If the regenerated code would collide with a different existing material, the
+// @Description  update is rejected with 409.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
 // @Produce      json
-// @Param        code  path      string                       true  "mat_code"
-// @Param        body  body      models.UpdateMaterialRequest true  "Update data"
+// @Param        code  path      string                          true  "mat_code"
+// @Param        body  body      models.UpdateMaterialFullRequest true  "Update data"
 // @Success      200   {object}  fiber.Map
 // @Failure      400   {object}  fiber.Map
 // @Failure      404   {object}  fiber.Map
+// @Failure      409   {object}  fiber.Map
 // @Router       /master/materials/{code} [put]
 func (h *MasterHandler) UpdateMaterial(c *fiber.Ctx) error {
 	matCode := c.Params("code")
-	var req models.UpdateMaterialRequest
+	var req models.UpdateMaterialFullRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.SubgroupName == "" || req.MatNameTH == "" || req.SpecDescription == "" ||
-		req.BrandName == "" || req.UnitName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "all name fields are required")
-	}
 
 	ctx := context.Background()
+	claims := middleware.GetClaims(c)
 
-	// fetch the FK codes stored in material_code
-	var groupCode, subgroupCode, matNameCode, specCode, brandCode, unitCode string
-	err := h.db.QueryRow(ctx,
-		`SELECT group_code, subgroup_code, mat_name_code, spec_code, brand_code, unit_code
-		 FROM material_code WHERE mat_code = $1`, matCode).
-		Scan(&groupCode, &subgroupCode, &matNameCode, &specCode, &brandCode, &unitCode)
-	if err != nil {
+	var current struct {
+		id                                                      int64
+		groupID, subgroupID, matNameID, specID, brandID, unitID int64
+	}
+	if err := h.db.QueryRow(ctx,
+		`SELECT id, group_id, subgroup_id, mat_name_id, spec_id, brand_id, unit_id
+		 FROM material_code WHERE mat_code = $1`, matCode,
+	).Scan(&current.id, &current.groupID, &current.subgroupID, &current.matNameID,
+		&current.specID, &current.brandID, &current.unitID); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "material not found: "+matCode)
+	}
+
+	// Validate every provided FK id actually exists before touching anything.
+	fkChecks := []struct {
+		id    *int64
+		table string
+		name  string
+	}{
+		{req.GroupID, "mat_group", "group_id"},
+		{req.SubgroupID, "subgroup", "subgroup_id"},
+		{req.MatNameID, "mat_name", "mat_name_id"},
+		{req.SpecID, "spec_size", "spec_id"},
+		{req.BrandID, "brand", "brand_id"},
+		{req.UnitID, "unit", "unit_id"},
+	}
+	for _, fk := range fkChecks {
+		if fk.id == nil {
+			continue
+		}
+		var exists bool
+		if err := h.db.QueryRow(ctx,
+			fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %s WHERE id = $1)`, fk.table), *fk.id,
+		).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s %d not found", fk.name, *fk.id))
+		}
+	}
+
+	effGroupID := current.groupID
+	if req.GroupID != nil {
+		effGroupID = *req.GroupID
+	}
+	effSubgroupID := current.subgroupID
+	if req.SubgroupID != nil {
+		effSubgroupID = *req.SubgroupID
+	}
+	effMatNameID := current.matNameID
+	if req.MatNameID != nil {
+		effMatNameID = *req.MatNameID
+	}
+	effSpecID := current.specID
+	if req.SpecID != nil {
+		effSpecID = *req.SpecID
+	}
+	effBrandID := current.brandID
+	if req.BrandID != nil {
+		effBrandID = *req.BrandID
+	}
+	effUnitID := current.unitID
+	if req.UnitID != nil {
+		effUnitID = *req.UnitID
+	}
+
+	codeChanged := effGroupID != current.groupID || effSubgroupID != current.subgroupID ||
+		effMatNameID != current.matNameID || effSpecID != current.specID ||
+		effBrandID != current.brandID || effUnitID != current.unitID
+
+	newMatCode := matCode
+	if codeChanged {
+		var groupCode, subgroupCode, matNameCode, specCode, brandCode, unitCode string
+		if err := h.db.QueryRow(ctx, `
+			SELECT mg.group_code, sg.subgroup_code, mn.mat_name_code, ss.spec_code, br.brand_code, u.unit_code
+			FROM mat_group mg, subgroup sg, mat_name mn, spec_size ss, brand br, unit u
+			WHERE mg.id = $1 AND sg.id = $2 AND mn.id = $3 AND ss.id = $4 AND br.id = $5 AND u.id = $6`,
+			effGroupID, effSubgroupID, effMatNameID, effSpecID, effBrandID, effUnitID,
+		).Scan(&groupCode, &subgroupCode, &matNameCode, &specCode, &brandCode, &unitCode); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "one or more of the resolved group/subgroup/mat_name/spec/brand/unit ids do not exist")
+		}
+		newMatCode = groupCode + subgroupCode + matNameCode + specCode + brandCode + unitCode
+
+		// Guard: reject if the regenerated code collides with a DIFFERENT existing material.
+		var collidingID int64
+		err := h.db.QueryRow(ctx, `SELECT id FROM material_code WHERE mat_code = $1 AND id != $2`, newMatCode, current.id).Scan(&collidingID)
+		if err == nil {
+			return fiber.NewError(fiber.StatusConflict, fmt.Sprintf(
+				"the regenerated mat_code %q already belongs to another material (id=%d) — resulting combination is not unique", newMatCode, collidingID))
+		}
+	}
+
+	var updatedBy *int64
+	if claims != nil {
+		updatedBy = &claims.UserID
 	}
 
 	tx, err := h.db.Begin(ctx)
@@ -1278,57 +1701,65 @@ func (h *MasterHandler) UpdateMaterial(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. unit — update name
-	if _, err = tx.Exec(ctx,
-		`UPDATE unit SET unit_name = $1 WHERE unit_code = $2`,
-		req.UnitName, unitCode); err != nil {
-		return err
+	cascaded := fiber.Map{}
+	if codeChanged && newMatCode != matCode {
+		if _, err := tx.Exec(ctx,
+			fmt.Sprintf(`SET CONSTRAINTS %s DEFERRED`, strings.Join(materialCodeCascadeConstraints, ", ")),
+		); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to defer FK constraints: "+err.Error())
+		}
+		for _, table := range materialCodeCascadeTables {
+			tag, err := tx.Exec(ctx, fmt.Sprintf(`UPDATE %s SET mat_code = $1 WHERE mat_code = $2`, table), newMatCode, matCode)
+			if err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("failed to cascade mat_code to %s: %s", table, err.Error()))
+			}
+			cascaded[table+"_rows_updated"] = tag.RowsAffected()
+		}
+		log.Printf("material_code id=%d mat_code changed %q -> %q by user %v; cascaded to %d table(s)",
+			current.id, matCode, newMatCode, updatedBy, len(materialCodeCascadeTables))
 	}
 
-	// 2. brand — update name
-	if _, err = tx.Exec(ctx,
-		`UPDATE brand SET brand_name = $1 WHERE brand_code = $2`,
-		req.BrandName, brandCode); err != nil {
-		return err
+	var returnedMatCode string
+	if err := tx.QueryRow(ctx, `
+		UPDATE material_code SET
+		    mat_code    = $1,
+		    group_id    = COALESCE($2, group_id),
+		    subgroup_id = COALESCE($3, subgroup_id),
+		    mat_name_id = COALESCE($4, mat_name_id),
+		    spec_id     = COALESCE($5, spec_id),
+		    brand_id    = COALESCE($6, brand_id),
+		    unit_id     = COALESCE($7, unit_id),
+		    is_active   = COALESCE($8, is_active),
+		    updated_at  = NOW(), updated_by = $9
+		WHERE id = $10
+		RETURNING mat_code`,
+		newMatCode, req.GroupID, req.SubgroupID, req.MatNameID, req.SpecID, req.BrandID, req.UnitID, req.IsActive,
+		updatedBy, current.id,
+	).Scan(&returnedMatCode); err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid group_id, subgroup_id, mat_name_id, spec_id, brand_id or unit_id")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to update material: "+err.Error())
 	}
 
-	// 3. mat_subgroup — update name
-	if _, err = tx.Exec(ctx,
-		`UPDATE subgroup SET subgroup_name = $1 WHERE subgroup_code = $2`,
-		req.SubgroupName, subgroupCode); err != nil {
-		return err
+	if err := tx.Commit(ctx); err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
+			return fiber.NewError(fiber.StatusInternalServerError, "cascade left an inconsistent reference — commit rejected: "+pgErr.Message)
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to commit: "+err.Error())
 	}
 
-	// 4. mat_name — update thai name
-	if _, err = tx.Exec(ctx,
-		`UPDATE mat_name SET mat_name_th = $1 WHERE subgroup_code = $2 AND mat_name_code = $3`,
-		req.MatNameTH, subgroupCode, matNameCode); err != nil {
-		return err
+	resp := fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"mat_code": returnedMatCode,
+		},
+		"message": "material updated",
 	}
-
-	// 5. mat_spec — update description
-	if _, err = tx.Exec(ctx,
-		`UPDATE mat_spec SET spec_description = $1 WHERE mat_name_code = $2 AND spec_code = $3`,
-		req.SpecDescription, matNameCode, specCode); err != nil {
-		return err
+	if len(cascaded) > 0 {
+		resp["cascaded"] = cascaded
 	}
-
-	// 6. material_code — update is_active
-	if _, err = tx.Exec(ctx,
-		`UPDATE material_code SET is_active = $1 WHERE mat_code = $2`,
-		req.IsActive, matCode); err != nil {
-		return err
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return err
-	}
-
-	return c.JSON(fiber.Map{
-		"success":  true,
-		"mat_code": matCode,
-		"message":  "material updated",
-	})
+	return c.JSON(resp)
 }
 
 // ExportMaterials godoc

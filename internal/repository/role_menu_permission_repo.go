@@ -8,7 +8,7 @@ import (
 )
 
 type RoleMenuPermissionRow struct {
-	ID        int64     `json:"id"`
+	ID        *int64    `json:"id"`
 	RoleID    int64     `json:"role_id"`
 	RoleCode  string    `json:"role_code"`
 	RoleName  string    `json:"role_name"`
@@ -57,10 +57,11 @@ func (r *RoleMenuPermissionRepo) ListAll(ctx context.Context) ([]RoleMenuPermiss
 			rmp.id,
 			ro.id, ro.role_code, ro.role_name,
 			m.id, m.menu_code, m.menu_name, m.parent_id,
-			rmp.can_read, rmp.can_write, rmp.can_update, rmp.can_delete
-		FROM role_menu_permissions rmp
-		JOIN roles ro ON ro.id = rmp.role_id
-		JOIN menus  m  ON m.id  = rmp.menu_id
+			COALESCE(rmp.can_read, false), COALESCE(rmp.can_write, false),
+			COALESCE(rmp.can_update, false), COALESCE(rmp.can_delete, false)
+		FROM menus m
+		CROSS JOIN roles ro
+		LEFT JOIN role_menu_permissions rmp ON rmp.role_id = ro.id AND rmp.menu_id = m.id
 		ORDER BY ro.role_code, m.sort_order, m.menu_code`)
 	if err != nil {
 		return nil, err

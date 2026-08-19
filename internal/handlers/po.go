@@ -40,30 +40,6 @@ func normalizeDescription(d *string) (*string, error) {
 	return &s, nil
 }
 
-// resolvePOLineCostSubgroups looks up cost_subgroup_id for a set of purchase_request_line IDs.
-// A PO line created from a PR line (pr_line_id set) inherits the PR line's cost code
-// automatically — the user shouldn't have to re-pick it via the job picker in that case.
-func resolvePOLineCostSubgroups(ctx context.Context, tx pgx.Tx, prLineIDs []int64) (map[int64]*int64, error) {
-	result := make(map[int64]*int64)
-	if len(prLineIDs) == 0 {
-		return result, nil
-	}
-	rows, err := tx.Query(ctx, `SELECT id, cost_subgroup_id FROM purchase_request_line WHERE id = ANY($1)`, prLineIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var csg *int64
-		if err := rows.Scan(&id, &csg); err != nil {
-			return nil, err
-		}
-		result[id] = csg
-	}
-	return result, rows.Err()
-}
-
 // ListPO godoc
 // @Summary      List purchase orders
 // @Tags         Purchase Order
@@ -98,16 +74,10 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	args = append(args, size, offset)
 	rows, err := h.db.Query(context.Background(), `
 		SELECT po.id, po.po_no, po.po_date, po.supplier_code, s.supplier_name,
-		       po.status, po.status_receive, po.order_type, po.currency, po.total_amount, po.vat_amount, po.net_amount,
+		       po.status, po.status_receive, po.order_type, po.work_type, po.currency, po.total_amount, po.vat_amount, po.net_amount,
 		       po.expected_date::text, po.created_at, po.updated_at, po.project_code,
 		       COALESCE(cu.full_name, '') AS created_by_name,
 		       COALESCE(uu.full_name, '') AS updated_by_name,
-		       (SELECT ARRAY_AGG(DISTINCT cj.job_name ORDER BY cj.job_name)
-		          FROM purchase_order_line pol
-		          JOIN cost_subgroup csg ON csg.id = pol.cost_subgroup_id
-		          JOIN cost_group    cg  ON cg.id = csg.group_id
-		          JOIN cost_job      cj  ON cj.id = cg.job_id
-		         WHERE pol.po_id = po.id) AS job_names,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.supplier_code = po.supplier_code
@@ -129,6 +99,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		Status        string    `json:"status"`
 		StatusReceive string    `json:"status_receive"`
 		OrderType     string    `json:"order_type"`
+		WorkType      *string   `json:"work_type,omitempty"`
 		Currency      string    `json:"currency"`
 		TotalAmount   float64   `json:"total_amount"`
 		VATAmount     float64   `json:"vat_amount"`
@@ -150,9 +121,9 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		var r PORow
 		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierCode, &r.SupplierName,
-			&r.Status, &r.StatusReceive, &r.OrderType, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
+			&r.Status, &r.StatusReceive, &r.OrderType, &r.WorkType, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode,
-			&r.CreatedByName, &r.UpdatedByName, &r.JobNames, &r.RevisionRound); err != nil {
+			&r.CreatedByName, &r.UpdatedByName, &r.RevisionRound); err != nil {
 			return err
 		}
 		items = append(items, r)
@@ -168,9 +139,9 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 // ListLineItems godoc
 // @Summary      List approved POs with their line items (grouped by PO)
 // @Description  Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is
-// @Description  not considered), one object per PO with a nested "lines" array. mat_code/job_code filters
-// @Description  are applied at the line level: only lines matching the filter appear in "lines", and a PO
-// @Description  is dropped from the result entirely if none of its lines match. Pagination (page/page_size)
+// @Description  not considered), one object per PO with a nested "lines" array. mat_code filter is applied
+// @Description  at the line level: only lines matching the filter appear in "lines", and a PO is dropped
+// @Description  from the result entirely if none of its lines match. Pagination (page/page_size)
 // @Description  paginates POs, not lines.
 // @Tags         Purchase Order
 // @Security     BearerAuth
@@ -180,7 +151,6 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 // @Param        po_no        query  string  false  "po_no ILIKE filter"
 // @Param        mat_code     query  string  false  "mat_code ILIKE filter — only matching lines are kept, POs with no match are excluded"
 // @Param        requested_by query  int     false  "requested_by user id filter"
-// @Param        job_code     query  string  false  "resolved cost_job.job_code filter — only matching lines are kept, POs with no match are excluded"
 // @Param        project_code query  string  false  "po.project_code filter"
 // @Param        page         query  int     false  "page (paginates POs)"  default(1)
 // @Param        page_size    query  int     false  "page_size (POs per page)"  default(20)
@@ -197,8 +167,8 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 	var args []any
 	conditions = append(conditions, "po.status = 'APPROVED'")
 
-	// mat_code/job_code are line-level filters: a PO qualifies only if it has at least one
-	// line matching BOTH (whichever are set), and only those matching lines are returned.
+	// mat_code is a line-level filter: a PO qualifies only if it has at least one
+	// line matching it, and only those matching lines are returned.
 	// lineFilterSQL holds the raw "col op ?" fragments (placeholder-free); lineFilterArgs
 	// holds their values in the same order, reused verbatim for both the header EXISTS
 	// clause and the later per-line query.
@@ -225,10 +195,6 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		args = append(args, v)
 		conditions = append(conditions, fmt.Sprintf("po.requested_by = $%d", len(args)))
 	}
-	if v := strings.TrimSpace(c.Query("job_code")); v != "" {
-		lineFilterArgs = append(lineFilterArgs, v)
-		lineFilterSQL = append(lineFilterSQL, "cj.job_code =")
-	}
 	if v := strings.TrimSpace(c.Query("project_code")); v != "" {
 		args = append(args, v)
 		conditions = append(conditions, fmt.Sprintf("po.project_code = $%d", len(args)))
@@ -243,9 +209,6 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		conditions = append(conditions, fmt.Sprintf(
 			`EXISTS (
 				SELECT 1 FROM purchase_order_line pol
-				LEFT JOIN cost_subgroup csg ON csg.id = pol.cost_subgroup_id
-				LEFT JOIN cost_group    cg  ON cg.id = csg.group_id
-				LEFT JOIN cost_job      cj  ON cj.id = cg.job_id
 				WHERE pol.po_id = po.id AND %s
 			)`, strings.Join(existsConds, " AND ")))
 	}
@@ -280,8 +243,6 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		QtyOrdered float64 `json:"qty_ordered"`
 		UnitPrice  float64 `json:"unit_price"`
 		Amount     float64 `json:"amount"`
-		JobCode    *string `json:"job_code,omitempty"`
-		JobName    *string `json:"job_name,omitempty"`
 	}
 
 	type POGroup struct {
@@ -329,14 +290,10 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		}
 		lineQueryWhere := strings.Join(lineQueryConds, " AND ")
 		lineRows, err := h.db.Query(context.Background(), `
-			SELECT pol.po_id, pol.mat_code, mn.mat_name, pol.qty_ordered, pol.unit_price, pol.amount,
-			       cj.job_code, cj.job_name
+			SELECT pol.po_id, pol.mat_code, mn.mat_name, pol.qty_ordered, pol.unit_price, pol.amount
 			FROM purchase_order_line pol
 			LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
 			LEFT JOIN mat_name      mn ON mn.id = mc.mat_name_id
-			LEFT JOIN cost_subgroup csg ON csg.id = pol.cost_subgroup_id
-			LEFT JOIN cost_group    cg  ON cg.id = csg.group_id
-			LEFT JOIN cost_job      cj  ON cj.id = cg.job_id
 			WHERE `+lineQueryWhere+`
 			ORDER BY pol.po_id, pol.line_no`, lineQueryArgs...)
 		if err != nil {
@@ -347,8 +304,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		for lineRows.Next() {
 			var poID int64
 			var l LineItemRow
-			if err := lineRows.Scan(&poID, &l.MatCode, &l.MatName, &l.QtyOrdered, &l.UnitPrice, &l.Amount,
-				&l.JobCode, &l.JobName); err != nil {
+			if err := lineRows.Scan(&poID, &l.MatCode, &l.MatName, &l.QtyOrdered, &l.UnitPrice, &l.Amount); err != nil {
 				return err
 			}
 			if g, ok := groupByID[poID]; ok {
@@ -393,7 +349,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       po.expected_date::text,
 		       po.use_discount, po.discount_type, po.discount_amount,
 		       po.use_vat, po.use_wht, po.wht_amount,
-		       po.status, po.status_receive, po.order_type, po.payment_terms, po.remarks,
+		       po.status, po.status_receive, po.order_type, po.work_type, po.payment_terms, po.remarks,
 		       po.created_by, po.created_at, po.updated_at,
 		       COALESCE(s.supplier_name, ''),
 		       s.office_phone, s.sales_person,
@@ -416,7 +372,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		&po.ExpectedDate,
 		&po.UseDiscount, &po.DiscountType, &po.DiscountAmount,
 		&po.UseVAT, &po.UseWHT, &po.WHTAmount,
-		&po.Status, &po.StatusReceive, &po.OrderType, &po.PaymentTerms, &po.Remarks,
+		&po.Status, &po.StatusReceive, &po.OrderType, &po.WorkType, &po.PaymentTerms, &po.Remarks,
 		&po.CreatedBy, &po.CreatedAt, &po.UpdatedAt,
 		&po.SupplierName,
 		&po.OfficePhone, &po.SalesPerson,
@@ -435,16 +391,13 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       pol.unit_price, pol.disc_type, pol.discount, pol.line_discount, pol.line_vat, pol.line_wht,
 		       pol.line_net, pol.wht_rate, pol.amount, pol.description, pol.remarks, pol.status,
 		       mn.mat_name, ss.spec_description, b.brand_name,
-		       COALESCE(si.qty, 0), pol.cost_subgroup_id, cj.job_code
+		       COALESCE(si.qty, 0)
 		FROM purchase_order_line pol
 		LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
 		LEFT JOIN mat_name      mn ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size     ss ON ss.id = mc.spec_id
 		LEFT JOIN brand         b  ON b.id  = mc.brand_id
 		LEFT JOIN stock_item    si  ON si.mat_code = pol.mat_code AND si.warehouse_code = $2
-		LEFT JOIN cost_subgroup csg ON csg.id = pol.cost_subgroup_id
-		LEFT JOIN cost_group    cg  ON cg.id = csg.group_id
-		LEFT JOIN cost_job      cj  ON cj.id = cg.job_id
 		WHERE pol.po_id=$1 ORDER BY pol.line_no`, id, po.WarehouseCode)
 	if rows != nil {
 		defer rows.Close()
@@ -453,7 +406,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 			rows.Scan(&l.LineID, &l.POID, &l.LineNo, &l.MatCode, &l.PRLineID,
 				&l.QtyOrdered, &l.QtyReceived, &l.UnitPrice, &l.DiscType, &l.Discount, &l.LineDiscount,
 				&l.LineVAT, &l.LineWHT, &l.LineNet, &l.WhtRate, &l.Amount, &l.Description, &l.Remarks, &l.Status,
-				&l.MatName, &l.SpecDescription, &l.BrandName, &l.CurrentStock, &l.CostSubgroupID, &l.JobCode)
+				&l.MatName, &l.SpecDescription, &l.BrandName, &l.CurrentStock)
 			po.Lines = append(po.Lines, l)
 		}
 	}
@@ -696,13 +649,13 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		  (po_no, po_date, supplier_code, pr_id, rfq_id, location_text, warehouse_code, project_code, requested_by, approver_id, ref, currency,
 		   total_amount, vat_amount, net_amount, expected_date,
 		   use_discount, discount_type, discount_amount, use_vat, use_wht, wht_amount,
-		   status, order_type, payment_terms, remarks, created_by)
-		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+		   status, order_type, work_type, payment_terms, remarks, created_by)
+		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		RETURNING id`,
 		poNo, req.SupplierCode, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref, req.Currency,
 		totalAmount, vatAmount, netAmount, req.ExpectedDate,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
-		status, req.OrderType, req.PaymentTerms, req.Remarks, claims.UserID,
+		status, req.OrderType, req.WorkType, req.PaymentTerms, req.Remarks, claims.UserID,
 	).Scan(&poID)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
@@ -715,38 +668,21 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create PO: "+err.Error())
 	}
 
-	var prLineIDs []int64
-	for _, l := range req.Lines {
-		if l.PRLineID != nil {
-			prLineIDs = append(prLineIDs, *l.PRLineID)
-		}
-	}
-	prLineCostSubgroups, err := resolvePOLineCostSubgroups(ctx, tx, prLineIDs)
-	if err != nil {
-		return err
-	}
-
 	for i, line := range req.Lines {
 		desc, err := normalizeDescription(line.Description)
 		if err != nil {
 			return err
 		}
 		lc := calcs[i]
-		costSubgroupID := line.CostSubgroupID
-		if line.PRLineID != nil {
-			if csg, ok := prLineCostSubgroups[*line.PRLineID]; ok {
-				costSubgroupID = csg
-			}
-		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO purchase_order_line
 			  (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type,
 			   discount, line_discount, line_vat, line_wht, line_net, wht_rate,
-			   description, remarks, status, cost_subgroup_id)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN',$16)`,
+			   description, remarks, status)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN')`,
 			poID, i+1, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, lc.discType,
 			line.Discount, lc.discAmt, lc.vatAmt, lc.whtAmt, lc.net, line.WhtRate,
-			desc, line.Remarks, costSubgroupID,
+			desc, line.Remarks,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
@@ -1053,14 +989,14 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		    currency=$10, expected_date=$11, payment_terms=$12, remarks=$13,
 		    total_amount=$14, vat_amount=$15, net_amount=$16, status=$17,
 		    use_discount=$18, discount_type=$19, discount_amount=$20, use_vat=$21, use_wht=$22, wht_amount=$23,
-		    order_type=$24,
-		    updated_at=NOW(), updated_by=$25
-		WHERE id=$26`,
+		    order_type=$24, work_type=$25,
+		    updated_at=NOW(), updated_by=$26
+		WHERE id=$27`,
 		req.SupplierCode, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref,
 		req.Currency, req.ExpectedDate, req.PaymentTerms, req.Remarks,
 		totalAmount, vatAmount, netAmount, newStatus,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
-		orderType,
+		orderType, req.WorkType,
 		claims.UserID, poID,
 	); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
@@ -1077,38 +1013,21 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to clear old lines: "+err.Error())
 	}
 
-	var prLineIDs []int64
-	for _, l := range req.Lines {
-		if l.PRLineID != nil {
-			prLineIDs = append(prLineIDs, *l.PRLineID)
-		}
-	}
-	prLineCostSubgroups, err := resolvePOLineCostSubgroups(ctx, tx, prLineIDs)
-	if err != nil {
-		return err
-	}
-
 	for i, line := range req.Lines {
 		desc, err := normalizeDescription(line.Description)
 		if err != nil {
 			return err
 		}
 		lc := calcs[i]
-		costSubgroupID := line.CostSubgroupID
-		if line.PRLineID != nil {
-			if csg, ok := prLineCostSubgroups[*line.PRLineID]; ok {
-				costSubgroupID = csg
-			}
-		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO purchase_order_line
 			  (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type,
 			   discount, line_discount, line_vat, line_wht, line_net, wht_rate,
-			   description, remarks, status, cost_subgroup_id)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN',$16)`,
+			   description, remarks, status)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN')`,
 			poID, i+1, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, lc.discType,
 			line.Discount, lc.discAmt, lc.vatAmt, lc.whtAmt, lc.net, line.WhtRate,
-			desc, line.Remarks, costSubgroupID,
+			desc, line.Remarks,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
@@ -1418,17 +1337,6 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to clear old lines: "+err.Error())
 	}
 
-	var editPRLineIDs []int64
-	for _, l := range req.Lines {
-		if l.PRLineID != nil {
-			editPRLineIDs = append(editPRLineIDs, *l.PRLineID)
-		}
-	}
-	editPRLineCostSubgroups, err := resolvePOLineCostSubgroups(ctx, tx, editPRLineIDs)
-	if err != nil {
-		return err
-	}
-
 	for i, line := range req.Lines {
 		desc, err := normalizeDescription(line.Description)
 		if err != nil {
@@ -1438,16 +1346,10 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		if discType == "" {
 			discType = "pct"
 		}
-		costSubgroupID := line.CostSubgroupID
-		if line.PRLineID != nil {
-			if csg, ok := editPRLineCostSubgroups[*line.PRLineID]; ok {
-				costSubgroupID = csg
-			}
-		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_order_line (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type, description, remarks, status, cost_subgroup_id)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'OPEN',$10)`,
-			poID, i+1, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, discType, desc, line.Remarks, costSubgroupID,
+			INSERT INTO purchase_order_line (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type, description, remarks, status)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'OPEN')`,
+			poID, i+1, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, discType, desc, line.Remarks,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
@@ -1648,15 +1550,6 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 		return err
 	}
 
-	addLinesPRLineIDs := make([]int64, 0, len(deltas))
-	for id := range deltas {
-		addLinesPRLineIDs = append(addLinesPRLineIDs, id)
-	}
-	addLinesCostSubgroups, err := resolvePOLineCostSubgroups(ctx, tx, addLinesPRLineIDs)
-	if err != nil {
-		return err
-	}
-
 	insertedIDs := make([]int64, 0, len(req.Lines))
 	for i, l := range req.Lines {
 		desc, err := normalizeDescription(l.Description)
@@ -1667,18 +1560,12 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 		if discType == "" {
 			discType = "pct"
 		}
-		costSubgroupID := l.CostSubgroupID
-		if l.PRLineID != nil {
-			if csg, ok := addLinesCostSubgroups[*l.PRLineID]; ok {
-				costSubgroupID = csg
-			}
-		}
 		var lineID int64
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO purchase_order_line (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type, description, remarks, status, cost_subgroup_id)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'OPEN',$10)
+			INSERT INTO purchase_order_line (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type, description, remarks, status)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'OPEN')
 			RETURNING id`,
-			poID, startLineNo+i+1, l.MatCode, l.PRLineID, l.QtyOrdered, l.UnitPrice, discType, desc, l.Remarks, costSubgroupID,
+			poID, startLineNo+i+1, l.MatCode, l.PRLineID, l.QtyOrdered, l.UnitPrice, discType, desc, l.Remarks,
 		).Scan(&lineID); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
@@ -1903,6 +1790,10 @@ type poPrintData struct {
 	Items            []poPrintItem   `json:"items"`
 	ExtraDiscAmt     float64         `json:"extraDiscAmt"`
 	ShippingAmt      float64         `json:"shippingAmt"`
+	VatAmt           float64         `json:"vatAmt"`
+	WhtAmt           float64         `json:"whtAmt"`
+	TotalAmt         float64         `json:"totalAmt"`
+	NetAmt           float64         `json:"netAmt"`
 	Remark           *string         `json:"remark"`
 	UseDiscount      bool            `json:"useDiscount"`
 	UseVat           bool            `json:"useVat"`
@@ -1933,6 +1824,8 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		poPaymentTerms              *string
 		remarks                     *string
 		discountAmount              *float64
+		vatAmount, whtAmount        float64
+		totalAmount, netAmount      float64
 		useDiscount, useVat, useWht *bool
 		prNo                        *string
 		supplierName                string
@@ -1945,6 +1838,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 	err := h.db.QueryRow(ctx, `
 		SELECT po.po_no, po.po_date, po.expected_date, po.project_code, po.location_text,
 		       po.payment_terms, po.remarks, po.discount_amount, po.use_discount, po.use_vat, po.use_wht,
+		       po.vat_amount, po.wht_amount, po.total_amount, po.net_amount,
 		       pr.pr_no,
 		       s.supplier_name, s.address, s.payment_terms, s.contact_name, s.contact_phone,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
@@ -1954,6 +1848,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		WHERE po.id = $1`, id,
 	).Scan(&poNo, &poDate, &expectedDate, &projectCode, &locationText,
 		&poPaymentTerms, &remarks, &discountAmount, &useDiscount, &useVat, &useWht,
+		&vatAmount, &whtAmount, &totalAmount, &netAmount,
 		&prNo,
 		&supplierName, &supplierAddress, &supplierPaymentTerms, &supplierContactName, &supplierContactPhone,
 		&revisionRound,
@@ -2038,6 +1933,10 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		Items:        items,
 		ExtraDiscAmt: derefFloat(discountAmount),
 		ShippingAmt:  0,
+		VatAmt:       vatAmount,
+		WhtAmt:       whtAmount,
+		TotalAmt:     totalAmount,
+		NetAmt:       netAmount,
 		Remark:       remarks,
 		UseDiscount:  derefBool(useDiscount),
 		UseVat:       derefBool(useVat),

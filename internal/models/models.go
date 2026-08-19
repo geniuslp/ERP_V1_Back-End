@@ -595,9 +595,44 @@ type MaterialSearchItem struct {
 	MatCode   string   `json:"mat_code"`
 	MatName   string   `json:"mat_name"`
 	Unit      string   `json:"unit"`
-	LastPrice *float64 `json:"last_price"`          // nullable
-	CostCode  *string  `json:"cost_code"`           // nullable
+	LastPrice *float64 `json:"last_price"`            // nullable
+	CostCode  *string  `json:"cost_code"`             // nullable
 	QtyOnHand *float64 `json:"qty_on_hand,omitempty"` // only populated when warehouse_code is passed
+}
+
+// MaterialDetailFull is the full id+name detail view for GET /master/materials/{code},
+// joined across every material_code FK — used by the material edit page so it has both
+// the display names and the ids needed to pre-select each cascading dropdown.
+type MaterialDetailFull struct {
+	ID              int64  `json:"id"`
+	MatCode         string `json:"mat_code"`
+	IsActive        bool   `json:"is_active"`
+	GroupID         int64  `json:"group_id"`
+	GroupName       string `json:"group_name"`
+	SubgroupID      int64  `json:"subgroup_id"`
+	SubgroupName    string `json:"subgroup_name"`
+	MatNameID       int64  `json:"mat_name_id"`
+	MatName         string `json:"mat_name"`
+	SpecID          int64  `json:"spec_id"`
+	SpecDescription string `json:"spec_description"`
+	BrandID         int64  `json:"brand_id"`
+	BrandName       string `json:"brand_name"`
+	UnitID          int64  `json:"unit_id"`
+	UnitName        string `json:"unit_name"`
+}
+
+// UpdateMaterialFullRequest is the body for PUT /master/materials/{code}. All fields are
+// optional/partial — only provided fields are changed. mat_code is never accepted from the
+// client — it is always derived server-side from group/subgroup/mat_name/spec/brand/unit
+// codes (see handler) and cascaded to every referencing table when it changes.
+type UpdateMaterialFullRequest struct {
+	GroupID    *int64 `json:"group_id,omitempty"`
+	SubgroupID *int64 `json:"subgroup_id,omitempty"`
+	MatNameID  *int64 `json:"mat_name_id,omitempty"`
+	SpecID     *int64 `json:"spec_id,omitempty"`
+	BrandID    *int64 `json:"brand_id,omitempty"`
+	UnitID     *int64 `json:"unit_id,omitempty"`
+	IsActive   *bool  `json:"is_active,omitempty"`
 }
 
 type MaterialDetail struct {
@@ -849,6 +884,7 @@ type PurchaseOrder struct {
 	Status           string    `json:"status" db:"status"`
 	StatusReceive    string    `json:"status_receive" db:"status_receive"`
 	OrderType        string    `json:"order_type" db:"order_type"`
+	WorkType         *string   `json:"work_type,omitempty" db:"work_type"` // header-level ประเภทงาน: P|E|S|F|G|H
 	PaymentTerms     *string   `json:"payment_terms,omitempty" db:"payment_terms"`
 	Remarks          *string   `json:"remarks,omitempty" db:"remarks"`
 	CreatedBy        int64     `json:"created_by" db:"created_by"`
@@ -890,10 +926,6 @@ type POLine struct {
 	SpecDescription *string  `json:"spec,omitempty"`
 	BrandName       *string  `json:"brand,omitempty"`
 	CurrentStock    float64  `json:"current_stock"`
-
-	// Cost Code (job) — chosen per line item, mirrors purchase_request_line.cost_subgroup_id.
-	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
-	JobCode        *string `json:"job_code,omitempty"` // resolved via cost_subgroup -> cost_group -> cost_job, read-only
 }
 
 type CreatePORequest struct {
@@ -911,7 +943,8 @@ type CreatePORequest struct {
 	PaymentTerms  *string        `json:"payment_terms,omitempty"`
 	Remarks       *string        `json:"remarks,omitempty"`
 	Status        string         `json:"status" validate:"omitempty,oneof=DRAFT PENDING_APPROVAL"`
-	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
+	OrderType     string         `json:"order_type,omitempty"`                                       // "stock" | "cost" — defaults to "stock"
+	WorkType      *string        `json:"work_type,omitempty" validate:"omitempty,oneof=P E S F G H"` // ประเภทงาน
 	UseDiscount   *bool          `json:"use_discount,omitempty"`
 	DiscountType  *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
 	UseVAT        *bool          `json:"use_vat,omitempty"`
@@ -929,8 +962,6 @@ type CreatePOLine struct {
 	WhtRate     *float64 `json:"wht_rate,omitempty"`
 	Description *string  `json:"description,omitempty"`
 	Remarks     *string  `json:"remarks,omitempty"`
-
-	CostSubgroupID *int64 `json:"cost_subgroup_id,omitempty"`
 }
 
 type AddPOLinesRequest struct {
@@ -938,9 +969,8 @@ type AddPOLinesRequest struct {
 }
 
 type UpdatePOLineRequest struct {
-	Description    *string `json:"description"`
-	DiscType       *string `json:"disc_type" validate:"omitempty,oneof=pct amt"`
-	CostSubgroupID *int64  `json:"cost_subgroup_id"`
+	Description *string `json:"description"`
+	DiscType    *string `json:"disc_type" validate:"omitempty,oneof=pct amt"`
 }
 
 // EditApprovedPORequest is the body for PUT /po/{id}/edit-approved — editing a PO that is
@@ -1194,4 +1224,101 @@ type MemoListFilter struct {
 type StatusUpdateRequest struct {
 	Status  string  `json:"status" validate:"required"`
 	Remarks *string `json:"remarks,omitempty"`
+}
+
+// ── Work Order (หนังสือสั่งจ้าง) ───────────────────────────
+// Approval goes through the shared generic approval engine (approval_doc_types +
+// approval_config + approval_request, see internal/handlers/generic_approval.go) once
+// doc_type='WO' config rows exist — WorkOrderHandler only owns Create/List/Get/Submit,
+// not Approve/Reject.
+
+type WorkOrder struct {
+	ID                      int64     `json:"id"`
+	WoNo                    string    `json:"wo_no"`
+	WoDate                  string    `json:"wo_date"`
+	EmployerName            string    `json:"employer_name"`
+	ProjectCode             *string   `json:"project_code"`
+	ProjectName             *string   `json:"project_name,omitempty"`
+	ProjectScopeText        *string   `json:"project_scope_text"`
+	SupplierCode            *string   `json:"supplier_code"`
+	SupplierName            string    `json:"supplier_name"`
+	ContactPerson           *string   `json:"contact_person"`
+	SupplierAddress         *string   `json:"supplier_address"`
+	SupplierPhone           *string   `json:"supplier_phone"`
+	ContractType            string    `json:"contract_type"` // LABOR_ONLY | LABOR_MATERIAL
+	WorkSystem              string    `json:"work_system"`   // P | E | S
+	ContractDescription     *string   `json:"contract_description"`
+	ContractAmount          float64   `json:"contract_amount"`
+	VatRate                 float64   `json:"vat_rate"`
+	WhtRate                 float64   `json:"wht_rate"`
+	AdvancePct              float64   `json:"advance_pct"`
+	AdvanceAmount           float64   `json:"advance_amount"`
+	ProgressPaymentNote     *string   `json:"progress_payment_note"`
+	RetentionPct            float64   `json:"retention_pct"`
+	AdvanceDeductPct        float64   `json:"advance_deduct_pct"`
+	OtherDeductionNote      *string   `json:"other_deduction_note"`
+	StartDate               *string   `json:"start_date"`
+	DurationDays            *int      `json:"duration_days"`
+	EndDate                 *string   `json:"end_date"`
+	PenaltyPctPerDay        float64   `json:"penalty_pct_per_day"`
+	WarrantyYears           int       `json:"warranty_years"`
+	RefNo                   *string   `json:"ref_no"`
+	OtherTerms              *string   `json:"other_terms"`
+	CostCode                *string   `json:"cost_code"`
+	Status                  string    `json:"status"` // DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|CANCELLED
+	EnteredBy               *int64    `json:"entered_by"`
+	EnteredByName           *string   `json:"entered_by_name,omitempty"`
+	SectionHeadID           *int64    `json:"section_head_id"`
+	SectionHeadName         *string   `json:"section_head_name,omitempty"`
+	AuthorizedBy            *int64    `json:"authorized_by"`
+	AuthorizedByName        *string   `json:"authorized_by_name,omitempty"`
+	SubcontractorSignedName *string   `json:"subcontractor_signed_name"`
+	Remarks                 *string   `json:"remarks"`
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
+}
+
+type CreateWorkOrderRequest struct {
+	WoDate              *string  `json:"wo_date"`
+	EmployerName        string   `json:"employer_name" validate:"required"`
+	ProjectCode         *string  `json:"project_code"`
+	ProjectScopeText    *string  `json:"project_scope_text"`
+	SupplierCode        *string  `json:"supplier_code"`
+	SupplierName        string   `json:"supplier_name" validate:"required"`
+	ContactPerson       *string  `json:"contact_person"`
+	SupplierAddress     *string  `json:"supplier_address"`
+	SupplierPhone       *string  `json:"supplier_phone"`
+	ContractType        string   `json:"contract_type" validate:"required,oneof=LABOR_ONLY LABOR_MATERIAL"`
+	WorkSystem          string   `json:"work_system" validate:"required,oneof=P E S"`
+	ContractDescription *string  `json:"contract_description"`
+	ContractAmount      float64  `json:"contract_amount" validate:"required,gt=0"`
+	VatRate             *float64 `json:"vat_rate"`
+	WhtRate             *float64 `json:"wht_rate"`
+	AdvancePct          *float64 `json:"advance_pct"`
+	AdvanceAmount       *float64 `json:"advance_amount"`
+	ProgressPaymentNote *string  `json:"progress_payment_note"`
+	RetentionPct        *float64 `json:"retention_pct"`
+	AdvanceDeductPct    *float64 `json:"advance_deduct_pct"`
+	OtherDeductionNote  *string  `json:"other_deduction_note"`
+	StartDate           *string  `json:"start_date"`
+	DurationDays        *int     `json:"duration_days"`
+	EndDate             *string  `json:"end_date"`
+	PenaltyPctPerDay    *float64 `json:"penalty_pct_per_day"`
+	WarrantyYears       *int     `json:"warranty_years"`
+	RefNo               *string  `json:"ref_no"`
+	OtherTerms          *string  `json:"other_terms"`
+	CostCode            *string  `json:"cost_code"`
+	SectionHeadID       *int64   `json:"section_head_id"`
+	AuthorizedBy        *int64   `json:"authorized_by"`
+	Remarks             *string  `json:"remarks"`
+}
+
+type WorkOrderFilter struct {
+	Status      string `query:"status"`
+	ProjectCode string `query:"project_code"`
+	Search      string `query:"search"`
+	DateFrom    string `query:"date_from"`
+	DateTo      string `query:"date_to"`
+	Page        int    `query:"page"`
+	PageSize    int    `query:"page_size"`
 }
