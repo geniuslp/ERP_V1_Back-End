@@ -81,6 +81,10 @@
 | [user_roles](#user_roles) | Org | role ของแต่ละ user |
 | [users](#users) | Org | ผู้ใช้งาน |
 | [warehouse](#warehouse) | Master | คลังสินค้า |
+| [work_order](#work_order) | WO | หนังสือสั่งจ้าง (subcontractor hiring) |
+| [work_order_line](#work_order_line) | WO | รายการต่อบรรทัด (cost_code แทน item) |
+| [work_order_status_log](#work_order_status_log) | WO | log สถานะ work_order |
+| [work_order_attachment](#work_order_attachment) | WO | ไฟล์แนบ work_order |
 
 ---
 
@@ -98,6 +102,26 @@
 - `borrow_line.mat_type` — `'RETURNABLE'` = ต้องคืน, `'CONSUMABLE'` = ไม่ต้องคืน
 - `grn` มี `quality_status`, `confirmed_by`, `delivery_note` — ใช้ schema นี้ ไม่ใช่ inventory table
 - `purchase_request.order_type` — `'stock'` = ซื้อเข้าคลัง (warehouse), `'cost'` = ซื้อเข้าโครงการ (project cost) — คนละความหมายกับ `pr_type`
+- `work_order` (WO) เป็นเอกสารแยกจาก `purchase_order` (PO) — ใช้จ้างผู้รับเหมาช่วง
+  ไม่มี FK เชื่อมกับ `purchase_request`/`purchase_order`
+- 🔴 work_order line items mirror โครงสร้างของ `purchase_order_line` เกือบทั้งหมด (ยกเว้น
+  item reference → เปลี่ยนเป็น `cost_code`) — ดู field list เต็มที่ [work_order_line](#work_order_line)
+- 🔴 `discount_type`/`disc_type` เป็น varchar + CHECK ('PERCENT'|'AMOUNT') ไม่ใช่ Postgres enum —
+  ยืนยันค่าจริงกับทีมก่อนใช้งาน เพราะไม่มีต้นแบบตรงจาก PO (PO เก็บ discount คนละแบบ)
+- 🔴 `work_order_line.vat_rate` เป็นของใหม่ที่ WO เพิ่มเอง — PO เก็บ VAT ต่อบรรทัดแบบ hardcode
+  7% ในโค้ด ไม่มีคอลัมน์ rate ดังนั้น WO ไม่ได้ mirror ตรงๆ จาก PO ในจุดนี้
+- `work_order_line.wht_rate` มี CHECK (1,3,5) mirror มาจาก PO ตรงๆ
+- `work_order.employer_name` **ไม่ใช่ free text อิสระอีกต่อไป** — ผูกกับ dropdown
+  "สำนักงาน/สาขา" (`employer_branch`, frontend-only field ไม่มีคอลัมน์ DB) ที่ compose ข้อความ
+  อัตโนมัติ เช่น เลือก HO → "บริษัท จีเนียส เอนจิเนียริง (สำนักงานใหญ่) จำกัด" — ตัวเลือกปัจจุบัน
+  คือ HO/FAC-S/FAC-P/BO อาจมีเพิ่มทีหลัง
+- `work_order.contract_description` (ลักษณะของสัญญา) เปลี่ยนจาก free text เป็น dropdown
+  ตัวเลือกคงที่ (RENOVATION/NEW_CONSTRUCTION/REPAIR/MAINTENANCE/INSTALLATION/DEMOLITION) —
+  ยังไม่ confirm ว่าครบกับธุรกิจจริงหรือไม่
+- สิทธิ์เห็นเมนู/สร้าง/แก้ไข/อนุมัติ WO **ไม่ hardcode role ใดๆ ในโค้ดหรือ SQL เด็ดขาด** —
+  ตั้งค่าทั้งหมดผ่านหน้า Permission Matrix / Approval Matrix ที่มีอยู่แล้วในระบบ
+- ⚠️ `work_order_cost_code` (multi-select แบบแรก ก่อนเปลี่ยนเป็น line items) — **deprecated**
+  ไม่ใช้แล้ว เก็บไว้เฉยๆ อย่าเพิ่ม routing ใหม่ในนี้
 
 ---
 
@@ -1100,6 +1124,101 @@ updated_at     timestamp   NOT NULL  DEFAULT now()
 created_by     bigint      nullable
 updated_by     bigint      nullable
 ```
+
+---
+
+### work_order
+> หนังสือสั่งจ้าง (subcontractor hiring document) — คนละเอกสารกับ purchase_order
+```
+id                       bigint        NOT NULL  PK
+wo_no                    varchar(30)   NOT NULL  UNIQUE
+wo_date                  date          NOT NULL  DEFAULT CURRENT_DATE
+employer_name            varchar(200)  NOT NULL  — compose จาก branch dropdown ฝั่ง frontend
+project_code             varchar(20)   nullable  — FK → project.project_code (ถ้าผูก)
+project_scope_text       text          nullable
+supplier_code            varchar(20)   nullable  — FK → supplier.supplier_code (ถ้าผูก)
+supplier_name            varchar(200)  NOT NULL
+contact_person           varchar(100)  nullable
+supplier_address         text          nullable
+supplier_phone           varchar(50)   nullable
+contract_type            varchar(20)   NOT NULL  DEFAULT 'LABOR_MATERIAL'
+                         — LABOR_ONLY | LABOR_MATERIAL
+work_system              varchar(5)    NOT NULL  — P | E | S
+contract_description     varchar(30)   nullable  — dropdown code (ดู Important Notes)
+contract_amount          numeric(18,2) NOT NULL  DEFAULT 0
+vat_rate                 numeric(5,2)  NOT NULL  DEFAULT 7.00   -- 🔴 legacy, ดูหมายเหตุ
+wht_rate                 numeric(5,2)  NOT NULL  DEFAULT 3.00   -- 🔴 legacy, ดูหมายเหตุ
+advance_pct              numeric(5,2)  NOT NULL  DEFAULT 0
+advance_amount           numeric(18,2) NOT NULL  DEFAULT 0     -- label ใน UI: "เงินงวดสัญญา"
+progress_payment_note    text          nullable
+retention_pct            numeric(5,2)  NOT NULL  DEFAULT 5.00
+advance_deduct_pct       numeric(5,2)  NOT NULL  DEFAULT 0
+other_deduction_note     text          nullable
+start_date               date          nullable
+duration_days            integer       nullable
+end_date                 date          nullable
+penalty_pct_per_day      numeric(5,2)  NOT NULL  DEFAULT 0
+warranty_years           integer       NOT NULL  DEFAULT 1
+ref_no                   varchar(50)   nullable
+other_terms              text          nullable
+cost_code                varchar(50)   nullable   -- 🔴 DEPRECATED, ดูหมายเหตุ
+status                   varchar(20)   NOT NULL  DEFAULT 'DRAFT'
+                         — DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|CANCELLED
+use_discount             boolean       NOT NULL  DEFAULT false
+discount_type            varchar(20)   nullable  — 'PERCENT'|'AMOUNT'
+use_vat                  boolean       NOT NULL  DEFAULT true
+use_wht                  boolean       NOT NULL  DEFAULT true
+total_amount             numeric(18,2) NOT NULL  DEFAULT 0   -- subtotal ก่อนหักส่วนลด
+discount_amount          numeric(18,2) NOT NULL  DEFAULT 0
+vat_amount               numeric(18,2) NOT NULL  DEFAULT 0
+wht_amount               numeric(18,2) NOT NULL  DEFAULT 0
+net_amount               numeric(18,2) NOT NULL  DEFAULT 0
+entered_by / entered_at / section_head_id / section_head_signed_at /
+authorized_by / authorized_at / subcontractor_signed_name / subcontractor_signed_at
+remarks, created_at, updated_at, created_by, updated_by  — เหมือนเดิม ไม่เปลี่ยน
+```
+> 🔴 `work_order.vat_rate`/`wht_rate` (คอลัมน์เดิมจาก schema แรกสุด) ไม่ได้ใช้จากโค้ดใหม่แล้ว —
+> ถูกแทนที่ด้วย `work_order_line.vat_rate`/`wht_rate` ต่อบรรทัด บวก `use_vat`/`use_wht` ระดับ
+> header ยังไม่ลบคอลัมน์เดิม รอ confirm กับทีมก่อน
+>
+> 🔴 `work_order.cost_code` (คอลัมน์เดิม) ก็ deprecated เช่นกัน แทนที่ด้วยตาราง
+> `work_order_line` ทั้งหมด
+
+---
+
+### work_order_line
+```
+id          bigint        NOT NULL  PK
+wo_id       bigint        NOT NULL  — FK → work_order.id
+sort_order  integer       NOT NULL  DEFAULT 0
+cost_code   varchar(50)   NOT NULL  — แทนที่ item/material reference ของ PO
+description text          nullable
+qty         numeric(18,4) NOT NULL  DEFAULT 0
+unit_price  numeric(18,4) NOT NULL  DEFAULT 0
+amount      numeric(18,2) GENERATED ALWAYS AS (qty * unit_price) STORED  -- mirror PO
+disc        numeric(18,2) NOT NULL  DEFAULT 0
+disc_type   varchar(20)   nullable  — 'PERCENT'|'AMOUNT'
+vat_rate    numeric(5,2)  NOT NULL  DEFAULT 7.00   -- ของใหม่ ไม่ mirror จาก PO
+wht_rate    numeric(5,2)  nullable  — CHECK (1,3,5) mirror จาก PO
+created_at  timestamp     NOT NULL  DEFAULT now()
+created_by  bigint        NOT NULL
+```
+
+---
+
+### work_order_status_log / work_order_attachment
+> mirror `po_status_log` / `po_attachment` — ไม่มีอะไรเปลี่ยนจากฉบับ schema แรกสุด
+
+---
+
+### work_order menus
+```
+MENU_WO           — หนังสือสั่งจ้าง (WO)     sort_order=4  (หลัง PO=3, ก่อน STOCK=5)
+MENU_WO_LIST      — รายการหนังสือสั่งจ้าง      sort_order=1 (child)
+MENU_WO_CREATE    — สร้างหนังสือสั่งจ้าง       sort_order=2 (child)
+MENU_WO_APPROVAL  — อนุมัติหนังสือสั่งจ้าง      sort_order=3 (child)
+```
+ชื่อเมนู parent ปัจจุบัน: **"หนังสือสั่งจ้าง (WO)"** (เปลี่ยนจาก "(Work Order)" ตามที่ขอทีหลัง)
 
 ---
 

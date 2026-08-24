@@ -568,6 +568,43 @@ up (outside this session's scope — it's a data/admin-UI task, not a code chang
 
 ---
 
+## 🔴 Work Order (WO) — main module, key decisions locked in (อัปเดตล่าสุด)
+
+**Tables**: `work_order`, `work_order_line` (ของใหม่ แทนที่ `work_order_cost_code` ที่
+deprecated แล้ว), `work_order_status_log`, `work_order_attachment`. ดู `database.md` สำหรับ
+field list เต็ม
+
+**RBAC — ล็อคแล้ว**: ห้าม hardcode role ใดๆ ใน Go code เด็ดขาด (ทั้ง route middleware และ
+handler logic) ทุกจุดต้องใช้ mechanism เดียวกับที่ PO ใช้ตรวจสอบ
+role_menu_permissions/user_menu_permissions/dept_menu_permissions ผูกกับ MENU_WO_APPROVAL
+สิทธิ์อนุมัติตั้งผ่าน Approval Matrix (`approval_config`) ไม่ seed จาก SQL
+
+**employer_name**: ไม่ใช่ free text จาก backend มุมมอง — ยัง insert เป็น varchar ปกติ
+แต่ frontend compose ข้อความมาให้แล้วจาก branch dropdown (HO/FAC-S/FAC-P/BO) ก่อนส่งมา
+backend ไม่ต้องรู้เรื่อง branch logic เลย รับ string ธรรมดา
+
+**Line items — เปลี่ยนจาก multi-select cost_codes เป็น full line-item table แล้ว**:
+`CreateWorkOrderRequest.lines []WorkOrderLineInput` (cost_code, description, qty, unit_price,
+disc, disc_type, vat_rate, wht_rate) + header flags (use_discount, discount_type, use_vat,
+use_wht) — field names เหล่านี้ **mirror มาจาก PO's frontend types โดยตรง** (ยืนยันจาก frontend
+session ที่อ่าน `POItemsTable.tsx`/`TaxSidebarPanel.tsx` จริง) ต้องใช้ชื่อนี้เป๊ะ ห้ามคิดชื่อเอง
+
+**คำนวณ**: subtotal → discount → VAT → WHT → net ต้อง mirror ลำดับการคำนวณจริงของ PO
+(หาฟังก์ชัน/service ที่ PO ใช้คำนวณจริงแล้ว replicate เป๊ะ อย่า derive สูตรเอง)
+
+**wo_no numbering**: ยังไม่ confirm pattern สุดท้าย ตัวอย่างจากภาพต้นฉบับ `W0202607001`
+ไม่ตรงกับปีปัจจุบันเป๊ะ — ใช้ pattern ชั่วคราว `WO`+เดือนปี+running 6 หลัก ต้องยืนยันจริงกับทีม
+ก่อน production
+
+**vat_rate/wht_rate ระดับ work_order (คอลัมน์เดิม)**: ไม่ได้ใช้จากโค้ดใหม่แล้ว — แทนที่ด้วย
+per-line vat_rate/wht_rate ใน work_order_line บวก use_vat/use_wht ระดับ header ยังไม่ลบคอลัมน์
+เดิม รอ confirm
+
+**SQL ที่ยังไม่ได้รัน**: `work_order_line_items_schema.sql` (มีคอลัมน์ header totals +
+work_order_line table เต็ม) — ต้องรันก่อนโค้ด Create/Update handler ใหม่จะทำงานได้จริง
+
+---
+
 ## Known issues / TODO (อัปเดตตาม dump จริง)
 - [ ] **ตรวจสอบว่า view (`v_material_full` ฯลฯ) ยังจำเป็นหรือหายไปจริง** — ถ้าหายจริงต้อง refactor query ที่พึ่งพา view เหล่านี้
 - [x] ~~สอบถามทีมเรื่อง 2 ระบบ stock ซ้อนกัน~~ — ตัดสินใจแล้ว 2026-07-27: `inventory` ไม่ใช้,
@@ -583,4 +620,7 @@ up (outside this session's scope — it's a data/admin-UI task, not a code chang
 - [ ] **Stock Count handler** — table พร้อมแล้ว (`stock_count`, `stock_count_line`)
 - [ ] **Memo handler** — table พร้อมแล้ว (`memo`, `memo_line`, `memo_status_log`)
 - [ ] **Menu/Permission handler** — ระบบ 4 ชั้น (role/user/dept/menu) ยังไม่มี handler ใน CLAUDE.md เดิม
+- [ ] **Work Order (line items)** (`internal/handlers/work_order.go`) — tables: `work_order`,
+  `work_order_line`, `work_order_status_log`, `work_order_attachment` — ⚠️ ต้องรัน
+  `work_order_line_items_schema.sql` ก่อน ไม่งั้น Create/Get จะ error เพราะคอลัมน์/ตารางยังไม่มีจริง
 - [ ] `migrations/001_master_ddl.sql` ล้าหลังกว่า schema จริงมาก — ควร dump migration ใหม่จาก ERP_V12 แล้วแยกเป็นไฟล์ 00X ตาม module

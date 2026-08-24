@@ -101,6 +101,7 @@ type ProjectFull struct {
 	OwnerName       *string    `json:"owner_name,omitempty"`
 	BudgetAmount    float64    `json:"budget_amount"`
 	SpentAmount     float64    `json:"spent_amount"`
+	PaidAmount      float64    `json:"paid_amount"`
 	RemainingAmount float64    `json:"remaining_amount"`
 	ConsultantName  *string    `json:"consultant_name,omitempty"`
 	StartDate       *time.Time `json:"start_date,omitempty"`
@@ -650,6 +651,11 @@ type MaterialDetail struct {
 	IsActive         bool    `json:"is_active"`
 	CostCode         *string `json:"cost_code"`
 	CostSubgroupName *string `json:"cost_subgroup_name"`
+	CostSubgroupID   *int64  `json:"cost_subgroup_id,omitempty"`
+	// StockOnHand is only meaningful when project_code was passed to GetAllMaterial —
+	// otherwise it stays 0. LEFT JOIN project_stock, per-project reference qty (never a
+	// deduction source — see CLAUDE.md's inventory/stock_item vs project_stock split).
+	StockOnHand float64 `json:"stock_on_hand,omitempty"`
 }
 
 // ─── Inventory ───────────────────────────────────────────────────────────────
@@ -1264,7 +1270,6 @@ type WorkOrder struct {
 	WarrantyYears           int       `json:"warranty_years"`
 	RefNo                   *string   `json:"ref_no"`
 	OtherTerms              *string   `json:"other_terms"`
-	CostCode                *string   `json:"cost_code"`
 	Status                  string    `json:"status"` // DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|CANCELLED
 	EnteredBy               *int64    `json:"entered_by"`
 	EnteredByName           *string   `json:"entered_by_name,omitempty"`
@@ -1276,9 +1281,32 @@ type WorkOrder struct {
 	Remarks                 *string   `json:"remarks"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
+
+	// Line-item totals — mirrors purchase_order's use_discount/discount_type/use_vat/use_wht
+	// header flags plus aggregate total/discount/vat/wht/net amounts, computed server-side
+	// from work_order_line the same way PO aggregates from purchase_order_line.
+	UseDiscount    bool            `json:"use_discount"`
+	DiscountType   string          `json:"discount_type"` // pct | amt
+	UseVAT         bool            `json:"use_vat"`
+	UseWHT         bool            `json:"use_wht"`
+	TotalAmount    float64         `json:"total_amount"`
+	DiscountAmount float64         `json:"discount_amount"`
+	VatAmount      float64         `json:"vat_amount"`
+	WhtAmount      float64         `json:"wht_amount"`
+	NetAmount      float64         `json:"net_amount"`
+	Lines          []WorkOrderLine `json:"lines,omitempty"`
+
+	// Deprecated — superseded by Lines/work_order_line. Kept only so any code still
+	// reading old drafts doesn't panic; no longer written to by Create/Update.
+	CostCodes []WorkOrderCostCode `json:"cost_codes,omitempty"`
 }
 
 type CreateWorkOrderRequest struct {
+	// Status is only read by Update (PUT /work-order/:id) — Create always hardcodes 'DRAFT'
+	// in its INSERT. Update accepts "DRAFT" (no-op save) or "PENDING_APPROVAL" (the "ส่งอนุมัติ"
+	// button submitting inline) — anything else, including jumping straight to APPROVED, is
+	// rejected; approval decisions only ever happen through the dedicated Approve/Reject flow.
+	Status              *string  `json:"status,omitempty"`
 	WoDate              *string  `json:"wo_date"`
 	EmployerName        string   `json:"employer_name" validate:"required"`
 	ProjectCode         *string  `json:"project_code"`
@@ -1307,16 +1335,231 @@ type CreateWorkOrderRequest struct {
 	WarrantyYears       *int     `json:"warranty_years"`
 	RefNo               *string  `json:"ref_no"`
 	OtherTerms          *string  `json:"other_terms"`
-	CostCode            *string  `json:"cost_code"`
 	SectionHeadID       *int64   `json:"section_head_id"`
 	AuthorizedBy        *int64   `json:"authorized_by"`
 	Remarks             *string  `json:"remarks"`
+
+	// Line items + header discount/VAT/WHT flags — mirrors PO's use_discount/discount_type/
+	// use_vat/use_wht + purchase_order_line structure, with cost_code replacing mat_code.
+	UseDiscount  *bool                `json:"use_discount"`
+	DiscountType *string              `json:"discount_type" validate:"omitempty,oneof=pct amt"`
+	UseVAT       *bool                `json:"use_vat"`
+	UseWHT       *bool                `json:"use_wht"`
+	Lines        []WorkOrderLineInput `json:"lines" validate:"required,min=1,dive"`
+}
+
+// WorkOrderLineInput is one line-item row of a Work Order (cost_code in place of PO's mat_code).
+type WorkOrderLineInput struct {
+	CostCode    string   `json:"cost_code" validate:"required"`
+	Description *string  `json:"description"`
+	Qty         float64  `json:"qty" validate:"required,gt=0"`
+	UnitPrice   float64  `json:"unit_price" validate:"gte=0"`
+	Disc        *float64 `json:"disc"`
+	DiscType    *string  `json:"disc_type" validate:"omitempty,oneof=pct amt"`
+	VatRate     *float64 `json:"vat_rate"`
+	WhtRate     *float64 `json:"wht_rate" validate:"omitempty,oneof=1 3 5"`
+}
+
+// WorkOrderLine mirrors the work_order_line table (db row + response shape).
+type WorkOrderLine struct {
+	ID          int64     `json:"id"`
+	WoID        int64     `json:"wo_id"`
+	SortOrder   int       `json:"sort_order"`
+	CostCode    string    `json:"cost_code"`
+	Description *string   `json:"description"`
+	Qty         float64   `json:"qty"`
+	UnitPrice   float64   `json:"unit_price"`
+	Amount      float64   `json:"amount"` // generated column: qty * unit_price
+	Disc        float64   `json:"disc"`
+	DiscType    string    `json:"disc_type"`
+	VatRate     *float64  `json:"vat_rate"`
+	WhtRate     *float64  `json:"wht_rate"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   *int64    `json:"created_by"`
+}
+
+// UpdateWorkOrderLinesRequest replaces the full set of lines (+ discount/VAT/WHT flags) for a WO.
+type UpdateWorkOrderLinesRequest struct {
+	UseDiscount  *bool                `json:"use_discount"`
+	DiscountType *string              `json:"discount_type" validate:"omitempty,oneof=pct amt"`
+	UseVAT       *bool                `json:"use_vat"`
+	UseWHT       *bool                `json:"use_wht"`
+	Lines        []WorkOrderLineInput `json:"lines" validate:"required,min=1,dive"`
+}
+
+// WorkOrderCostCode mirrors the deprecated work_order_cost_code table — superseded by
+// WorkOrderLine, kept only for reading any pre-existing rows.
+type WorkOrderCostCode struct {
+	ID        int64     `json:"id"`
+	WoID      int64     `json:"wo_id"`
+	CostCode  string    `json:"cost_code"`
+	Remarks   *string   `json:"remarks"`
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy *int64    `json:"created_by"`
 }
 
 type WorkOrderFilter struct {
 	Status      string `query:"status"`
 	ProjectCode string `query:"project_code"`
 	Search      string `query:"search"`
+	DateFrom    string `query:"date_from"`
+	DateTo      string `query:"date_to"`
+	Page        int    `query:"page"`
+	PageSize    int    `query:"page_size"`
+}
+
+// ─── Finance / Payment Tracking ──────────────────────────────────────────────
+
+type PaymentLog struct {
+	Id         int64     `json:"id"`
+	DocType    string    `json:"doc_type"`
+	DocID      int64     `json:"doc_id"`
+	DocNo      string    `json:"doc_no"`
+	AmountPaid float64   `json:"amount_paid"`
+	PaidDate   time.Time `json:"paid_date"`
+	PaidBy     int64     `json:"paid_by"`
+	PaidByName *string   `json:"paid_by_name,omitempty"`
+	Remark     *string   `json:"remark,omitempty"`
+	ReversesID *int64    `json:"reverses_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	CreatedBy  int64     `json:"created_by"`
+}
+
+type RecordPaymentRequest struct {
+	DocType    string  `json:"doc_type"` // 'PO' | 'WO'
+	DocID      int64   `json:"doc_id"`
+	AmountPaid float64 `json:"amount_paid"`
+	PaidDate   *string `json:"paid_date,omitempty"`
+	PaidBy     int64   `json:"paid_by"`
+	Remark     *string `json:"remark,omitempty"`
+	ReversesID *int64  `json:"reverses_id,omitempty"`
+}
+
+// PayableDoc is the shared row shape for both PO and WO in ListPayableDocs —
+// same fields regardless of doc_type, since both tables have net_amount/status/project_code.
+type PayableDoc struct {
+	Id             int64   `json:"id"`
+	DocNo          string  `json:"doc_no"`
+	DocType        string  `json:"doc_type"`
+	ProjectCode    *string `json:"project_code,omitempty"`
+	NetAmount      float64 `json:"net_amount"`
+	Status         string  `json:"status"`
+	PaidAmount     float64 `json:"paid_amount"`
+	RemainingToPay float64 `json:"remaining_to_pay"`
+}
+
+type PayableDocFilter struct {
+	DocType     string `query:"doc_type"` // required: PO | WO
+	ProjectCode string `query:"project_code"`
+	// Status is intentionally not filterable — ListPayableDocs always fixes it to
+	// APPROVED, since only approved docs are payable.
+	Search   string `query:"search"`
+	Page     int    `query:"page"`
+	PageSize int    `query:"page_size"`
+}
+
+// ── Petty Cash Requisition (ใบเบิกเงินสดย่อย) ───────────────────────────
+// Not a stock-issue document — mat_code on each line is reference-only (for the material
+// picker / display of project_stock.qty_on_hand). Nothing is deducted from stock_item,
+// stock_inventory, or project_stock here. Approval follows the same per-document
+// approver_id model as PO/MEMO (see isEligibleApprover's doc comment in approval_status.go)
+// and reuses the generic approval engine (approval_doc_types already has a PETTY_CASH row).
+//
+// One document can span multiple projects — project_code lives on each line, not the header
+// (petty_cash_requisition has no project_code column; petty_cash_requisition_line.project_code
+// is NOT NULL). The header only ever shows an aggregate (ProjectCodes) built from its lines.
+
+type PettyCashRequisition struct {
+	ID             int64     `json:"id" db:"id"`
+	PCNo           string    `json:"pc_no" db:"pc_no"`
+	PCDate         time.Time `json:"pc_date" db:"pc_date"`
+	RequestedBy    int64     `json:"requested_by" db:"requested_by"`
+	Purpose        *string   `json:"purpose,omitempty" db:"purpose"`
+	Currency       string    `json:"currency" db:"currency"`
+	TotalAmount    float64   `json:"total_amount" db:"total_amount"`
+	UseDiscount    bool      `json:"use_discount" db:"use_discount"`
+	DiscountType   string    `json:"discount_type" db:"discount_type"`
+	DiscountAmount float64   `json:"discount_amount" db:"discount_amount"`
+	UseVat         bool      `json:"use_vat" db:"use_vat"`
+	VatAmount      float64   `json:"vat_amount" db:"vat_amount"`
+	UseWht         bool      `json:"use_wht" db:"use_wht"`
+	WhtAmount      float64   `json:"wht_amount" db:"wht_amount"`
+	NetAmount      float64   `json:"net_amount" db:"net_amount"`
+	Status         string    `json:"status" db:"status"`
+	ApproverID     *int64    `json:"approver_id,omitempty" db:"approver_id"`
+	Remarks        *string   `json:"remarks,omitempty" db:"remarks"`
+	CreatedAt      time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
+	CreatedBy      int64     `json:"created_by" db:"created_by"`
+	UpdatedBy      *int64    `json:"updated_by,omitempty" db:"updated_by"`
+
+	// populated via JOIN/aggregate (ไม่ได้เก็บใน table)
+	ProjectCodes    []string        `json:"project_codes,omitempty"`
+	RequestedByName *string         `json:"requested_by_name,omitempty"`
+	ApproverName    *string         `json:"approver_name,omitempty"`
+	Lines           []PettyCashLine `json:"lines,omitempty"`
+}
+
+type PettyCashLine struct {
+	ID             int64    `json:"id" db:"id"`
+	PCID           int64    `json:"pc_id" db:"pc_id"`
+	LineNo         int      `json:"line_no" db:"line_no"`
+	ProjectCode    string   `json:"project_code" db:"project_code"`
+	MatCode        string   `json:"mat_code" db:"mat_code"`
+	CostSubgroupID *int64   `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
+	Description    *string  `json:"description,omitempty" db:"description"`
+	Qty            float64  `json:"qty" db:"qty"`
+	UnitPrice      float64  `json:"unit_price" db:"unit_price"`
+	Amount         float64  `json:"amount" db:"amount"`
+	Discount       float64  `json:"discount" db:"discount"`
+	DiscType       string   `json:"disc_type" db:"disc_type"`
+	LineDiscount   float64  `json:"line_discount" db:"line_discount"`
+	LineVat        float64  `json:"line_vat" db:"line_vat"`
+	LineWht        float64  `json:"line_wht" db:"line_wht"`
+	LineNet        float64  `json:"line_net" db:"line_net"`
+	WhtRate        *float64 `json:"wht_rate,omitempty" db:"wht_rate"`
+	Remarks        *string  `json:"remarks,omitempty" db:"remarks"`
+
+	// display-only, joined at read time (never persisted on this table) — all resolved
+	// per-LINE from this line's own project_code, not the header.
+	ProjectName *string `json:"project_name,omitempty"`
+	ItemName    *string `json:"item_name,omitempty"`
+	Unit        *string `json:"unit,omitempty"`
+	StockOnHand float64 `json:"stock_on_hand"`
+}
+
+type CreatePettyCashRequest struct {
+	Purpose      string                    `json:"purpose"`
+	Currency     string                    `json:"currency"`
+	UseDiscount  bool                      `json:"use_discount"`
+	DiscountType string                    `json:"discount_type"`
+	DiscountAmt  float64                   `json:"discount_amount"`
+	UseVat       bool                      `json:"use_vat"`
+	UseWht       bool                      `json:"use_wht"`
+	ApproverID   *int64                    `json:"approver_id"`
+	Status       string                    `json:"status,omitempty"` // "DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT
+	Remarks      string                    `json:"remarks"`
+	Lines        []CreatePettyCashLineItem `json:"lines" validate:"required,min=1"`
+}
+
+type CreatePettyCashLineItem struct {
+	ProjectCode    string   `json:"project_code" validate:"required"`
+	MatCode        string   `json:"mat_code" validate:"required"`
+	CostSubgroupID *int64   `json:"cost_subgroup_id"`
+	Description    string   `json:"description"`
+	Qty            float64  `json:"qty" validate:"required,gt=0"`
+	UnitPrice      float64  `json:"unit_price" validate:"required,gte=0"`
+	Discount       float64  `json:"discount"`
+	DiscType       string   `json:"disc_type"`
+	WhtRate        *float64 `json:"wht_rate"`
+	Remarks        *string  `json:"remarks"`
+}
+
+type UpdatePettyCashRequest = CreatePettyCashRequest
+
+type PettyCashListFilter struct {
+	Status      string `query:"status"`
+	ProjectCode string `query:"project_code"` // matches any line's project_code
 	DateFrom    string `query:"date_from"`
 	DateTo      string `query:"date_to"`
 	Page        int    `query:"page"`

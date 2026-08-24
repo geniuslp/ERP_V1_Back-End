@@ -350,9 +350,10 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 // @Security     BearerAuth
 // @Produce      json
 // @Param        q            query  string  false  "Search keyword (mat_code, mat_name, spec_description, brand_name)"
-// @Param        subgroup_id  query  int     false  "Filter by subgroup ID"
-// @Param        mat_name_id  query  int     false  "Filter by mat_name ID"
-// @Param        page         query  int     false  "Page number (default 1)"
+// @Param        subgroup_id   query  int     false  "Filter by subgroup ID"
+// @Param        mat_name_id   query  int     false  "Filter by mat_name ID"
+// @Param        project_code  query  string  false  "When set, adds stock_on_hand per material from project_stock for that project (read-only reference, e.g. Petty Cash line picker)"
+// @Param        page          query  int     false  "Page number (default 1)"
 // @Success      200   {object}  models.PaginatedResponse
 // @Failure      500   {object}  fiber.Map
 // @Router       /master/allMaterial [get]
@@ -360,6 +361,7 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 	q := c.Query("q")
 	subgroupID := c.QueryInt("subgroup_id", 0)
 	matNameID := c.QueryInt("mat_name_id", 0)
+	projectCode := strings.TrimSpace(c.Query("project_code"))
 	page := c.QueryInt("page", 1)
 	if page < 1 {
 		page = 1
@@ -367,7 +369,7 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 	const pageSize = 10
 	offset := (page - 1) * pageSize
 
-	const joins = `
+	joins := `
 		FROM material_code mc
 		JOIN mat_group  mg ON mg.id = mc.group_id
 		JOIN subgroup   sg ON sg.id = mc.subgroup_id
@@ -401,6 +403,26 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		args = append(args, matNameID)
 		idx++
 	}
+
+	// project_code is only used in the SELECT-time JOIN below (for stock_on_hand), not a
+	// filter condition — a material with no project_stock row for this project is still a
+	// valid pick, just with stock_on_hand=0 (LEFT JOIN, never INNER, per CLAUDE.md's
+	// nullable-FK rule).
+	projectArgIdx := 0
+	if projectCode != "" {
+		projectArgIdx = idx
+		args = append(args, projectCode)
+		idx++
+		// project_stock has no unique constraint on (project_code, mat_code) in the live
+		// schema — LATERAL + LIMIT 1 avoids fanning out material_code rows if duplicates
+		// ever exist, unlike a plain LEFT JOIN.
+		joins += fmt.Sprintf(` LEFT JOIN LATERAL (
+			SELECT qty_on_hand FROM project_stock
+			WHERE project_code = $%d AND mat_code = mc.mat_code
+			ORDER BY updated_at DESC LIMIT 1
+		) ps ON TRUE`, projectArgIdx)
+	}
+
 	whereStr := strings.Join(conditions, " AND ")
 
 	var total int
@@ -408,6 +430,11 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		`SELECT COUNT(*) `+joins+` WHERE `+whereStr, args...,
 	).Scan(&total); err != nil {
 		return err
+	}
+
+	stockSelect := "0"
+	if projectCode != "" {
+		stockSelect = "COALESCE(ps.qty_on_hand, 0)"
 	}
 
 	selectArgs := append(append([]interface{}{}, args...), pageSize, offset)
@@ -419,10 +446,12 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 			b.brand_code, b.brand_name,
 			u.unit_code, u.unit_name, mc.is_active,
 			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
-			csg.subgroup_name AS cost_subgroup_name
+			csg.subgroup_name AS cost_subgroup_name,
+			mc.cost_subgroup_id,
+			%s AS stock_on_hand
 		%s WHERE %s
 		ORDER BY mc.mat_code LIMIT $%d OFFSET $%d`,
-			joins, whereStr, idx, idx+1),
+			stockSelect, joins, whereStr, idx, idx+1),
 		selectArgs...)
 	if err != nil {
 		return err
@@ -435,7 +464,7 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		rows.Scan(&m.GroupCode, &m.SubgroupCode, &m.MatCode, &m.MatNameCode, &m.MatNameTH,
 			&m.SpecDescription, &m.SpecCode, &m.BrandCode, &m.BrandName,
 			&m.UnitCode, &m.UnitName, &m.IsActive,
-			&m.CostCode, &m.CostSubgroupName)
+			&m.CostCode, &m.CostSubgroupName, &m.CostSubgroupID, &m.StockOnHand)
 		items = append(items, m)
 	}
 	log.Println("checkdata", items)

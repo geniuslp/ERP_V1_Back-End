@@ -154,6 +154,11 @@ h.db.QueryRow(context.Background(),
 rfqNo := fmt.Sprintf("RFQ-%s-%06d", time.Now().Format("2006"), seq)
 ```
 
+⚠️ **Work Order (`wo_no`)** — ยังไม่ confirm pattern สุดท้าย (ดู "Work Order (WO)" section ใน
+`CLAUDE.md`) ต้นฉบับตัวอย่างคือ `W0202607001` ซึ่งไม่ตรงกับ pattern `{PREFIX}-{YEAR}-{seq:06d}`
+ที่ RFQ/PO ใช้ — ปัจจุบันใช้ pattern ชั่วคราว `WO`+เดือนปี+running 6 หลัก ห้ามใช้เป็นต้นแบบให้ doc
+type อื่นจนกว่าจะ confirm กับทีมจริง
+
 ### Pagination helper (copy จาก master.go)
 ```go
 page := max(c.QueryInt("page", 1), 1)

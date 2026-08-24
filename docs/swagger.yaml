@@ -637,6 +637,66 @@ definitions:
     - pr_no
     - requested_by
     type: object
+  models.CreatePettyCashLineItem:
+    properties:
+      cost_subgroup_id:
+        type: integer
+      description:
+        type: string
+      disc_type:
+        type: string
+      discount:
+        type: number
+      mat_code:
+        type: string
+      project_code:
+        type: string
+      qty:
+        type: number
+      remarks:
+        type: string
+      unit_price:
+        minimum: 0
+        type: number
+      wht_rate:
+        type: number
+    required:
+    - mat_code
+    - project_code
+    - qty
+    - unit_price
+    type: object
+  models.CreatePettyCashRequest:
+    properties:
+      approver_id:
+        type: integer
+      currency:
+        type: string
+      discount_amount:
+        type: number
+      discount_type:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.CreatePettyCashLineItem'
+        minItems: 1
+        type: array
+      purpose:
+        type: string
+      remarks:
+        type: string
+      status:
+        description: '"DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT'
+        type: string
+      use_discount:
+        type: boolean
+      use_vat:
+        type: boolean
+      use_wht:
+        type: boolean
+    required:
+    - lines
+    type: object
   models.CreateProjectReq:
     properties:
       budget_amount:
@@ -966,7 +1026,10 @@ definitions:
         - LABOR_ONLY
         - LABOR_MATERIAL
         type: string
-      cost_code:
+      discount_type:
+        enum:
+        - pct
+        - amt
         type: string
       duration_days:
         type: integer
@@ -974,6 +1037,11 @@ definitions:
         type: string
       end_date:
         type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.WorkOrderLineInput'
+        minItems: 1
+        type: array
       other_deduction_note:
         type: string
       other_terms:
@@ -996,6 +1064,13 @@ definitions:
         type: integer
       start_date:
         type: string
+      status:
+        description: |-
+          Status is only read by Update (PUT /work-order/:id) — Create always hardcodes 'DRAFT'
+          in its INSERT. Update accepts "DRAFT" (no-op save) or "PENDING_APPROVAL" (the "ส่งอนุมัติ"
+          button submitting inline) — anything else, including jumping straight to APPROVED, is
+          rejected; approval decisions only ever happen through the dedicated Approve/Reject flow.
+        type: string
       supplier_address:
         type: string
       supplier_code:
@@ -1004,6 +1079,15 @@ definitions:
         type: string
       supplier_phone:
         type: string
+      use_discount:
+        description: |-
+          Line items + header discount/VAT/WHT flags — mirrors PO's use_discount/discount_type/
+          use_vat/use_wht + purchase_order_line structure, with cost_code replacing mat_code.
+        type: boolean
+      use_vat:
+        type: boolean
+      use_wht:
+        type: boolean
       vat_rate:
         type: number
       warranty_years:
@@ -1022,6 +1106,7 @@ definitions:
     - contract_amount
     - contract_type
     - employer_name
+    - lines
     - supplier_name
     - work_system
     type: object
@@ -1483,6 +1568,8 @@ definitions:
         type: integer
       owner_name:
         type: string
+      paid_amount:
+        type: number
       project_code:
         type: string
       project_name:
@@ -1642,6 +1729,24 @@ definitions:
         type: string
       warehouse_name:
         type: string
+    type: object
+  models.RecordPaymentRequest:
+    properties:
+      amount_paid:
+        type: number
+      doc_id:
+        type: integer
+      doc_type:
+        description: '''PO'' | ''WO'''
+        type: string
+      paid_by:
+        type: integer
+      paid_date:
+        type: string
+      remark:
+        type: string
+      reverses_id:
+        type: integer
     type: object
   models.RefreshRequest:
     properties:
@@ -1927,6 +2032,37 @@ definitions:
     - pr_date
     - requested_by
     type: object
+  models.UpdatePettyCashRequest:
+    properties:
+      approver_id:
+        type: integer
+      currency:
+        type: string
+      discount_amount:
+        type: number
+      discount_type:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.CreatePettyCashLineItem'
+        minItems: 1
+        type: array
+      purpose:
+        type: string
+      remarks:
+        type: string
+      status:
+        description: '"DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT'
+        type: string
+      use_discount:
+        type: boolean
+      use_vat:
+        type: boolean
+      use_wht:
+        type: boolean
+    required:
+    - lines
+    type: object
   models.UpdateProjectReq:
     properties:
       budget_amount:
@@ -2034,6 +2170,27 @@ definitions:
       warehouse_name:
         type: string
     type: object
+  models.UpdateWorkOrderLinesRequest:
+    properties:
+      discount_type:
+        enum:
+        - pct
+        - amt
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/models.WorkOrderLineInput'
+        minItems: 1
+        type: array
+      use_discount:
+        type: boolean
+      use_vat:
+        type: boolean
+      use_wht:
+        type: boolean
+    required:
+    - lines
+    type: object
   models.UpdateZoneReq:
     properties:
       zone_name:
@@ -2105,6 +2262,36 @@ definitions:
         type: string
       warehouse_name:
         type: string
+    type: object
+  models.WorkOrderLineInput:
+    properties:
+      cost_code:
+        type: string
+      description:
+        type: string
+      disc:
+        type: number
+      disc_type:
+        enum:
+        - pct
+        - amt
+        type: string
+      qty:
+        type: number
+      unit_price:
+        minimum: 0
+        type: number
+      vat_rate:
+        type: number
+      wht_rate:
+        enum:
+        - 1
+        - 3
+        - 5
+        type: number
+    required:
+    - cost_code
+    - qty
     type: object
 host: localhost:8080
 info:
@@ -2747,6 +2934,104 @@ paths:
       summary: Batch upsert department menu permissions
       tags:
       - Dept-Menu Permissions
+  /finance/payments:
+    get:
+      description: |-
+        Only APPROVED documents are returned — a doc that hasn't been approved
+        isn't payable yet, so status is fixed and not caller-settable.
+      parameters:
+      - description: PO or WO
+        in: query
+        name: doc_type
+        required: true
+        type: string
+      - description: filter project_code
+        in: query
+        name: project_code
+        type: string
+      - description: search doc_no
+        in: query
+        name: search
+        type: string
+      - description: page
+        in: query
+        name: page
+        type: integer
+      - description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List PO or WO headers with paid/remaining amounts
+      tags:
+      - Finance
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payment data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.RecordPaymentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Record a payment (or reversal) against a PO or WO
+      tags:
+      - Finance
+  /finance/payments/{doc_type}/{doc_id}/log:
+    get:
+      parameters:
+      - description: PO or WO
+        in: path
+        name: doc_type
+        required: true
+        type: string
+      - description: document id
+        in: path
+        name: doc_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get payment_log history for one PO or WO
+      tags:
+      - Finance
   /grn:
     get:
       parameters:
@@ -3173,6 +3458,11 @@ paths:
         in: query
         name: mat_name_id
         type: integer
+      - description: When set, adds stock_on_hand per material from project_stock
+          for that project (read-only reference, e.g. Petty Cash line picker)
+        in: query
+        name: project_code
+        type: string
       - description: Page number (default 1)
         in: query
         name: page
@@ -5649,6 +5939,254 @@ paths:
       summary: Get effective permissions for a user (dept + role + user layers)
       tags:
       - Permissions
+  /petty-cash:
+    get:
+      parameters:
+      - description: filter by status
+        in: query
+        name: status
+        type: string
+      - description: 'filter: document has at least one line with this project'
+        in: query
+        name: project_code
+        type: string
+      - description: YYYY-MM-DD
+        in: query
+        name: date_from
+        type: string
+      - description: YYYY-MM-DD
+        in: query
+        name: date_to
+        type: string
+      - description: default 1
+        in: query
+        name: page
+        type: integer
+      - description: default 20
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: List petty cash requisitions
+      tags:
+      - Petty Cash
+    post:
+      consumes:
+      - application/json
+      description: status starts as DRAFT unless status=PENDING_APPROVAL is passed
+        (requires approver_id). Each line picks its own project_code — the document
+        itself has no single project.
+      parameters:
+      - description: Petty cash requisition data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreatePettyCashRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create a petty cash requisition
+      tags:
+      - Petty Cash
+  /petty-cash/{id}:
+    delete:
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a petty cash requisition (only while DRAFT)
+      tags:
+      - Petty Cash
+    get:
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get a petty cash requisition with lines
+      tags:
+      - Petty Cash
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Petty cash requisition data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdatePettyCashRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a petty cash requisition (only while DRAFT or REJECTED)
+      tags:
+      - Petty Cash
+  /petty-cash/{id}/approve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Optional comments
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/models.ApprovalActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve a petty cash requisition (PENDING_APPROVAL → APPROVED)
+      tags:
+      - Petty Cash
+  /petty-cash/{id}/cancel:
+    post:
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cancel a petty cash requisition (DRAFT → CANCELLED)
+      tags:
+      - Petty Cash
+  /petty-cash/{id}/reject:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: comments required
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ApprovalActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reject a petty cash requisition (PENDING_APPROVAL → REJECTED)
+      tags:
+      - Petty Cash
+  /petty-cash/{id}/submit:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: approver_id — required if not already set
+        in: body
+        name: body
+        schema:
+          properties:
+            approver_id:
+              format: int64
+              type: integer
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Submit for approval (DRAFT/REJECTED → PENDING_APPROVAL)
+      tags:
+      - Petty Cash
   /po:
     get:
       parameters:
@@ -5972,11 +6510,15 @@ paths:
     put:
       consumes:
       - application/json
-      description: Allows editing a PO with status=APPROVED, provided the PO's created_at
-        is less than 1 year old. Requires a mandatory non-empty reason, logged to
-        po_edit_log. Replaces header fields and all lines, recomputes totals server-side,
-        sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request
-        row (same approval_id / assigned_to — not a fresh approver lookup).
+      description: 'Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL,
+        provided the PO''s created_at is less than 1 year old. Requires a mandatory
+        non-empty reason, logged to po_edit_log. Replaces header fields and all lines,
+        recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens
+        the PO''s existing approval_request row (same approval_id / assigned_to —
+        not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL:
+        repeated saves before the approver acts just keep re-editing and re-pending
+        the same approval_request, so the frontend can call this endpoint for every
+        save in this flow, not just the first.'
       parameters:
       - description: PO ID
         in: path
@@ -8510,6 +9052,92 @@ paths:
       security:
       - BearerAuth: []
       summary: รายละเอียดหนังสือสั่งจ้าง
+      tags:
+      - WorkOrder
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Accepts the same body shape as Create (models.CreateWorkOrderRequest) — lines are
+        always replaced together with the header in this single call, mirroring
+        POHandler.Update's all-in-one PUT rather than requiring a separate lines call.
+        The dedicated PUT /work-order/{id}/lines endpoint remains available for a
+        lines-only edit that doesn't touch header fields. Only allowed while
+        status = DRAFT — mirrors PO's Update rule exactly (PO also rejects everything
+        else, including REJECTED, and points APPROVED callers at its edit-approved
+        endpoint instead; WO has no such endpoint yet, so APPROVED/other statuses just 400).
+        The payload's own `status` field ("บันทึกร่าง" sends DRAFT, "ส่งอนุมัติ" sends
+        PENDING_APPROVAL) is written to the row and, when it actually changes, logged to
+        work_order_status_log — a transition to PENDING_APPROVAL also opens the step-1
+        approval_request exactly like POST /:id/submit does, since this is an alternate
+        entry point into the same submit flow. Any other status value is rejected —
+        approval decisions only ever happen through the dedicated Approve/Reject flow.
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Work Order data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateWorkOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แก้ไขหนังสือสั่งจ้าง (header + line items ทั้งใบ, เฉพาะสถานะ DRAFT)
+      tags:
+      - WorkOrder
+  /work-order/{id}/lines:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Line items
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateWorkOrderLinesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง
       tags:
       - WorkOrder
   /work-order/{id}/submit:

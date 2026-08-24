@@ -991,6 +991,158 @@
                 }
             }
         },
+        "/finance/payments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Only APPROVED documents are returned — a doc that hasn't been approved\nisn't payable yet, so status is fixed and not caller-settable.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Finance"
+                ],
+                "summary": "List PO or WO headers with paid/remaining amounts",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "PO or WO",
+                        "name": "doc_type",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "filter project_code",
+                        "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "search doc_no",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Finance"
+                ],
+                "summary": "Record a payment (or reversal) against a PO or WO",
+                "parameters": [
+                    {
+                        "description": "Payment data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.RecordPaymentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/finance/payments/{doc_type}/{doc_id}/log": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Finance"
+                ],
+                "summary": "Get payment_log history for one PO or WO",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "PO or WO",
+                        "name": "doc_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "document id",
+                        "name": "doc_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/grn": {
             "get": {
                 "security": [
@@ -1672,6 +1824,12 @@
                         "type": "integer",
                         "description": "Filter by mat_name ID",
                         "name": "mat_name_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "When set, adds stock_on_hand per material from project_stock for that project (read-only reference, e.g. Petty Cash line picker)",
+                        "name": "project_code",
                         "in": "query"
                     },
                     {
@@ -5565,6 +5723,402 @@
                 }
             }
         },
+        "/petty-cash": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "List petty cash requisitions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "filter by status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "filter: document has at least one line with this project",
+                        "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "default 1",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "default 20",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id). Each line picks its own project_code — the document itself has no single project.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Create a petty cash requisition",
+                "parameters": [
+                    {
+                        "description": "Petty cash requisition data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreatePettyCashRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Get a petty cash requisition with lines",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Update a petty cash requisition (only while DRAFT or REJECTED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Petty cash requisition data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdatePettyCashRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Delete a petty cash requisition (only while DRAFT)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/{id}/approve": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Approve a petty cash requisition (PENDING_APPROVAL → APPROVED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional comments",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/models.ApprovalActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Cancel a petty cash requisition (DRAFT → CANCELLED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/{id}/reject": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Reject a petty cash requisition (PENDING_APPROVAL → REJECTED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "comments required",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.ApprovalActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/{id}/submit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Submit for approval (DRAFT/REJECTED → PENDING_APPROVAL)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "approver_id — required if not already set",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "approver_id": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po": {
             "get": {
                 "security": [
@@ -6267,7 +6821,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Allows editing a PO with status=APPROVED, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup).",
+                "description": "Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first.",
                 "consumes": [
                     "application/json"
                 ],
@@ -9963,6 +10517,119 @@
                         }
                     }
                 }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Accepts the same body shape as Create (models.CreateWorkOrderRequest) — lines are\nalways replaced together with the header in this single call, mirroring\nPOHandler.Update's all-in-one PUT rather than requiring a separate lines call.\nThe dedicated PUT /work-order/{id}/lines endpoint remains available for a\nlines-only edit that doesn't touch header fields. Only allowed while\nstatus = DRAFT — mirrors PO's Update rule exactly (PO also rejects everything\nelse, including REJECTED, and points APPROVED callers at its edit-approved\nendpoint instead; WO has no such endpoint yet, so APPROVED/other statuses just 400).\nThe payload's own `status` field (\"บันทึกร่าง\" sends DRAFT, \"ส่งอนุมัติ\" sends\nPENDING_APPROVAL) is written to the row and, when it actually changes, logged to\nwork_order_status_log — a transition to PENDING_APPROVAL also opens the step-1\napproval_request exactly like POST /:id/submit does, since this is an alternate\nentry point into the same submit flow. Any other status value is rejected —\napproval decisions only ever happen through the dedicated Approve/Reject flow.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "แก้ไขหนังสือสั่งจ้าง (header + line items ทั้งใบ, เฉพาะสถานะ DRAFT)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Work Order data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateWorkOrderRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/work-order/{id}/lines": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Line items",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateWorkOrderLinesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
             }
         },
         "/work-order/{id}/submit": {
@@ -10941,6 +11608,94 @@
                 }
             }
         },
+        "models.CreatePettyCashLineItem": {
+            "type": "object",
+            "required": [
+                "mat_code",
+                "project_code",
+                "qty",
+                "unit_price"
+            ],
+            "properties": {
+                "cost_subgroup_id": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "disc_type": {
+                    "type": "string"
+                },
+                "discount": {
+                    "type": "number"
+                },
+                "mat_code": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "unit_price": {
+                    "type": "number",
+                    "minimum": 0
+                },
+                "wht_rate": {
+                    "type": "number"
+                }
+            }
+        },
+        "models.CreatePettyCashRequest": {
+            "type": "object",
+            "required": [
+                "lines"
+            ],
+            "properties": {
+                "approver_id": {
+                    "type": "integer"
+                },
+                "currency": {
+                    "type": "string"
+                },
+                "discount_amount": {
+                    "type": "number"
+                },
+                "discount_type": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/models.CreatePettyCashLineItem"
+                    }
+                },
+                "purpose": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "status": {
+                    "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",
+                    "type": "string"
+                },
+                "use_discount": {
+                    "type": "boolean"
+                },
+                "use_vat": {
+                    "type": "boolean"
+                },
+                "use_wht": {
+                    "type": "boolean"
+                }
+            }
+        },
         "models.CreateProjectReq": {
             "type": "object",
             "properties": {
@@ -11401,6 +12156,7 @@
                 "contract_amount",
                 "contract_type",
                 "employer_name",
+                "lines",
                 "supplier_name",
                 "work_system"
             ],
@@ -11433,8 +12189,12 @@
                         "LABOR_MATERIAL"
                     ]
                 },
-                "cost_code": {
-                    "type": "string"
+                "discount_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
                 },
                 "duration_days": {
                     "type": "integer"
@@ -11444,6 +12204,13 @@
                 },
                 "end_date": {
                     "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/models.WorkOrderLineInput"
+                    }
                 },
                 "other_deduction_note": {
                     "type": "string"
@@ -11478,6 +12245,10 @@
                 "start_date": {
                     "type": "string"
                 },
+                "status": {
+                    "description": "Status is only read by Update (PUT /work-order/:id) — Create always hardcodes 'DRAFT'\nin its INSERT. Update accepts \"DRAFT\" (no-op save) or \"PENDING_APPROVAL\" (the \"ส่งอนุมัติ\"\nbutton submitting inline) — anything else, including jumping straight to APPROVED, is\nrejected; approval decisions only ever happen through the dedicated Approve/Reject flow.",
+                    "type": "string"
+                },
                 "supplier_address": {
                     "type": "string"
                 },
@@ -11489,6 +12260,16 @@
                 },
                 "supplier_phone": {
                     "type": "string"
+                },
+                "use_discount": {
+                    "description": "Line items + header discount/VAT/WHT flags — mirrors PO's use_discount/discount_type/\nuse_vat/use_wht + purchase_order_line structure, with cost_code replacing mat_code.",
+                    "type": "boolean"
+                },
+                "use_vat": {
+                    "type": "boolean"
+                },
+                "use_wht": {
+                    "type": "boolean"
                 },
                 "vat_rate": {
                     "type": "number"
@@ -12203,6 +12984,9 @@
                 "owner_name": {
                     "type": "string"
                 },
+                "paid_amount": {
+                    "type": "number"
+                },
                 "project_code": {
                     "type": "string"
                 },
@@ -12436,6 +13220,33 @@
                 },
                 "warehouse_name": {
                     "type": "string"
+                }
+            }
+        },
+        "models.RecordPaymentRequest": {
+            "type": "object",
+            "properties": {
+                "amount_paid": {
+                    "type": "number"
+                },
+                "doc_id": {
+                    "type": "integer"
+                },
+                "doc_type": {
+                    "description": "'PO' | 'WO'",
+                    "type": "string"
+                },
+                "paid_by": {
+                    "type": "integer"
+                },
+                "paid_date": {
+                    "type": "string"
+                },
+                "remark": {
+                    "type": "string"
+                },
+                "reverses_id": {
+                    "type": "integer"
                 }
             }
         },
@@ -12868,6 +13679,52 @@
                 }
             }
         },
+        "models.UpdatePettyCashRequest": {
+            "type": "object",
+            "required": [
+                "lines"
+            ],
+            "properties": {
+                "approver_id": {
+                    "type": "integer"
+                },
+                "currency": {
+                    "type": "string"
+                },
+                "discount_amount": {
+                    "type": "number"
+                },
+                "discount_type": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/models.CreatePettyCashLineItem"
+                    }
+                },
+                "purpose": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "status": {
+                    "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",
+                    "type": "string"
+                },
+                "use_discount": {
+                    "type": "boolean"
+                },
+                "use_vat": {
+                    "type": "boolean"
+                },
+                "use_wht": {
+                    "type": "boolean"
+                }
+            }
+        },
         "models.UpdateProjectReq": {
             "type": "object",
             "properties": {
@@ -13030,6 +13887,37 @@
                 }
             }
         },
+        "models.UpdateWorkOrderLinesRequest": {
+            "type": "object",
+            "required": [
+                "lines"
+            ],
+            "properties": {
+                "discount_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/models.WorkOrderLineInput"
+                    }
+                },
+                "use_discount": {
+                    "type": "boolean"
+                },
+                "use_vat": {
+                    "type": "boolean"
+                },
+                "use_wht": {
+                    "type": "boolean"
+                }
+            }
+        },
         "models.UpdateZoneReq": {
             "type": "object",
             "properties": {
@@ -13137,6 +14025,49 @@
                 },
                 "warehouse_name": {
                     "type": "string"
+                }
+            }
+        },
+        "models.WorkOrderLineInput": {
+            "type": "object",
+            "required": [
+                "cost_code",
+                "qty"
+            ],
+            "properties": {
+                "cost_code": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "disc": {
+                    "type": "number"
+                },
+                "disc_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "unit_price": {
+                    "type": "number",
+                    "minimum": 0
+                },
+                "vat_rate": {
+                    "type": "number"
+                },
+                "wht_rate": {
+                    "type": "number",
+                    "enum": [
+                        1,
+                        3,
+                        5
+                    ]
                 }
             }
         }

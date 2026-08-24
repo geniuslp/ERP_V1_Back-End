@@ -34,6 +34,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	matH := handlers.NewMaterialCodeHandler(matSvc)
 	memoH := handlers.NewMemoHandler(db)
 	costCodeH := handlers.NewCostCodeHandler(db)
+	pettyCashH := handlers.NewPettyCashHandler(db)
 
 	api := app.Group("/api/v1")
 
@@ -185,6 +186,20 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	memo.Post("/:id/approve", memoH.Approve)
 	memo.Patch("/:id/cancel", memoH.Cancel)
 
+	// Petty Cash Requisition (ใบเบิกเงินสดย่อย)
+	// Material picker reuses GET /master/allMaterial (extended with an optional
+	// project_code param for stock_on_hand) — no petty-cash-specific search endpoint.
+	pc := api.Group("/petty-cash", jwt)
+	pc.Get("/", pettyCashH.List)
+	pc.Post("/", pettyCashH.Create)
+	pc.Get("/:id", pettyCashH.Get)
+	pc.Put("/:id", pettyCashH.Update)
+	pc.Delete("/:id", pettyCashH.Delete)
+	pc.Post("/:id/submit", pettyCashH.Submit)
+	pc.Post("/:id/approve", pettyCashH.Approve)
+	pc.Post("/:id/reject", pettyCashH.Reject)
+	pc.Post("/:id/cancel", pettyCashH.Cancel)
+
 	// GRN
 	grn := api.Group("/grn")
 	grn.Get("/", grnH.List)
@@ -333,7 +348,15 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	workOrder.Get("/", workOrderH.List)
 	workOrder.Post("/", workOrderH.Create)
 	workOrder.Get("/:id", workOrderH.Get)
+	workOrder.Put("/:id", workOrderH.Update)
 	workOrder.Post("/:id/submit", workOrderH.Submit)
+	workOrder.Put("/:id/lines", workOrderH.UpdateLines)
+
+	financeH := handlers.NewFinanceHandler(db)
+	finance := api.Group("/finance", jwt)
+	finance.Get("/payments", financeH.ListPayableDocs)
+	finance.Post("/payments", financeH.RecordPayment)
+	finance.Get("/payments/:doc_type/:doc_id/log", financeH.GetPaymentLog)
 
 	// Stock Transfer (ย้ายคลัง)
 	stockTransferH := handlers.NewStockTransferHandler(db)

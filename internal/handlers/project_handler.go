@@ -28,10 +28,24 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 	p.budget_amount,
 	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 		WHERE po.project_code = p.project_code
-		  AND po.status = 'APPROVED'), 0) AS spent_amount,
-	p.budget_amount - COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
-		WHERE po.project_code = p.project_code
-		  AND po.status = 'APPROVED'), 0) AS remaining_amount,
+		  AND po.status = 'APPROVED'), 0)
+	+ COALESCE((SELECT SUM(wo.net_amount) FROM work_order wo
+		WHERE wo.project_code = p.project_code
+		  AND wo.status = 'APPROVED'), 0) AS spent_amount,
+	COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
+		JOIN purchase_order po ON po.id = pl.doc_id
+		WHERE pl.doc_type = 'PO' AND po.project_code = p.project_code), 0)
+	+ COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
+		JOIN work_order wo ON wo.id = pl.doc_id
+		WHERE pl.doc_type = 'WO' AND wo.project_code = p.project_code), 0) AS paid_amount,
+	p.budget_amount - (
+		COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
+			WHERE po.project_code = p.project_code
+			  AND po.status = 'APPROVED'), 0)
+		+ COALESCE((SELECT SUM(wo.net_amount) FROM work_order wo
+			WHERE wo.project_code = p.project_code
+			  AND wo.status = 'APPROVED'), 0)
+	) AS remaining_amount,
 	p.consultant_name,
 	p.start_date, p.end_date, p.status, p.is_active,
 	p.created_at, p.updated_at, p.created_by, p.updated_by`
@@ -44,7 +58,7 @@ const projectSelectFrom = `
 func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 	return row.Scan(&p.Id, &p.ProjectCode, &p.ProjectName, &p.LocationCode,
 		&p.LocationName, &p.OwnerID, &p.OwnerName,
-		&p.BudgetAmount, &p.SpentAmount, &p.RemainingAmount, &p.ConsultantName,
+		&p.BudgetAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }

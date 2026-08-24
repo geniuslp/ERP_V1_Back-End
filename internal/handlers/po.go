@@ -1219,7 +1219,7 @@ func (h *POHandler) Approve(c *fiber.Ctx) error {
 
 // EditApprovedPO godoc
 // @Summary      Edit an already-approved PO (requires reason, triggers re-approval)
-// @Description  Allows editing a PO with status=APPROVED, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup).
+// @Description  Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Accept       json
@@ -1298,8 +1298,8 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 	if err := h.db.QueryRow(ctx, `SELECT status, created_at FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus, &createdAt); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
-	if currentStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PO must be APPROVED to use this endpoint (current status: %s)", currentStatus))
+	if currentStatus != "APPROVED" && currentStatus != "PENDING_REAPPROVAL" {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PO must be APPROVED or PENDING_REAPPROVAL to use this endpoint (current status: %s)", currentStatus))
 	}
 	if time.Since(createdAt) >= 365*24*time.Hour {
 		return fiber.NewError(fiber.StatusBadRequest, "PO นี้สร้างมาเกิน 1 ปีแล้ว ไม่สามารถแก้ไขได้")
@@ -1367,7 +1367,7 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO po_status_log (po_id, from_status, to_status, changed_by, remarks)
-		VALUES ($1,'APPROVED','PENDING_REAPPROVAL',$2,$3)`, poID, claims.UserID, req.Reason,
+		VALUES ($1,$2,'PENDING_REAPPROVAL',$3,$4)`, poID, currentStatus, claims.UserID, req.Reason,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "status log error: "+err.Error())
 	}

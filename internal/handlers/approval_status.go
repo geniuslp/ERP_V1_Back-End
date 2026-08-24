@@ -64,6 +64,24 @@ func isEligibleApprover(ctx context.Context, db *pgxpool.Pool, docType string, s
 		return eligible, err
 	}
 
+	// PETTY_CASH follows the exact same per-document approver_id model as PO/MEMO.
+	if docType == "PETTY_CASH" {
+		var eligible bool
+		err := db.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM petty_cash_requisition WHERE id = $2 AND approver_id = $1
+
+				UNION
+
+				SELECT 1
+				FROM approval_delegation ad
+				WHERE (ad.doc_type = 'PETTY_CASH' OR ad.doc_type IS NULL) AND ad.user_id = $1
+			)`,
+			userID, docID,
+		).Scan(&eligible)
+		return eligible, err
+	}
+
 	var eligible bool
 	err := db.QueryRow(ctx, `
 		SELECT EXISTS(
@@ -98,10 +116,11 @@ func isEligibleApprover(ctx context.Context, db *pgxpool.Pool, docType string, s
 // If more doc types are added to this generic flow, add them here too (or better, add
 // a table_name column to approval_doc_types).
 var docTypeTable = map[string]string{
-	"MEMO":   "memo",
-	"BORROW": "borrow",
-	"PO":     "purchase_order",
-	"WO":     "work_order",
+	"MEMO":       "memo",
+	"BORROW":     "borrow",
+	"PO":         "purchase_order",
+	"WO":         "work_order",
+	"PETTY_CASH": "petty_cash_requisition",
 }
 
 // docTypePK maps a doc_type to the primary key column of its docTypeTable entry.
