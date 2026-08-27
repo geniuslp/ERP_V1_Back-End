@@ -73,12 +73,12 @@ func (h *POApprovalHandler) List(c *fiber.Ctx) error {
 	h.db.QueryRow(context.Background(),
 		`SELECT COUNT(*)
 		FROM purchase_order po
-		LEFT JOIN supplier s ON s.supplier_code = po.supplier_code
+		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN users u ON u.id = po.created_by
 		WHERE ($1::text IS NULL OR po.status = $1)
 		AND ($2::bigint IS NULL OR po.created_by = $2)
 		AND ($3::text IS NULL OR po.po_no ILIKE $3)
-		AND ($4::text IS NULL OR s.supplier_name ILIKE $4 OR po.supplier_code ILIKE $4)
+		AND ($4::text IS NULL OR s.supplier_name ILIKE $4)
 		AND ($5::text IS NULL OR u.full_name ILIKE $5)`,
 		statusFilter, createdByFilter, poNoFilter, supplierFilter, createdByNameFilter,
 	).Scan(&total)
@@ -91,7 +91,7 @@ func (h *POApprovalHandler) List(c *fiber.Ctx) error {
 		TotalAmount    float64 `json:"total_amount"`
 		NetAmount      float64 `json:"net_amount"`
 		Currency       string  `json:"currency"`
-		SupplierName   string  `json:"supplier_name"`
+		SupplierName   *string `json:"supplier_name,omitempty"`
 		CreatedByName  string  `json:"created_by_name"`
 		ExpectedDate   *string `json:"expected_date"`
 		UseDiscount    bool    `json:"use_discount"`
@@ -106,18 +106,18 @@ func (h *POApprovalHandler) List(c *fiber.Ctx) error {
 		SELECT
 		    po.id, po.po_no, po.po_date::text, po.status,
 		    po.total_amount, po.net_amount, po.currency,
-		    COALESCE(s.supplier_name, po.supplier_code) AS supplier_name,
+		    s.supplier_name,
 		    COALESCE(u.full_name, '') AS created_by_name,
 		    po.expected_date::text,
 		    po.use_discount, po.use_vat, po.use_wht,
 		    po.discount_amount, po.vat_amount, po.wht_amount
 		FROM purchase_order po
-		LEFT JOIN supplier s ON s.supplier_code = po.supplier_code
+		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN users u ON u.id = po.created_by
 		WHERE ($1::text IS NULL OR po.status = $1)
 		AND ($2::bigint IS NULL OR po.created_by = $2)
 		AND ($3::text IS NULL OR po.po_no ILIKE $3)
-		AND ($4::text IS NULL OR s.supplier_name ILIKE $4 OR po.supplier_code ILIKE $4)
+		AND ($4::text IS NULL OR s.supplier_name ILIKE $4)
 		AND ($5::text IS NULL OR u.full_name ILIKE $5)
 		ORDER BY po.created_at DESC
 		LIMIT $6 OFFSET $7`,
@@ -211,8 +211,8 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		PONo                 string         `json:"po_no"`
 		PODate               string         `json:"po_date"`
 		Status               string         `json:"status"`
-		SupplierCode         string         `json:"supplier_code"`
-		SupplierName         string         `json:"supplier_name"`
+		SupplierID           *int64         `json:"supplier_id,omitempty"`
+		SupplierName         *string        `json:"supplier_name,omitempty"`
 		SupplierTaxID        *string        `json:"supplier_tax_id,omitempty"`
 		SupplierAddress      *string        `json:"supplier_address,omitempty"`
 		SupplierContactName  *string        `json:"supplier_contact_name,omitempty"`
@@ -255,7 +255,7 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	row := h.db.QueryRow(context.Background(), `
 		SELECT
 		    po.id, po.po_no, po.po_date::text, po.status,
-		    po.supplier_code, COALESCE(s.supplier_name, po.supplier_code) AS supplier_name,
+		    po.supplier_id, s.supplier_name,
 		    s.tax_id, s.address, s.contact_name, s.contact_phone, s.contact_email,
 		    s.office_phone, s.sales_person, s.payment_terms AS supplier_payment_terms,
 		    po.payment_terms, po.delivery_address, po.location_text, po.warehouse_code, po.project_code, po.pr_id,
@@ -269,7 +269,7 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		    COALESCE(u.full_name, '') AS created_by_name,
 		    po.created_at
 		FROM purchase_order po
-		LEFT JOIN supplier s ON s.supplier_code = po.supplier_code
+		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN users u ON u.id = po.created_by
 		LEFT JOIN users ru ON ru.id = po.requested_by
 		LEFT JOIN users au ON au.id = po.approver_id
@@ -283,7 +283,7 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 
 	if err := row.Scan(
 		&po.ID, &po.PONo, &po.PODate, &po.Status,
-		&po.SupplierCode, &po.SupplierName,
+		&po.SupplierID, &po.SupplierName,
 		&po.SupplierTaxID, &po.SupplierAddress, &po.SupplierContactName,
 		&po.SupplierContactPhone, &po.SupplierContactEmail, &po.SupplierOfficePhone,
 		&po.SupplierSalesPerson, &po.SupplierPaymentTerms,
@@ -520,15 +520,38 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 	defer tx.Rollback(ctx)
 
 	var status string
+	var poPRID *int64
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM purchase_order WHERE id = $1 FOR UPDATE`, id,
-	).Scan(&status); err != nil {
+		`SELECT status, pr_id FROM purchase_order WHERE id = $1 FOR UPDATE`, id,
+	).Scan(&status, &poPRID); err != nil {
 		log.Printf("❌ PO cancel fetch error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if status != "APPROVED" {
 		return fiber.NewError(fiber.StatusBadRequest, "only approved POs can be cancelled")
 	}
+
+	// Capture the not-yet-cancelled lines' pr_line_id/qty_ordered before flipping them to
+	// CANCELLED below, so the split-ordering claim each one holds against its PR line can be
+	// reverted (mirrors reconcilePRLineQty's accounting in po.go, just in the opposite direction).
+	revert := map[int64]float64{}
+	linesRows, err := tx.Query(ctx, `
+		SELECT pr_line_id, qty_ordered FROM purchase_order_line
+		WHERE po_id = $1 AND status != 'CANCELLED' AND pr_line_id IS NOT NULL`, id)
+	if err != nil {
+		log.Printf("❌ PO cancel lines fetch error: %v", err)
+		return err
+	}
+	for linesRows.Next() {
+		var prLineID int64
+		var qty float64
+		if err := linesRows.Scan(&prLineID, &qty); err != nil {
+			linesRows.Close()
+			return err
+		}
+		revert[prLineID] += qty
+	}
+	linesRows.Close()
 
 	if _, err := tx.Exec(ctx,
 		`UPDATE purchase_order SET status = 'CANCELLED', updated_at = NOW(), updated_by = $1 WHERE id = $2`,
@@ -553,6 +576,84 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 	); err != nil {
 		log.Printf("❌ PO cancel log error: %v", err)
 		return err
+	}
+
+	if len(revert) > 0 {
+		prLineIDs := make([]int64, 0, len(revert))
+		for prLineID := range revert {
+			prLineIDs = append(prLineIDs, prLineID)
+		}
+
+		// Lock the touched PR lines before decrementing, same as reconcilePRLineQty, so a
+		// concurrent PO save against the same PR line can't race with this revert.
+		if _, err := tx.Exec(ctx,
+			`SELECT id FROM purchase_request_line WHERE id = ANY($1) FOR UPDATE`, prLineIDs,
+		); err != nil {
+			log.Printf("❌ PO cancel PR line lock error: %v", err)
+			return err
+		}
+
+		for prLineID, qty := range revert {
+			if _, err := tx.Exec(ctx,
+				`UPDATE purchase_request_line SET qty_ordered = qty_ordered - $1 WHERE id = $2`,
+				qty, prLineID,
+			); err != nil {
+				log.Printf("❌ PO cancel PR line revert error: %v", err)
+				return err
+			}
+		}
+
+		// Re-evaluate the parent PR's status with the exact same rule Create/AddLines use
+		// (po.go: allFulfilled -> FULFILLED, someOrdered -> PARTIALLY_FILLED), just now able to
+		// move DOWN as well as up since qty_ordered just decreased. If nothing is ordered on any
+		// line anymore, the PR settles back to COMPLETED — the same "ready, not yet ordered"
+		// status a PR sits in before its first PO line is ever created (see the
+		// available_for_po picker in PRApprovalHandler.List), not DRAFT: DRAFT is reserved for
+		// PRHandler.Reopen, which additionally clears qty_reserved/qty_to_order and reverses
+		// stock-deduction from Submit — none of which applies here, since cancelling a PO never
+		// touches those.
+		if poPRID != nil {
+			var currentPRStatus string
+			if err := tx.QueryRow(ctx, `SELECT status FROM purchase_request WHERE id=$1`, *poPRID).Scan(&currentPRStatus); err != nil {
+				return err
+			}
+
+			lineRows, err := tx.Query(ctx, `SELECT qty_to_order, qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
+			if err != nil {
+				return err
+			}
+			allFulfilled, someOrdered := true, false
+			for lineRows.Next() {
+				var qtyToOrder, qtyOrd float64
+				lineRows.Scan(&qtyToOrder, &qtyOrd)
+				if qtyOrd < qtyToOrder {
+					allFulfilled = false
+				}
+				if qtyOrd > 0 {
+					someOrdered = true
+				}
+			}
+			lineRows.Close()
+
+			newPRStatus := "COMPLETED"
+			if allFulfilled {
+				newPRStatus = "FULFILLED"
+			} else if someOrdered {
+				newPRStatus = "PARTIALLY_FILLED"
+			}
+
+			if newPRStatus != currentPRStatus && (currentPRStatus == "PARTIALLY_FILLED" || currentPRStatus == "FULFILLED") {
+				if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status=$1, updated_at=NOW() WHERE id=$2`, newPRStatus, *poPRID); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+					VALUES ($1,$2,$3,$4,'PO cancelled')`, *poPRID, currentPRStatus, newPRStatus, userID,
+				); err != nil {
+					return err
+				}
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -108,11 +108,16 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/warehouses/:code/zones", masterH.ListZones)
 	supplierH := handlers.NewSupplierHandler(db)
 	master.Get("/suppliers", supplierH.ListSuppliers)
-	master.Get("/suppliers/:code", supplierH.GetSupplier)
+	master.Get("/suppliers/:id", supplierH.GetSupplier)
 	master.Post("/suppliers", supplierH.CreateSupplier)
-	master.Put("/suppliers/:code", supplierH.UpdateSupplier)
-	master.Delete("/suppliers/:code", supplierH.DeleteSupplier)
+	master.Put("/suppliers/:id", supplierH.UpdateSupplier)
+	master.Delete("/suppliers/:id", supplierH.DeleteSupplier)
 	master.Post("/suppliers/bulk", supplierH.BulkCreateSupplier)
+
+	// Supplier (standalone group — bulk insert)
+	supplier := api.Group("/supplier")
+	supplier.Use(jwt)
+	supplier.Post("/bulk", supplierH.BulkInsertSupplier)
 
 	// Inventory
 	inv := api.Group("/inventory")
@@ -151,6 +156,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	po.Get("/next-number", poH.NextPONumber)
 	po.Get("/search", goodsReceiptH.SearchApprovedPO)
 	po.Get("/available-prs", poH.GetAvailablePRs)
+	po.Get("/pr-lines/:pr_id", poH.GetPRLinesForPO)
 	po.Get("/receivable", poH.GetReceivablePOs)
 	po.Get("/line-items", poH.ListLineItems)
 	po.Get("/", poH.List)

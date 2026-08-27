@@ -155,57 +155,6 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 	})
 }
 
-// GetPR godoc
-// @Summary      Get purchase request by ID
-// @Tags         Purchase Request
-// @Security     BearerAuth
-// @Produce      json
-// @Param        id  path  int  true  "PR ID"
-// @Success      200  {object}  models.PurchaseRequest
-// @Failure      404  {object}  fiber.Map
-// @Router       /pr/{id} [get]
-func (h *PRHandler) Get(c *fiber.Ctx) error {
-	id := c.Params("id")
-	row := h.db.QueryRow(context.Background(), `
-		SELECT pr.id, pr.pr_no, pr.pr_date, pr.requested_by, pr.location_text, pr.warehouse_code, pr.project_code,
-		       pr.required_date::text, pr.status, pr.priority, pr.order_type, pr.pr_type, pr.job_code, pr.remarks, pr.created_at, pr.updated_at,
-		       w.warehouse_name
-		FROM purchase_request pr
-		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
-		WHERE pr.id=$1`, id)
-
-	var pr models.PurchaseRequest
-	if err := row.Scan(&pr.PRID, &pr.PRNo, &pr.PRDate, &pr.RequestedBy, &pr.LocationText,
-		&pr.WarehouseCode, &pr.ProjectCode, &pr.RequiredDate, &pr.Status, &pr.Priority, &pr.OrderType, &pr.PRType, &pr.JobCode, &pr.Remarks, &pr.CreatedAt, &pr.UpdatedAt,
-		&pr.WarehouseName); err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "PR not found")
-	}
-
-	rows, _ := h.db.Query(context.Background(), `
-		SELECT prl.id, prl.pr_id, prl.line_no, prl.mat_code, prl.qty_requested, prl.qty_reserved, prl.qty_to_order, prl.remarks, prl.status,
-		       prl.cost_subgroup_id,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
-		       csg.subgroup_name
-		FROM purchase_request_line prl
-		LEFT JOIN cost_subgroup csg ON csg.id = prl.cost_subgroup_id
-		LEFT JOIN cost_group cg ON cg.id = csg.group_id
-		LEFT JOIN cost_job cj ON cj.id = cg.job_id
-		LEFT JOIN cost_subject csub ON csub.id = cj.subject_id
-		WHERE prl.pr_id=$1 ORDER BY prl.line_no`, id)
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var l models.PRLine
-			rows.Scan(&l.LineID, &l.PRID, &l.LineNo, &l.MatCode,
-				&l.QtyRequested, &l.QtyReserved, &l.QtyToOrder, &l.Remarks, &l.Status,
-				&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName)
-			pr.Lines = append(pr.Lines, l)
-		}
-	}
-
-	return c.JSON(fiber.Map{"success": true, "data": pr})
-}
-
 // CreatePR godoc
 // @Summary      Create purchase request
 // @Tags         Purchase Request
@@ -360,13 +309,18 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 
 	var currentStatus string
 	var prNo string
+	var orderType string
+	var projectCode *string
 	if err := h.db.QueryRow(ctx,
-		`SELECT status, pr_no FROM purchase_request WHERE id=$1`, id,
-	).Scan(&currentStatus, &prNo); err != nil {
+		`SELECT status, pr_no, order_type, project_code FROM purchase_request WHERE id=$1`, id,
+	).Scan(&currentStatus, &prNo, &orderType, &projectCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
 	if currentStatus != "DRAFT" {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot submit PR in status: %s", currentStatus))
+	}
+	if orderType == "cost" && projectCode == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
@@ -374,22 +328,8 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	shortages, err := h.deductStockOnSubmit(ctx, tx, id, claims.UserID)
-	if err != nil {
+	if err := h.deductStockOnSubmit(ctx, tx, id, orderType, projectCode, claims.UserID); err != nil {
 		return err
-	}
-	if len(shortages) > 0 {
-		var msgs []string
-		for _, s := range shortages {
-			msgs = append(msgs, fmt.Sprintf(
-				"สต็อกไม่พอสำหรับ %s ต้องการ %g มีในสต็อก %g กรุณาแก้ไขจำนวนสั่งซื้อ",
-				s.MatCode, s.Requested, s.Available))
-		}
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   strings.Join(msgs, "; "),
-			"data":    fiber.Map{"shortages": shortages},
-		})
 	}
 
 	if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status='COMPLETED', updated_at=NOW() WHERE id=$1`, id); err != nil {
@@ -415,99 +355,101 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "PR status changed to COMPLETED"})
 }
 
-// stockShortage is one PR line whose stock_item.qty on-hand is insufficient to cover
-// the shortfall (qty_requested - qty_to_order) that submission would otherwise deduct.
-type stockShortage struct {
-	MatCode   string  `json:"mat_code"`
-	Requested float64 `json:"requested"` // the shortfall qty that would have been deducted
-	Available float64 `json:"available"` // stock_item.qty currently on hand
-}
-
-// deductStockOnSubmit implements the "cover the shortfall from existing stock" rule for
-// PR submission: for every line where qty_requested > qty_to_order, the difference
-// (shortfall) is assumed to come out of stock_item.qty rather than being purchased.
-//
-// If ANY line's shortfall exceeds stock_item.qty, the whole submission is blocked —
-// every affected line is returned so the caller can report them all at once, not just
-// the first. Nothing is written in that case. Otherwise every shortfall line's
-// stock_item.qty is decremented and a stock_transaction (TxnTypeIssue) is recorded,
-// all inside the caller's tx so a failure anywhere rolls back PR completion too.
-func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int64, userID int64) ([]stockShortage, error) {
+// deductStockOnSubmit implements the "auto-split from available stock" rule for PR
+// submission: for every line, whatever is currently on hand in stock_item is reserved
+// immediately (first-come-first-served, no blocking), and the remainder is routed to
+// qty_to_order for later procurement via PO. qty_reserved and qty_to_order are persisted
+// on purchase_request_line so downstream PO-line creation knows how much is still
+// orderable. For order_type='cost' PRs, the reserved qty is also mirrored into
+// project_stock via addToProjectStock, matching how Requisition/StockTransfer track
+// project-level usage. All writes happen inside the caller's tx so a failure anywhere
+// rolls back PR completion too.
+func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int64, orderType string, projectCode *string, userID int64) error {
 	rows, err := tx.Query(ctx, `
-		SELECT mat_code, (qty_requested - qty_to_order) AS shortfall
+		SELECT id, mat_code, qty_requested
 		FROM purchase_request_line
-		WHERE pr_id = $1 AND (qty_requested - qty_to_order) > 0`, prID)
+		WHERE pr_id = $1`, prID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	type line struct {
-		MatCode   string
-		Shortfall float64
+		ID           int64
+		MatCode      string
+		QtyRequested float64
 	}
 	var lines []line
 	for rows.Next() {
 		var l line
-		if err := rows.Scan(&l.MatCode, &l.Shortfall); err != nil {
+		if err := rows.Scan(&l.ID, &l.MatCode, &l.QtyRequested); err != nil {
 			rows.Close()
-			return nil, err
+			return err
 		}
 		lines = append(lines, l)
 	}
 	rows.Close()
 
-	if len(lines) == 0 {
-		return nil, nil
-	}
-
-	var shortages []stockShortage
-	itemIDs := make(map[string]int64, len(lines))
 	for _, l := range lines {
 		var itemID int64
 		var available float64
-		if err := tx.QueryRow(ctx,
-			`SELECT id, qty FROM stock_item WHERE mat_code = $1`, l.MatCode,
-		).Scan(&itemID, &available); err != nil {
-			shortages = append(shortages, stockShortage{MatCode: l.MatCode, Requested: l.Shortfall, Available: 0})
+		var unit *string
+		err := tx.QueryRow(ctx,
+			`SELECT id, qty, unit FROM stock_item WHERE mat_code = $1 FOR UPDATE`, l.MatCode,
+		).Scan(&itemID, &available, &unit)
+		hasStockItem := err == nil
+		if !hasStockItem {
+			available = 0
+		}
+
+		qtyReserved := l.QtyRequested
+		if qtyReserved > available {
+			qtyReserved = available
+		}
+		if qtyReserved < 0 {
+			qtyReserved = 0
+		}
+		qtyToOrder := l.QtyRequested - qtyReserved
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE purchase_request_line
+			SET qty_reserved = $1, qty_to_order = $2
+			WHERE id = $3`,
+			qtyReserved, qtyToOrder, l.ID,
+		); err != nil {
+			return err
+		}
+
+		if qtyReserved <= 0 {
 			continue
 		}
-		if available < l.Shortfall {
-			shortages = append(shortages, stockShortage{MatCode: l.MatCode, Requested: l.Shortfall, Available: available})
-			continue
-		}
-		itemIDs[l.MatCode] = itemID
-	}
-
-	// Block the entire submission — list every affected line, write nothing.
-	if len(shortages) > 0 {
-		return shortages, nil
-	}
-
-	for _, l := range lines {
-		itemID := itemIDs[l.MatCode]
 
 		if _, err := tx.Exec(ctx,
 			`UPDATE stock_item SET qty = qty - $1, updated_at = NOW() WHERE id = $2`,
-			l.Shortfall, itemID,
+			qtyReserved, itemID,
 		); err != nil {
-			return nil, err
+			return err
 		}
 
 		txnNo, err := generateTxnNo(ctx, tx)
 		if err != nil {
-			return nil, err
+			return err
 		}
-
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO stock_transaction
 			    (txn_no, txn_type, item_id, qty, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
 			VALUES ($1,$2,$3,$4,'PR',$5,'ตัด stock อัตโนมัติจากการ submit PR',CURRENT_DATE,$6)`,
-			txnNo, TxnTypeIssue, itemID, l.Shortfall, prID, userID,
+			txnNo, TxnTypeIssue, itemID, qtyReserved, prID, userID,
 		); err != nil {
-			return nil, err
+			return err
+		}
+
+		if orderType == "cost" && projectCode != nil {
+			if err := addToProjectStock(ctx, tx, *projectCode, l.MatCode, unit, qtyReserved); err != nil {
+				return err
+			}
 		}
 	}
 
-	return nil, nil
+	return nil
 }
 
 // Reopen godoc
@@ -548,10 +490,11 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	var currentStatus, prNo string
+	var currentStatus, prNo, orderType string
+	var projectCode *string
 	if err := tx.QueryRow(ctx,
-		`SELECT status, pr_no FROM purchase_request WHERE id=$1 FOR UPDATE`, id,
-	).Scan(&currentStatus, &prNo); err != nil {
+		`SELECT status, pr_no, order_type, project_code FROM purchase_request WHERE id=$1 FOR UPDATE`, id,
+	).Scan(&currentStatus, &prNo, &orderType, &projectCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
 	if currentStatus != "COMPLETED" {
@@ -584,19 +527,22 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 	}
 
 	issueRows, err := tx.Query(ctx, `
-		SELECT item_id, qty FROM stock_transaction
-		WHERE ref_doc_type = 'PR' AND ref_doc_id = $1 AND txn_type = $2`, id, TxnTypeIssue)
+		SELECT st.item_id, st.qty, si.mat_code
+		FROM stock_transaction st
+		JOIN stock_item si ON si.id = st.item_id
+		WHERE st.ref_doc_type = 'PR' AND st.ref_doc_id = $1 AND st.txn_type = $2`, id, TxnTypeIssue)
 	if err != nil {
 		return err
 	}
 	type issuedQty struct {
-		ItemID int64
-		Qty    float64
+		ItemID  int64
+		Qty     float64
+		MatCode string
 	}
 	var issued []issuedQty
 	for issueRows.Next() {
 		var q issuedQty
-		if err := issueRows.Scan(&q.ItemID, &q.Qty); err != nil {
+		if err := issueRows.Scan(&q.ItemID, &q.Qty, &q.MatCode); err != nil {
 			issueRows.Close()
 			return err
 		}
@@ -612,6 +558,16 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 			return err
 		}
 
+		if orderType == "cost" && projectCode != nil {
+			if err := deductProjectStock(ctx, tx, *projectCode, q.MatCode, q.Qty); err != nil {
+				if fe, ok := err.(*fiber.Error); ok {
+					return fiber.NewError(fiber.StatusConflict,
+						"ไม่สามารถแก้ไขได้ เนื่องจากโครงการใช้วัสดุนี้ไปแล้ว กรุณาติดต่อผู้ดูแลระบบ ("+fe.Message+")")
+				}
+				return err
+			}
+		}
+
 		txnNo, err := generateTxnNo(ctx, tx)
 		if err != nil {
 			return err
@@ -624,6 +580,13 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 		); err != nil {
 			return err
 		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE purchase_request_line SET qty_reserved = 0, qty_to_order = qty_requested
+		 WHERE pr_id = $1`, id,
+	); err != nil {
+		return err
 	}
 
 	if _, err := tx.Exec(ctx,
@@ -921,8 +884,8 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
 	if err := h.db.QueryRow(ctx, `SELECT pr_no, status FROM purchase_request WHERE id=$1`, prID).Scan(&prNo, &prStatus); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR %d not found", prID))
 	}
-	if prStatus != "COMPLETED" && prStatus != "PARTIALLY_FILLED" {
-		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR status must be COMPLETED or PARTIALLY_FILLED, got %s", prStatus))
+	if prStatus == "CANCELLED" {
+		return fiber.NewError(fiber.StatusBadRequest, "PR is CANCELLED, cannot view line/PO status")
 	}
 
 	rows, err := h.db.Query(ctx, `
@@ -999,7 +962,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
                 po.po_no
             FROM purchase_order_line pol
             JOIN purchase_order po ON po.id = pol.po_id
-            JOIN supplier s        ON s.supplier_code = po.supplier_code
+            LEFT JOIN supplier s   ON s.id = po.supplier_id
             WHERE pol.mat_code = base.mat_code
               AND pol.status != 'CANCELLED'
               AND po.status   IN ('APPROVED','SENT','PARTIALLY_RECEIVED','RECEIVED')

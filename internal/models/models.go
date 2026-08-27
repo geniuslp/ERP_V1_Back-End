@@ -180,7 +180,6 @@ type CreateZoneRequest struct {
 // ─── Master: Supplier ────────────────────────────────────────────────────────
 
 type Supplier struct {
-	SupplierCode string    `json:"supplier_code" db:"supplier_code"`
 	SupplierName string    `json:"supplier_name" db:"supplier_name"`
 	TaxID        *string   `json:"tax_id,omitempty" db:"tax_id"`
 	Address      *string   `json:"address,omitempty" db:"address"`
@@ -193,7 +192,6 @@ type Supplier struct {
 }
 
 type CreateSupplierRequest struct {
-	SupplierCode string  `json:"supplier_code" validate:"required,max=20"`
 	SupplierName string  `json:"supplier_name" validate:"required,max=200"`
 	TaxID        *string `json:"tax_id,omitempty"`
 	Address      *string `json:"address,omitempty"`
@@ -401,7 +399,6 @@ type UpdateLocationReq struct {
 
 type SupplierFull struct {
 	Id                int       `json:"id"`
-	SupplierCode      string    `json:"supplier_code"`
 	SupplierName      string    `json:"supplier_name"`
 	SupplierShortName *string   `json:"supplier_short_name,omitempty"`
 	TaxID             *string   `json:"tax_id,omitempty"`
@@ -421,7 +418,6 @@ type SupplierFull struct {
 	UpdatedBy         *int64    `json:"updated_by,omitempty"`
 }
 type CreateSupplierReq struct {
-	SupplierCode string  `json:"supplier_code"`
 	SupplierName string  `json:"supplier_name"`
 	TaxID        *string `json:"tax_id,omitempty"`
 	Address      *string `json:"address,omitempty"`
@@ -444,6 +440,39 @@ type UpdateSupplierReq struct {
 	SalesPerson       *string `json:"sales_person,omitempty"`
 	Currency          *string `json:"currency,omitempty"`
 	PaymentTerms      *string `json:"payment_terms,omitempty"`
+}
+
+// BulkInsertSupplierLine is one supplier entry in a POST /supplier/bulk request.
+// supplier_name is the only required field; everything else is optional and
+// unvalidated. There is no supplier_code anymore — supplier.id (auto-increment
+// PK) is the only identifier, assigned by the DB on insert.
+type BulkInsertSupplierLine struct {
+	SupplierName      string  `json:"supplier_name"`
+	SupplierShortName *string `json:"supplier_short_name,omitempty"`
+	TaxID             *string `json:"tax_id,omitempty"`
+	Address           *string `json:"address,omitempty"`
+	ContactName       *string `json:"contact_name,omitempty"`
+	ContactPhone      *string `json:"contact_phone,omitempty"`
+	ContactEmail      *string `json:"contact_email,omitempty"`
+	OfficePhone       *string `json:"office_phone,omitempty"`
+	Fax               *string `json:"fax,omitempty"`
+	PaymentTerms      *string `json:"payment_terms,omitempty"`
+	Currency          *string `json:"currency,omitempty"`
+	SalesPerson       *string `json:"sales_person,omitempty"`
+}
+
+type BulkInsertSupplierRequest struct {
+	Suppliers []BulkInsertSupplierLine `json:"suppliers"`
+}
+
+type BulkInsertSupplierResultLine struct {
+	SupplierID   int64  `json:"supplier_id"`
+	SupplierName string `json:"supplier_name"`
+}
+
+type BulkInsertSupplierResponse struct {
+	Count     int                            `json:"count"`
+	Suppliers []BulkInsertSupplierResultLine `json:"suppliers"`
 }
 
 type SubgroupFull struct {
@@ -708,27 +737,33 @@ type CreateTransactionRequest struct {
 // ─── Purchase Request ─────────────────────────────────────────────────────────
 
 type PurchaseRequest struct {
-	PRID          int64     `json:"pr_id" db:"pr_id"`
-	PRNo          string    `json:"pr_no" db:"pr_no"`
-	PRDate        time.Time `json:"pr_date" db:"pr_date"`
-	RequestedBy   int64     `json:"requested_by" db:"requested_by"`
-	LocationText  string    `json:"location_text" db:"location_text"`
-	WarehouseCode *string   `json:"warehouse_code,omitempty" db:"warehouse_code"`
-	WarehouseName *string   `json:"warehouse_name,omitempty" db:"warehouse_name"`
-	ProjectCode   *string   `json:"project_code,omitempty" db:"project_code"`
-	RequiredDate  *string   `json:"required_date,omitempty" db:"required_date"`
-	Status        string    `json:"status" db:"status"`
-	Priority      string    `json:"priority" db:"priority"`
-	OrderType     string    `json:"order_type" db:"order_type"`
-	PRType        string    `json:"pr_type" db:"pr_type"`
-	JobCode       *string   `json:"job_code,omitempty" db:"job_code"`
-	Remarks       *string   `json:"remarks,omitempty" db:"remarks"`
-	CreatedAt     time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
-	MemoID        *int64    `json:"memo_id,omitempty" db:"memo_id"`
-	MemoNo        *string   `json:"memo_no,omitempty"`
-	MemoTitle     *string   `json:"memo_title,omitempty"`
-	Lines         []PRLine  `json:"lines,omitempty"`
+	PRID          int64         `json:"pr_id" db:"pr_id"`
+	PRNo          string        `json:"pr_no" db:"pr_no"`
+	PRDate        time.Time     `json:"pr_date" db:"pr_date"`
+	RequestedBy   int64         `json:"requested_by" db:"requested_by"`
+	LocationText  string        `json:"location_text" db:"location_text"`
+	WarehouseCode *string       `json:"warehouse_code,omitempty" db:"warehouse_code"`
+	WarehouseName *string       `json:"warehouse_name,omitempty" db:"warehouse_name"`
+	ProjectCode   *string       `json:"project_code,omitempty" db:"project_code"`
+	RequiredDate  *string       `json:"required_date,omitempty" db:"required_date"`
+	Status        string        `json:"status" db:"status"`
+	Priority      string        `json:"priority" db:"priority"`
+	OrderType     string        `json:"order_type" db:"order_type"`
+	PRType        string        `json:"pr_type" db:"pr_type"`
+	JobCode       *string       `json:"job_code,omitempty" db:"job_code"`
+	Remarks       *string       `json:"remarks,omitempty" db:"remarks"`
+	CreatedAt     time.Time     `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at" db:"updated_at"`
+	MemoID        *int64        `json:"memo_id,omitempty" db:"memo_id"`
+	MemoNo        *string       `json:"memo_no,omitempty"`
+	MemoTitle     *string       `json:"memo_title,omitempty"`
+	Lines         []PRLine      `json:"lines,omitempty"`
+	Attachments   PRAttachments `json:"attachments"`
+}
+
+type PRAttachments struct {
+	PR   []PRAttachment    `json:"pr"`
+	Memo *[]MemoAttachment `json:"memo,omitempty"`
 }
 
 type PRLine struct {
@@ -863,7 +898,7 @@ type PurchaseOrder struct {
 	POID             int64     `json:"po_id" db:"po_id"`
 	PONo             string    `json:"po_no" db:"po_no"`
 	PODate           time.Time `json:"po_date" db:"po_date"`
-	SupplierCode     string    `json:"supplier_code" db:"supplier_code"`
+	SupplierID       *int64    `json:"supplier_id,omitempty" db:"supplier_id"`
 	SupplierName     string    `json:"supplier_name,omitempty"`
 	PRID             *int64    `json:"pr_id,omitempty" db:"pr_id"`
 	PRNo             *string   `json:"pr_no,omitempty"`
@@ -900,42 +935,50 @@ type PurchaseOrder struct {
 	// RevisionRound is how many times this PO has been edited-and-resent for re-approval
 	// (COUNT of po_edit_log rows for this PO). 0 = original, never edited. po_no itself never
 	// changes; the frontend composes a display suffix like "#R2" from this when > 0.
-	RevisionRound int      `json:"revision_round"`
-	OfficePhone   *string  `json:"office_phone,omitempty"`
-	SalesPerson   *string  `json:"sales_person,omitempty"`
-	ContactEmail  *string  `json:"contact_email,omitempty"`
-	ContactPhone  *string  `json:"contact_phone,omitempty"`
-	Lines         []POLine `json:"lines,omitempty"`
+	RevisionRound int           `json:"revision_round"`
+	OfficePhone   *string       `json:"office_phone,omitempty"`
+	SalesPerson   *string       `json:"sales_person,omitempty"`
+	ContactEmail  *string       `json:"contact_email,omitempty"`
+	ContactPhone  *string       `json:"contact_phone,omitempty"`
+	Lines         []POLine      `json:"lines,omitempty"`
+	Attachments   POAttachments `json:"attachments"`
+}
+
+type POAttachments struct {
+	PO   []POAttachment    `json:"po"`
+	PR   *[]PRAttachment   `json:"pr,omitempty"`
+	Memo *[]MemoAttachment `json:"memo,omitempty"`
 }
 
 type POLine struct {
-	LineID          int64    `json:"line_id" db:"line_id"`
-	POID            int64    `json:"po_id" db:"po_id"`
-	LineNo          int      `json:"line_no" db:"line_no"`
-	MatCode         string   `json:"mat_code" db:"mat_code"`
-	PRLineID        *int64   `json:"pr_line_id,omitempty" db:"pr_line_id"`
-	QtyOrdered      float64  `json:"qty_ordered" db:"qty_ordered"`
-	QtyReceived     float64  `json:"qty_received" db:"qty_received"`
-	UnitPrice       float64  `json:"unit_price" db:"unit_price"`
-	DiscType        string   `json:"disc_type" db:"disc_type"`
-	Discount        float64  `json:"discount" db:"discount"`
-	LineDiscount    float64  `json:"line_discount" db:"line_discount"`
-	LineVAT         float64  `json:"line_vat" db:"line_vat"`
-	LineWHT         float64  `json:"line_wht" db:"line_wht"`
-	LineNet         float64  `json:"line_net" db:"line_net"`
-	WhtRate         *float64 `json:"wht_rate,omitempty" db:"wht_rate"`
-	Amount          float64  `json:"amount" db:"amount"`
-	Description     *string  `json:"description,omitempty" db:"description"`
-	Remarks         *string  `json:"remarks,omitempty" db:"remarks"`
-	Status          string   `json:"status" db:"status"`
-	MatName         *string  `json:"mat_name,omitempty"`
-	SpecDescription *string  `json:"spec,omitempty"`
-	BrandName       *string  `json:"brand,omitempty"`
-	CurrentStock    float64  `json:"current_stock"`
+	LineID            int64    `json:"line_id" db:"line_id"`
+	POID              int64    `json:"po_id" db:"po_id"`
+	LineNo            int      `json:"line_no" db:"line_no"`
+	MatCode           string   `json:"mat_code" db:"mat_code"`
+	PRLineID          *int64   `json:"pr_line_id,omitempty" db:"pr_line_id"`
+	QtyOrdered        float64  `json:"qty_ordered" db:"qty_ordered"`
+	QtyReceived       float64  `json:"qty_received" db:"qty_received"`
+	UnitPrice         float64  `json:"unit_price" db:"unit_price"`
+	DiscType          string   `json:"disc_type" db:"disc_type"`
+	Discount          float64  `json:"discount" db:"discount"`
+	LineDiscount      float64  `json:"line_discount" db:"line_discount"`
+	LineVAT           float64  `json:"line_vat" db:"line_vat"`
+	LineWHT           float64  `json:"line_wht" db:"line_wht"`
+	LineNet           float64  `json:"line_net" db:"line_net"`
+	WhtRate           *float64 `json:"wht_rate,omitempty" db:"wht_rate"`
+	Amount            float64  `json:"amount" db:"amount"`
+	Description       *string  `json:"description,omitempty" db:"description"`
+	Remarks           *string  `json:"remarks,omitempty" db:"remarks"`
+	Status            string   `json:"status" db:"status"`
+	MatName           *string  `json:"mat_name,omitempty"`
+	SpecDescription   *string  `json:"spec,omitempty"`
+	BrandName         *string  `json:"brand,omitempty"`
+	CurrentStock      float64  `json:"current_stock"`
+	PRLineQtyReserved *float64 `json:"pr_line_qty_reserved,omitempty"`
 }
 
 type CreatePORequest struct {
-	SupplierCode  string         `json:"supplier_code" validate:"required"`
+	SupplierID    int64          `json:"supplier_id" validate:"required"`
 	PRID          *int64         `json:"pr_id,omitempty"`
 	RFQID         *int64         `json:"rfq_id,omitempty"`
 	LocationText  string         `json:"location_text" validate:"required"`
@@ -984,7 +1027,7 @@ type UpdatePOLineRequest struct {
 // minus pr_id/rfq_id/status which cannot change post-approval) and requires a mandatory
 // reason for po_edit_log.
 type EditApprovedPORequest struct {
-	SupplierCode  string         `json:"supplier_code" validate:"required"`
+	SupplierID    int64          `json:"supplier_id" validate:"required"`
 	LocationText  string         `json:"location_text" validate:"required"`
 	ProjectCode   *string        `json:"project_code,omitempty"`
 	RequestedBy   *int64         `json:"requested_by,omitempty"`
@@ -993,6 +1036,10 @@ type EditApprovedPORequest struct {
 	ExpectedDate  *string        `json:"expected_date,omitempty"`
 	PaymentTerms  *string        `json:"payment_terms,omitempty"`
 	Remarks       *string        `json:"remarks,omitempty"`
+	UseDiscount   *bool          `json:"use_discount,omitempty"`
+	DiscountType  *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
+	UseVAT        *bool          `json:"use_vat,omitempty"`
+	UseWHT        *bool          `json:"use_wht,omitempty"`
 	Lines         []CreatePOLine `json:"lines" validate:"required,min=1,dive"`
 	Reason        string         `json:"reason" validate:"required"`
 }
@@ -1005,7 +1052,7 @@ type GRN struct {
 	GRNDate       time.Time `json:"grn_date" db:"grn_date"`
 	POID          int64     `json:"po_id" db:"po_id"`
 	WarehouseCode string    `json:"warehouse_code" db:"warehouse_code"`
-	SupplierCode  string    `json:"supplier_code" db:"supplier_code"`
+	SupplierID    *int64    `json:"supplier_id,omitempty" db:"supplier_id"`
 	DeliveryNote  *string   `json:"delivery_note,omitempty" db:"delivery_note"`
 	Status        string    `json:"status" db:"status"`
 	QualityStatus string    `json:"quality_status" db:"quality_status"`
@@ -1239,14 +1286,18 @@ type StatusUpdateRequest struct {
 // not Approve/Reject.
 
 type WorkOrder struct {
-	ID                      int64     `json:"id"`
-	WoNo                    string    `json:"wo_no"`
-	WoDate                  string    `json:"wo_date"`
-	EmployerName            string    `json:"employer_name"`
-	ProjectCode             *string   `json:"project_code"`
-	ProjectName             *string   `json:"project_name,omitempty"`
-	ProjectScopeText        *string   `json:"project_scope_text"`
-	SupplierCode            *string   `json:"supplier_code"`
+	ID               int64   `json:"id"`
+	WoNo             string  `json:"wo_no"`
+	WoDate           string  `json:"wo_date"`
+	EmployerName     string  `json:"employer_name"`
+	ProjectCode      *string `json:"project_code"`
+	ProjectName      *string `json:"project_name,omitempty"`
+	ProjectScopeText *string `json:"project_scope_text"`
+	SupplierCode     *string `json:"supplier_code"`
+	// SupplierID is an optional, decoupled link to supplier.id — unlike PO/GRN,
+	// Work Order's supplier is free text (supplier_code/name/address/phone below
+	// have no FK to the supplier table), so this stays nullable and non-authoritative.
+	SupplierID              *int64    `json:"supplier_id,omitempty"`
 	SupplierName            string    `json:"supplier_name"`
 	ContactPerson           *string   `json:"contact_person"`
 	SupplierAddress         *string   `json:"supplier_address"`
@@ -1312,6 +1363,7 @@ type CreateWorkOrderRequest struct {
 	ProjectCode         *string  `json:"project_code"`
 	ProjectScopeText    *string  `json:"project_scope_text"`
 	SupplierCode        *string  `json:"supplier_code"`
+	SupplierID          *int64   `json:"supplier_id,omitempty"`
 	SupplierName        string   `json:"supplier_name" validate:"required"`
 	ContactPerson       *string  `json:"contact_person"`
 	SupplierAddress     *string  `json:"supplier_address"`

@@ -42,7 +42,7 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 	ctx := context.Background()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT id, po_no, po_date::text, expected_date::text, supplier_code,
+		SELECT id, po_no, po_date::text, expected_date::text, supplier_id,
 		       COALESCE(warehouse_code, ''), status, status_receive, currency, COALESCE(net_amount, 0)
 		FROM purchase_order
 		WHERE po_no ILIKE '%' || $1 || '%'
@@ -59,7 +59,7 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 		PONo          string  `json:"po_no"`
 		PODate        string  `json:"po_date"`
 		ExpectedDate  *string `json:"expected_date"`
-		SupplierCode  string  `json:"supplier_code"`
+		SupplierID    *int64  `json:"supplier_id,omitempty"`
 		WarehouseCode string  `json:"warehouse_code"`
 		Status        string  `json:"status"`
 		StatusReceive string  `json:"status_receive"`
@@ -69,7 +69,7 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 	var results []poResp
 	for rows.Next() {
 		var p poResp
-		if err := rows.Scan(&p.POID, &p.PONo, &p.PODate, &p.ExpectedDate, &p.SupplierCode,
+		if err := rows.Scan(&p.POID, &p.PONo, &p.PODate, &p.ExpectedDate, &p.SupplierID,
 			&p.WarehouseCode, &p.Status, &p.StatusReceive, &p.Currency, &p.NetAmount); err != nil {
 			return err
 		}
@@ -94,7 +94,6 @@ type receiveGRNLine struct {
 type receiveGRNRequest struct {
 	POID          int64            `json:"po_id" validate:"required"`
 	WarehouseCode string           `json:"warehouse_code" validate:"required"`
-	SupplierCode  string           `json:"supplier_code" validate:"required"`
 	DeliveryNote  *string          `json:"delivery_note,omitempty"`
 	Lines         []receiveGRNLine `json:"lines" validate:"required,min=1,dive"`
 }
@@ -136,8 +135,8 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.POID == 0 || req.WarehouseCode == "" || req.SupplierCode == "" || len(req.Lines) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "po_id, warehouse_code, supplier_code, lines are required")
+	if req.POID == 0 || req.WarehouseCode == "" || len(req.Lines) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "po_id, warehouse_code, lines are required")
 	}
 	for _, l := range req.Lines {
 		if l.POLineID == 0 || l.MatCode == "" || l.AddQty <= 0 {
@@ -147,9 +146,20 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
+	var warehouseExists bool
+	if err := h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM warehouse WHERE warehouse_code=$1)`, req.WarehouseCode,
+	).Scan(&warehouseExists); err != nil {
+		return err
+	}
+	if !warehouseExists {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid warehouse_code")
+	}
+
 	var poStatus, poStatusReceive string
 	var poLocationCode *string
-	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, location_code FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus, &poStatusReceive, &poLocationCode); err != nil {
+	var supplierID *int64
+	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, location_code, supplier_id FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus, &poStatusReceive, &poLocationCode, &supplierID); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if poStatus != "APPROVED" {
@@ -157,6 +167,9 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 	}
 	if poStatusReceive != "NOT_SENT" && poStatusReceive != "SENT" && poStatusReceive != "PARTIALLY_RECEIVED" {
 		return fiber.NewError(fiber.StatusBadRequest, "PO is not in a receivable status_receive (NOT_SENT/SENT/PARTIALLY_RECEIVED), current: "+poStatusReceive)
+	}
+	if supplierID == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "PO has no supplier_id set — cannot create a goods receipt against it")
 	}
 
 	grnNo, err := generateGRNNo(ctx, h.db)
@@ -172,10 +185,10 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	var grnID int64
 	err = tx.QueryRow(ctx, `
-		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_code, delivery_note, status, quality_status, received_by)
+		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, status, quality_status, received_by)
 		VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, 'CONFIRMED', 'PENDING', $6)
 		RETURNING id`,
-		grnNo, req.POID, req.WarehouseCode, req.SupplierCode, req.DeliveryNote, claims.UserID,
+		grnNo, req.POID, req.WarehouseCode, *supplierID, req.DeliveryNote, claims.UserID,
 	).Scan(&grnID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create GRN: "+err.Error())
@@ -387,7 +400,7 @@ func (h *GoodsReceiptHandler) Score(c *fiber.Ctx) error {
 // @Produce      json
 // @Param        page           query  int     false  "Page number (default 1)"
 // @Param        limit          query  int     false  "Page size (default 20)"
-// @Param        supplier_code  query  string  false  "Filter by supplier code"
+// @Param        supplier_id    query  int     false  "Filter by supplier id"
 // @Param        date_from      query  string  false  "Filter grn_date >= (YYYY-MM-DD)"
 // @Param        date_to        query  string  false  "Filter grn_date <= (YYYY-MM-DD)"
 // @Success      200  {object}  fiber.Map
@@ -401,7 +414,7 @@ func (h *GoodsReceiptHandler) History(c *fiber.Ctx) error {
 	if limit < 1 {
 		limit = 20
 	}
-	supplierCode := c.Query("supplier_code")
+	supplierID := c.Query("supplier_id")
 	dateFrom := c.Query("date_from")
 	dateTo := c.Query("date_to")
 
@@ -409,9 +422,9 @@ func (h *GoodsReceiptHandler) History(c *fiber.Ctx) error {
 
 	where := "WHERE 1=1"
 	args := []any{}
-	if supplierCode != "" {
-		args = append(args, supplierCode)
-		where += fmt.Sprintf(" AND g.supplier_code = $%d", len(args))
+	if supplierID != "" {
+		args = append(args, supplierID)
+		where += fmt.Sprintf(" AND g.supplier_id = $%d", len(args))
 	}
 	if dateFrom != "" {
 		args = append(args, dateFrom)
@@ -431,7 +444,7 @@ func (h *GoodsReceiptHandler) History(c *fiber.Ctx) error {
 	args = append(args, limit, (page-1)*limit)
 	listQuery := fmt.Sprintf(`
 		SELECT
-		    g.id, g.grn_no, g.grn_date::text, po.po_no, g.supplier_code, g.warehouse_code, g.status,
+		    g.id, g.grn_no, g.grn_date::text, po.po_no, g.supplier_id, g.warehouse_code, g.status,
 		    g.score_quality, g.score_quantity, g.score_ontime, g.score_notes,
 		    COALESCE(u.full_name, '') AS received_by_name,
 		    COALESCE(gl.line_count, 0) AS line_count,
@@ -458,7 +471,7 @@ func (h *GoodsReceiptHandler) History(c *fiber.Ctx) error {
 		GRNNo            string  `json:"grn_no"`
 		GRNDate          string  `json:"grn_date"`
 		PONo             *string `json:"po_no"`
-		SupplierCode     string  `json:"supplier_code"`
+		SupplierID       *int64  `json:"supplier_id,omitempty"`
 		WarehouseCode    string  `json:"warehouse_code"`
 		Status           string  `json:"status"`
 		ScoreQuality     *int    `json:"score_quality"`
@@ -472,7 +485,7 @@ func (h *GoodsReceiptHandler) History(c *fiber.Ctx) error {
 	var results []historyResp
 	for rows.Next() {
 		var r historyResp
-		if err := rows.Scan(&r.GRNID, &r.GRNNo, &r.GRNDate, &r.PONo, &r.SupplierCode, &r.WarehouseCode, &r.Status,
+		if err := rows.Scan(&r.GRNID, &r.GRNNo, &r.GRNDate, &r.PONo, &r.SupplierID, &r.WarehouseCode, &r.Status,
 			&r.ScoreQuality, &r.ScoreQuantity, &r.ScoreOntime, &r.ScoreNotes,
 			&r.ReceivedByName, &r.LineCount, &r.TotalQtyReceived); err != nil {
 			return err

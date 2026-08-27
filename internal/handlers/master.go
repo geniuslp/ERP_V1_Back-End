@@ -1156,9 +1156,9 @@ func (h *MasterHandler) ListZones(c *fiber.Ctx) error {
 func (h *MasterHandler) ListSuppliers(c *fiber.Ctx) error {
 	q := "%" + c.Query("q") + "%"
 	rows, err := h.db.Query(context.Background(), `
-		SELECT supplier_code, supplier_name, tax_id, address, contact_name, contact_phone, contact_email, payment_terms, is_active, created_at
+		SELECT supplier_name, tax_id, address, contact_name, contact_phone, contact_email, payment_terms, is_active, created_at
 		FROM supplier
-		WHERE is_active=true AND (supplier_name ILIKE $1 OR supplier_code ILIKE $1)
+		WHERE is_active=true AND supplier_name ILIKE $1
 		ORDER BY supplier_name`, q)
 	if err != nil {
 		return err
@@ -1167,7 +1167,7 @@ func (h *MasterHandler) ListSuppliers(c *fiber.Ctx) error {
 	var items []models.Supplier
 	for rows.Next() {
 		var s models.Supplier
-		rows.Scan(&s.SupplierCode, &s.SupplierName, &s.TaxID, &s.Address,
+		rows.Scan(&s.SupplierName, &s.TaxID, &s.Address,
 			&s.ContactName, &s.ContactPhone, &s.ContactEmail, &s.PaymentTerms, &s.IsActive, &s.CreatedAt)
 		items = append(items, s)
 	}
@@ -1189,12 +1189,12 @@ func (h *MasterHandler) CreateSupplier(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
 	_, err := h.db.Exec(context.Background(), `
-		INSERT INTO supplier (supplier_code, supplier_name, tax_id, address, contact_name, contact_phone, contact_email, payment_terms)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		req.SupplierCode, req.SupplierName, req.TaxID, req.Address,
+		INSERT INTO supplier (supplier_name, tax_id, address, contact_name, contact_phone, contact_email, payment_terms)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		req.SupplierName, req.TaxID, req.Address,
 		req.ContactName, req.ContactPhone, req.ContactEmail, req.PaymentTerms)
 	if err != nil {
-		return fiber.NewError(fiber.StatusConflict, "supplier code already exists")
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "message": "supplier created"})
 }

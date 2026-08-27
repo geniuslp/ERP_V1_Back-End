@@ -320,3 +320,32 @@ $env:PATH += ";$env:GOPATH\bin"
 - ใช้ `$env:PATH +=` แทน `export PATH=`
 - path separator ใช้ `\` แต่ใน Go code ใช้ `/` ได้ปกติ
 - PowerShell รัน `.exe` ต้องใส่ `&` นำหน้า เช่น `& "C:\Program Files\PostgreSQL\18\bin\psql.exe"`
+
+---
+### Creating PO line from PR line (split ordering)
+เวลาสร้าง PO line ที่อ้าง `pr_line_id` ต้องทำตามนี้เสมอ (รองรับแบ่ง PR line เดียวเป็นหลาย PO):
+
+```go
+// 1. ดึง remaining จาก PR line (ไม่ใช่ qty_requested เฉยๆ)
+var qtyRequested, qtyOrdered float64
+tx.QueryRow(ctx,
+    `SELECT qty_requested, qty_ordered FROM purchase_request_line WHERE id=$1 FOR UPDATE`,
+    prLineID).Scan(&qtyRequested, &qtyOrdered)
+
+remaining := qtyRequested - qtyOrdered
+if req.Qty > remaining {
+    return fiber.NewError(fiber.StatusBadRequest,
+        fmt.Sprintf("qty exceeds remaining (%.4f) for this PR line", remaining))
+}
+
+// 2. insert PO line (อ้าง pr_line_id เดิมได้ซ้ำจากหลาย PO)
+tx.Exec(ctx, `INSERT INTO purchase_order_line
+    (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, ...)
+    VALUES ($1,$2,$3,$4,$5,$6,...)`, poID, lineNo, matCode, prLineID, req.Qty, unitPrice)
+
+// 3. accumulate qty_ordered บน PR line (ห้าม overwrite)
+tx.Exec(ctx, `UPDATE purchase_request_line
+    SET qty_ordered = qty_ordered + $1, updated_at = NOW() WHERE id=$2`,
+    req.Qty, prLineID)
+```
+⚠️ ใช้ `FOR UPDATE` ตอน SELECT PR line กัน race condition เวลามีคนสร้าง PO จาก PR เดียวกันพร้อมกัน

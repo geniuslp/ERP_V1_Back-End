@@ -624,3 +624,30 @@ work_order_line table เต็ม) — ต้องรันก่อนโค�
   `work_order_line`, `work_order_status_log`, `work_order_attachment` — ⚠️ ต้องรัน
   `work_order_line_items_schema.sql` ก่อน ไม่งั้น Create/Get จะ error เพราะคอลัมน์/ตารางยังไม่มีจริง
 - [ ] `migrations/001_master_ddl.sql` ล้าหลังกว่า schema จริงมาก — ควร dump migration ใหม่จาก ERP_V12 แล้วแยกเป็นไฟล์ 00X ตาม module
+
+---
+## 🧭 Session learnings (2026-08-24) — PR → PO split ordering (แบ่ง PR line เป็นหลาย PO)
+
+### 1. Design เดิมรองรับอยู่แล้ว — ไม่ต้องแก้ schema
+`purchase_order_line.pr_line_id` เป็น nullable FK แบบไม่มี unique constraint → **1 PR line
+ผูกกับหลาย PO line ได้** (คนละ PO ก็ได้) นี่คือกลไกที่ทำให้แบ่งสั่งซื้อ PR line เดียวกับหลาย
+supplier/หลายรอบได้ (เช่น PR 100 ชิ้น → PO ใบแรกร้าน A 50 ชิ้น, PO ใบสองร้าน B 50 ชิ้น)
+
+### 2. `purchase_request_line.qty_ordered` = ยอดสะสมจากทุก PO ที่อ้างถึง line นี้
+ไม่ใช่ qty ของ PO ใบล่าสุด — ต้อง `qty_ordered = qty_ordered + $delta` (accumulate) ทุกครั้งที่
+สร้าง/แก้ PO line ที่อ้าง `pr_line_id` นี้ ห้าม overwrite ตรงๆ
+
+### 3. ต้อง validate ไม่ให้สั่งเกิน remaining ตอนสร้าง PO line
+คำนวณ `remaining = pr_line.qty_requested - pr_line.qty_ordered` **ตอน query PR line มาแสดงในหน้า
+สร้าง PO** (ไม่ใช่ qty_requested เฉยๆ) และ validate ฝั่ง handler อีกชั้นตอน submit ว่า
+`qty_ordered (PO line ใหม่) <= remaining` — กันเคส 2 คนเปิดหน้าสร้าง PO จาก PR เดียวกันพร้อมกัน
+แล้วสั่งเกินรวมกัน (race condition เดิมมีความเสี่ยงแบบเดียวกับ over-receive ฝั่ง GRN ที่บันทึกไว้
+ในหัวข้อ 2026-07-27)
+
+### 4. อัปเดต qty_ordered ต้องอยู่ใน transaction เดียวกับการ insert PO line
+Pattern เดียวกับ `inventory.qty_on_hand` ใน `SKILL.md` — insert `purchase_order_line` +
+update `purchase_request_line.qty_ordered` ต้องอยู่ใน tx เดียวกัน ถ้า fail ต้อง rollback ทั้งคู่
+
+### 5. PR line status เมื่อสั่งครบ/ไม่ครบ
+`qty_ordered >= qty_requested` → PR line ถือว่าสั่งครบ (ปิดไม่ให้เลือกมาสร้าง PO ซ้ำได้อีก)
+ยังไม่ครบ → ยังต้องโผล่ในรายการ "PR line ที่ยังสั่งได้" พร้อมโชว์ remaining ที่เหลือ

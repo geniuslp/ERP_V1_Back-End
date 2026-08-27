@@ -41,9 +41,9 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 	}
 
 	// Get supplier from PO
-	var supplierCode string
+	var supplierID *int64
 	if err := h.db.QueryRow(context.Background(),
-		`SELECT supplier_code FROM purchase_order WHERE id=$1`, req.POID).Scan(&supplierCode); err != nil {
+		`SELECT supplier_id FROM purchase_order WHERE id=$1`, req.POID).Scan(&supplierID); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "PO not found")
 	}
 
@@ -65,10 +65,10 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 
 	var grnID int64
 	err := tx.QueryRow(context.Background(), `
-		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_code, delivery_note, status, quality_status, received_by, remarks)
+		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, status, quality_status, received_by, remarks)
 		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,'DRAFT','PENDING',$6,$7)
 		RETURNING id`,
-		grnNo, req.POID, req.WarehouseCode, supplierCode, req.DeliveryNote, claims.UserID, req.Remarks,
+		grnNo, req.POID, req.WarehouseCode, supplierID, req.DeliveryNote, claims.UserID, req.Remarks,
 	).Scan(&grnID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create GRN")
@@ -182,11 +182,11 @@ func (h *GRNHandler) List(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(context.Background(), `
 		SELECT g.id, g.grn_no, g.grn_date, g.po_id, po.po_no, g.warehouse_code,
-		       g.supplier_code, s.supplier_name, g.status, g.quality_status,
+		       g.supplier_id, s.supplier_name, g.status, g.quality_status,
 		       u.full_name AS received_by, g.created_at
 		FROM grn g
 		JOIN purchase_order po ON po.id = g.po_id
-		JOIN supplier s ON s.supplier_code = g.supplier_code
+		LEFT JOIN supplier s ON s.id = g.supplier_id
 		JOIN users u ON u.id = g.received_by
 		ORDER BY g.created_at DESC LIMIT $1 OFFSET $2`, size, offset)
 	if err != nil {
@@ -201,8 +201,8 @@ func (h *GRNHandler) List(c *fiber.Ctx) error {
 		POID          int64     `json:"po_id"`
 		PONo          string    `json:"po_no"`
 		WarehouseCode string    `json:"warehouse_code"`
-		SupplierCode  string    `json:"supplier_code"`
-		SupplierName  string    `json:"supplier_name"`
+		SupplierID    *int64    `json:"supplier_id,omitempty"`
+		SupplierName  *string   `json:"supplier_name,omitempty"`
 		Status        string    `json:"status"`
 		QualityStatus string    `json:"quality_status"`
 		ReceivedBy    string    `json:"received_by"`
@@ -212,7 +212,7 @@ func (h *GRNHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		var r GRNRow
 		rows.Scan(&r.GRNID, &r.GRNNo, &r.GRNDate, &r.POID, &r.PONo, &r.WarehouseCode,
-			&r.SupplierCode, &r.SupplierName, &r.Status, &r.QualityStatus, &r.ReceivedBy, &r.CreatedAt)
+			&r.SupplierID, &r.SupplierName, &r.Status, &r.QualityStatus, &r.ReceivedBy, &r.CreatedAt)
 		items = append(items, r)
 	}
 

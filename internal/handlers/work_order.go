@@ -120,7 +120,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			entered_by, entered_at, section_head_id, authorized_by, remarks,
 			use_discount, discount_type, use_vat, use_wht,
 			total_amount, discount_amount, vat_amount, wht_amount, net_amount,
-			created_by, updated_by
+			created_by, updated_by, supplier_id
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -132,7 +132,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			$30,NOW(),$31,$32,$33,
 			$34,$35,$36,$37,
 			$38,$39,$40,$41,$42,
-			$30,$30
+			$30,$30,$43
 		) RETURNING id`,
 		woNo, woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
 		req.SupplierCode, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
@@ -144,6 +144,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		claims.UserID, req.SectionHeadID, req.AuthorizedBy, req.Remarks,
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
+		req.SupplierID,
 	).Scan(&woID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "insert error: "+err.Error())
@@ -183,7 +184,8 @@ const workOrderSelectCols = `
 	wo.authorized_by, au.full_name, wo.subcontractor_signed_name, wo.remarks,
 	wo.created_at, wo.updated_at,
 	wo.use_discount, wo.discount_type, wo.use_vat, wo.use_wht,
-	wo.total_amount, wo.discount_amount, wo.vat_amount, wo.wht_amount, wo.net_amount`
+	wo.total_amount, wo.discount_amount, wo.vat_amount, wo.wht_amount, wo.net_amount,
+	wo.supplier_id`
 
 const workOrderJoins = `
 	FROM work_order wo
@@ -208,6 +210,7 @@ func scanWorkOrder(row interface{ Scan(dest ...any) error }) (*models.WorkOrder,
 		&w.CreatedAt, &w.UpdatedAt,
 		&w.UseDiscount, &w.DiscountType, &w.UseVAT, &w.UseWHT,
 		&w.TotalAmount, &w.DiscountAmount, &w.VatAmount, &w.WhtAmount, &w.NetAmount,
+		&w.SupplierID,
 	)
 	if err != nil {
 		return nil, err
@@ -659,7 +662,8 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 			net_amount           = $40,
 			status               = $41,
 			updated_at           = NOW(),
-			updated_by           = $42
+			updated_by           = $42,
+			supplier_id          = $44
 		WHERE id = $43`,
 		woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
 		req.SupplierCode, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
@@ -670,7 +674,7 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 		req.RefNo, req.OtherTerms, req.SectionHeadID, req.AuthorizedBy, req.Remarks,
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
-		newStatus, claims.UserID, id,
+		newStatus, claims.UserID, id, req.SupplierID,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "update error: "+err.Error())
 	}

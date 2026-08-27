@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"erp-api/internal/middleware"
@@ -445,20 +447,43 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
 	ctx := context.Background()
 
+	var currentStatus string
+	if err := h.db.QueryRow(ctx, `SELECT status FROM public.memo WHERE id=$1`, id).Scan(&currentStatus); err != nil {
+		if err == pgx.ErrNoRows {
+			return fiber.NewError(fiber.StatusNotFound, "memo not found")
+		}
+		return err
+	}
+	if currentStatus == "APPROVED" || currentStatus == "CANCELLED" {
+		return fiber.NewError(fiber.StatusBadRequest, "cannot edit memo in this status")
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	result, err := tx.Exec(ctx, `
-		UPDATE public.memo
-		SET title=$1, project_code=$2, requested_by=$3, approver_id=$4,
-		    department=$5, delivery_location=$6, note=$7, updated_by=$8, updated_at=NOW()
-		WHERE id=$9`,
-		req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
-		req.Department, req.DeliveryLocation, req.Note, claims.UserID, id,
-	)
+	var result pgconn.CommandTag
+	if currentStatus == "PENDING_APPROVAL" {
+		result, err = tx.Exec(ctx, `
+			UPDATE public.memo
+			SET title=$1, project_code=$2, requested_by=$3,
+			    department=$4, delivery_location=$5, note=$6, updated_by=$7, updated_at=NOW()
+			WHERE id=$8`,
+			req.Title, req.ProjectCode, req.RequestedBy,
+			req.Department, req.DeliveryLocation, req.Note, claims.UserID, id,
+		)
+	} else {
+		result, err = tx.Exec(ctx, `
+			UPDATE public.memo
+			SET title=$1, project_code=$2, requested_by=$3, approver_id=$4,
+			    department=$5, delivery_location=$6, note=$7, updated_by=$8, updated_at=NOW()
+			WHERE id=$9`,
+			req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
+			req.Department, req.DeliveryLocation, req.Note, claims.UserID, id,
+		)
+	}
 	if err != nil {
 		return err
 	}

@@ -40,13 +40,114 @@ func normalizeDescription(d *string) (*string, error) {
 	return &s, nil
 }
 
+// poLinePRRef is the minimal shape needed to reconcile purchase_request_line.qty_ordered
+// against a set of purchase_order_line rows (existing or proposed).
+type poLinePRRef struct {
+	PRLineID *int64
+	Qty      float64
+}
+
+// reconcilePRLineQty accumulates purchase_request_line.qty_ordered by the net delta between
+// oldLines (what was on the PO before this save, empty for a brand-new PO) and newLines (what
+// the PO line set is being saved as now), grouped by pr_line_id. A pr_line_id present on both
+// sides only moves by the difference — e.g. 50 -> 60 on the same line only consumes 10 more of
+// the PR line's remaining qty, it doesn't re-consume all 60.
+//
+// Touched PR lines are locked with SELECT ... FOR UPDATE first so two concurrent PO saves
+// against the same PR line can't both pass the remaining check and jointly over-order it. Any
+// net increase is rejected with 400 if it would push qty_ordered past qty_to_order; net
+// decreases (or a PO line's pr_line_id being removed/reduced) are always allowed. Must be
+// called inside the same transaction as the purchase_order_line insert/delete it reconciles.
+//
+// The bound check compares this call's NEW TOTAL for a pr_line_id (newSum) against the max it
+// could hold (qty_to_order minus every OTHER PO's claim, i.e. current qty_ordered net of this
+// call's own OLD contribution) — not the raw delta against a raw remaining. Comparing delta
+// against (qty_to_order - qty_ordered) directly double-counts this call's own prior contribution
+// as already "spent," which falsely blocks (or, in an earlier broken attempt at this fix, falsely
+// allows) growing a PO line that already holds part of a PR line shared with other POs.
+func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poLinePRRef) error {
+	deltas := map[int64]float64{}
+	oldSum := map[int64]float64{}
+	newSum := map[int64]float64{}
+	for _, l := range oldLines {
+		if l.PRLineID != nil {
+			deltas[*l.PRLineID] -= l.Qty
+			oldSum[*l.PRLineID] += l.Qty
+		}
+	}
+	for _, l := range newLines {
+		if l.PRLineID != nil {
+			deltas[*l.PRLineID] += l.Qty
+			newSum[*l.PRLineID] += l.Qty
+		}
+	}
+	if len(deltas) == 0 {
+		return nil
+	}
+
+	prLineIDs := make([]int64, 0, len(deltas))
+	for id := range deltas {
+		prLineIDs = append(prLineIDs, id)
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT id, qty_to_order, qty_ordered FROM purchase_request_line
+		WHERE id = ANY($1)
+		FOR UPDATE`, prLineIDs)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "lock error: "+err.Error())
+	}
+	current := map[int64][2]float64{}
+	for rows.Next() {
+		var id int64
+		var qtyReq, qtyOrd float64
+		if err := rows.Scan(&id, &qtyReq, &qtyOrd); err != nil {
+			rows.Close()
+			return err
+		}
+		current[id] = [2]float64{qtyReq, qtyOrd}
+	}
+	rows.Close()
+
+	for _, id := range prLineIDs {
+		vals, ok := current[id]
+		if !ok {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("pr_line_id %d not found", id))
+		}
+		delta := deltas[id]
+		if delta > 0 {
+			othersClaim := vals[1] - oldSum[id]
+			maxAllowedForMe := vals[0] - othersClaim
+			newTotalForMe := newSum[id]
+			if newTotalForMe-maxAllowedForMe > 1e-9 {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+					"pr_line_id %d: qty exceeds remaining (requesting %.4f more, only %.4f remaining)",
+					id, delta, maxAllowedForMe-oldSum[id]))
+			}
+		}
+	}
+
+	for id, delta := range deltas {
+		if delta == 0 {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE purchase_request_line SET qty_ordered = qty_ordered + $1 WHERE id = $2`,
+			delta, id,
+		); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "pr line update error: "+err.Error())
+		}
+	}
+	return nil
+}
+
 // ListPO godoc
 // @Summary      List purchase orders
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
 // @Param        status    query  string  false  "status filter"
-// @Param        supplier  query  string  false  "supplier_code filter"
+// @Param        supplier  query  string  false  "supplier_id filter"
 // @Param        my        query  bool    false  "when true, only POs created by the current user"
 // @Param        page      query  int     false  "page"  default(1)
 // @Param        page_size query  int     false  "page_size"  default(20)
@@ -57,15 +158,24 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	size := min(c.QueryInt("page_size", 20), 100)
 	offset := (page - 1) * size
 
-	var where string
+	var conditions []string
 	var args []any
 	if c.QueryBool("my", false) {
 		claims := middleware.GetClaims(c)
 		if claims == nil {
 			return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 		}
-		where = "WHERE po.created_by = $1"
 		args = append(args, claims.UserID)
+		conditions = append(conditions, fmt.Sprintf("po.created_by = $%d", len(args)))
+	}
+	if v := strings.TrimSpace(c.Query("status")); v != "" {
+		args = append(args, v)
+		conditions = append(conditions, fmt.Sprintf("po.status = $%d", len(args)))
+	}
+
+	var where string
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
 	var total int64
@@ -73,14 +183,14 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 
 	args = append(args, size, offset)
 	rows, err := h.db.Query(context.Background(), `
-		SELECT po.id, po.po_no, po.po_date, po.supplier_code, s.supplier_name,
+		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name,
 		       po.status, po.status_receive, po.order_type, po.work_type, po.currency, po.total_amount, po.vat_amount, po.net_amount,
 		       po.expected_date::text, po.created_at, po.updated_at, po.project_code,
 		       COALESCE(cu.full_name, '') AS created_by_name,
 		       COALESCE(uu.full_name, '') AS updated_by_name,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round
 		FROM purchase_order po
-		LEFT JOIN supplier s ON s.supplier_code = po.supplier_code
+		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN users cu ON cu.id = po.created_by
 		LEFT JOIN users uu ON uu.id = po.updated_by
 		`+where+`
@@ -94,7 +204,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		POID          int64     `json:"po_id"`
 		PONo          string    `json:"po_no"`
 		PODate        time.Time `json:"po_date"`
-		SupplierCode  string    `json:"supplier_code"`
+		SupplierID    *int64    `json:"supplier_id,omitempty"`
 		SupplierName  *string   `json:"supplier_name,omitempty"`
 		Status        string    `json:"status"`
 		StatusReceive string    `json:"status_receive"`
@@ -120,7 +230,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	var items []PORow
 	for rows.Next() {
 		var r PORow
-		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierCode, &r.SupplierName,
+		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.SupplierName,
 			&r.Status, &r.StatusReceive, &r.OrderType, &r.WorkType, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode,
 			&r.CreatedByName, &r.UpdatedByName, &r.RevisionRound); err != nil {
@@ -223,12 +333,12 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 
 	poArgs := append(append([]any{}, args...), size, offset)
 	poRows, err := h.db.Query(context.Background(), `
-		SELECT po.id, po.po_no, po.po_date, po.supplier_code, s.supplier_name, s.contact_phone,
+		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name, s.contact_phone,
 		       COALESCE(u.full_name, ''), po.project_code, po.status,
 		       po.total_amount, po.discount_amount, po.vat_amount, po.net_amount, po.currency
 		FROM purchase_order po
 		LEFT JOIN users    u ON u.id = po.requested_by
-		LEFT JOIN supplier s ON s.supplier_code = po.supplier_code
+		LEFT JOIN supplier s ON s.id = po.supplier_id
 		`+where+`
 		ORDER BY po.po_date DESC, po.po_no DESC
 		LIMIT $`+strconv.Itoa(len(poArgs)-1)+` OFFSET $`+strconv.Itoa(len(poArgs)), poArgs...)
@@ -249,7 +359,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		POID           int64         `json:"po_id"`
 		PONo           string        `json:"po_no"`
 		PODate         time.Time     `json:"po_date"`
-		SupplierCode   string        `json:"supplier_code"`
+		SupplierID     *int64        `json:"supplier_id,omitempty"`
 		SupplierName   *string       `json:"supplier_name,omitempty"`
 		ContactPhone   *string       `json:"contact_phone,omitempty"`
 		RequestedBy    string        `json:"requested_by"`
@@ -268,7 +378,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 	groupByID := make(map[int64]*POGroup, size)
 	for poRows.Next() {
 		var g POGroup
-		if err := poRows.Scan(&g.POID, &g.PONo, &g.PODate, &g.SupplierCode, &g.SupplierName, &g.ContactPhone,
+		if err := poRows.Scan(&g.POID, &g.PONo, &g.PODate, &g.SupplierID, &g.SupplierName, &g.ContactPhone,
 			&g.RequestedBy, &g.ProjectCode, &g.Status,
 			&g.TotalAmount, &g.DiscountAmount, &g.VATAmount, &g.NetAmount, &g.Currency); err != nil {
 			return err
@@ -342,7 +452,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 func (h *POHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 	row := h.db.QueryRow(context.Background(), `
-		SELECT po.id, po.po_no, po.po_date, po.supplier_code, po.pr_id, po.rfq_id, po.ref,
+		SELECT po.id, po.po_no, po.po_date, po.supplier_id, po.pr_id, po.rfq_id, po.ref,
 		       po.location_text, po.warehouse_code, po.project_code,
 		       po.requested_by, u.full_name, po.approver_id,
 		       po.currency, po.total_amount, po.vat_amount, po.net_amount,
@@ -358,14 +468,14 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
 		FROM purchase_order po
 		LEFT JOIN users u ON u.id = po.requested_by
-		LEFT JOIN supplier s ON s.supplier_code = po.supplier_code
+		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		LEFT JOIN warehouse w ON w.warehouse_code = po.warehouse_code
 		WHERE po.id = $1`, id)
 
 	var po models.PurchaseOrder
 	var requestedByName *string
-	if err := row.Scan(&po.POID, &po.PONo, &po.PODate, &po.SupplierCode, &po.PRID,
+	if err := row.Scan(&po.POID, &po.PONo, &po.PODate, &po.SupplierID, &po.PRID,
 		&po.RFQID, &po.Ref, &po.LocationText, &po.WarehouseCode, &po.ProjectCode,
 		&po.RequestedBy, &requestedByName, &po.ApproverID,
 		&po.Currency, &po.TotalAmount, &po.VATAmount, &po.NetAmount,
@@ -391,13 +501,14 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       pol.unit_price, pol.disc_type, pol.discount, pol.line_discount, pol.line_vat, pol.line_wht,
 		       pol.line_net, pol.wht_rate, pol.amount, pol.description, pol.remarks, pol.status,
 		       mn.mat_name, ss.spec_description, b.brand_name,
-		       COALESCE(si.qty, 0)
+		       COALESCE(si.qty, 0), prl.qty_reserved
 		FROM purchase_order_line pol
 		LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
 		LEFT JOIN mat_name      mn ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size     ss ON ss.id = mc.spec_id
 		LEFT JOIN brand         b  ON b.id  = mc.brand_id
 		LEFT JOIN stock_item    si  ON si.mat_code = pol.mat_code AND si.warehouse_code = $2
+		LEFT JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
 		WHERE pol.po_id=$1 ORDER BY pol.line_no`, id, po.WarehouseCode)
 	if rows != nil {
 		defer rows.Close()
@@ -406,8 +517,72 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 			rows.Scan(&l.LineID, &l.POID, &l.LineNo, &l.MatCode, &l.PRLineID,
 				&l.QtyOrdered, &l.QtyReceived, &l.UnitPrice, &l.DiscType, &l.Discount, &l.LineDiscount,
 				&l.LineVAT, &l.LineWHT, &l.LineNet, &l.WhtRate, &l.Amount, &l.Description, &l.Remarks, &l.Status,
-				&l.MatName, &l.SpecDescription, &l.BrandName, &l.CurrentStock)
+				&l.MatName, &l.SpecDescription, &l.BrandName, &l.CurrentStock, &l.PRLineQtyReserved)
 			po.Lines = append(po.Lines, l)
+		}
+	}
+
+	poAttRows, err := h.db.Query(context.Background(), `
+		SELECT id, po_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at
+		FROM po_attachment WHERE po_id=$1 AND source_pr_attachment_id IS NULL
+		ORDER BY uploaded_at`, id)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to fetch po attachments: "+err.Error())
+	}
+	poAtts := []models.POAttachment{}
+	for poAttRows.Next() {
+		var a models.POAttachment
+		if err := poAttRows.Scan(&a.ID, &a.POID, &a.FileName, &a.FilePath, &a.FileSize, &a.FileType, &a.UploadedBy, &a.UploadedAt); err != nil {
+			poAttRows.Close()
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan po attachments: "+err.Error())
+		}
+		poAtts = append(poAtts, a)
+	}
+	poAttRows.Close()
+	po.Attachments.PO = poAtts
+
+	if po.PRID != nil {
+		prAttRows, err := h.db.Query(context.Background(), `
+			SELECT id, pr_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at
+			FROM pr_attachment WHERE pr_id=$1 ORDER BY uploaded_at`, *po.PRID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to fetch pr attachments: "+err.Error())
+		}
+		prAtts := []models.PRAttachment{}
+		for prAttRows.Next() {
+			var a models.PRAttachment
+			if err := prAttRows.Scan(&a.ID, &a.PRID, &a.FileName, &a.FilePath, &a.FileSize, &a.FileType, &a.UploadedBy, &a.UploadedAt); err != nil {
+				prAttRows.Close()
+				return fiber.NewError(fiber.StatusInternalServerError, "failed to scan pr attachments: "+err.Error())
+			}
+			prAtts = append(prAtts, a)
+		}
+		prAttRows.Close()
+		po.Attachments.PR = &prAtts
+
+		var memoID *int64
+		if err := h.db.QueryRow(context.Background(), `SELECT memo_id FROM purchase_request WHERE id=$1`, *po.PRID).Scan(&memoID); err != nil && err != pgx.ErrNoRows {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to fetch pr memo_id: "+err.Error())
+		}
+
+		if memoID != nil {
+			memoAttRows, err := h.db.Query(context.Background(), `
+				SELECT id, memo_id, file_path, file_name, file_size, file_type, uploaded_by, uploaded_at
+				FROM memo_attachment WHERE memo_id=$1 ORDER BY uploaded_at`, *memoID)
+			if err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "failed to fetch memo attachments: "+err.Error())
+			}
+			memoAtts := []models.MemoAttachment{}
+			for memoAttRows.Next() {
+				var a models.MemoAttachment
+				if err := memoAttRows.Scan(&a.ID, &a.MemoID, &a.FilePath, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.UploadedAt); err != nil {
+					memoAttRows.Close()
+					return fiber.NewError(fiber.StatusInternalServerError, "failed to scan memo attachments: "+err.Error())
+				}
+				memoAtts = append(memoAtts, a)
+			}
+			memoAttRows.Close()
+			po.Attachments.Memo = &memoAtts
 		}
 	}
 
@@ -497,8 +672,8 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
 
-	if req.SupplierCode == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "supplier_code is required")
+	if req.SupplierID == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "supplier_id is required")
 	}
 	if req.LocationText == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "location_text is required")
@@ -553,17 +728,9 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
-	if req.PRID != nil {
-		var activeCount int
-		if err := h.db.QueryRow(ctx,
-			`SELECT COUNT(*) FROM purchase_order WHERE pr_id = $1 AND status != 'CANCELLED'`, *req.PRID,
-		).Scan(&activeCount); err != nil {
-			return err
-		}
-		if activeCount > 0 {
-			return fiber.NewError(fiber.StatusConflict, "PR is already linked to an active PO")
-		}
-	}
+	// Note: a PR may be linked to more than one active PO — split ordering lets a single
+	// PR line be divided across multiple POs/suppliers. reconcilePRLineQty (below, inside
+	// the transaction) is what actually prevents over-ordering, at the pr_line_id level.
 
 	var approverExists bool
 	if err := h.db.QueryRow(ctx,
@@ -646,20 +813,20 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	var poID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO purchase_order
-		  (po_no, po_date, supplier_code, pr_id, rfq_id, location_text, warehouse_code, project_code, requested_by, approver_id, ref, currency,
+		  (po_no, po_date, supplier_id, pr_id, rfq_id, location_text, warehouse_code, project_code, requested_by, approver_id, ref, currency,
 		   total_amount, vat_amount, net_amount, expected_date,
 		   use_discount, discount_type, discount_amount, use_vat, use_wht, wht_amount,
 		   status, order_type, work_type, payment_terms, remarks, created_by)
 		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		RETURNING id`,
-		poNo, req.SupplierCode, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref, req.Currency,
+		poNo, req.SupplierID, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref, req.Currency,
 		totalAmount, vatAmount, netAmount, req.ExpectedDate,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
 		status, req.OrderType, req.WorkType, req.PaymentTerms, req.Remarks, claims.UserID,
 	).Scan(&poID)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
-			detail := "invalid supplier_code, pr_id, rfq_id, warehouse_code or project_code"
+			detail := "invalid supplier_id, pr_id, rfq_id, warehouse_code or project_code"
 			if pgErr.ConstraintName != "" {
 				detail += " (constraint: " + pgErr.ConstraintName + ")"
 			}
@@ -688,6 +855,18 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
 			}
 			return fiber.NewError(fiber.StatusInternalServerError, "line insert error: "+err.Error())
+		}
+	}
+
+	{
+		newRefs := make([]poLinePRRef, 0, len(req.Lines))
+		for _, l := range req.Lines {
+			if l.PRLineID != nil {
+				newRefs = append(newRefs, poLinePRRef{PRLineID: l.PRLineID, Qty: l.QtyOrdered})
+			}
+		}
+		if err := reconcilePRLineQty(ctx, tx, nil, newRefs); err != nil {
+			return err
 		}
 	}
 
@@ -724,8 +903,8 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	// reference row so PO detail can show them without touching pr_attachment.
 	if req.PRID != nil {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO po_attachment (po_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at)
-			SELECT $1, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at
+			INSERT INTO po_attachment (po_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at, source_pr_attachment_id)
+			SELECT $1, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at, id
 			FROM pr_attachment WHERE pr_id = $2`, poID, *req.PRID,
 		); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to copy PR attachments: "+err.Error())
@@ -733,7 +912,7 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	}
 
 	auditData, _ := json.Marshal(fiber.Map{
-		"po_no": poNo, "status": status, "supplier_code": req.SupplierCode,
+		"po_no": poNo, "status": status, "supplier_id": req.SupplierID,
 		"pr_id": req.PRID, "total_amount": totalAmount,
 	})
 	if _, err := tx.Exec(ctx, `
@@ -759,7 +938,7 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 
 // GetAvailablePRs godoc
 // @Summary      List PRs eligible to be linked to a new PO
-// @Description  Returns COMPLETED PRs that do not already have an active (non-CANCELLED) PO.
+// @Description  Returns COMPLETED PRs that still have at least one line with remaining (qty_to_order - qty_ordered) > 0. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -777,10 +956,10 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		FROM purchase_request pr
 		LEFT JOIN users u ON u.id = pr.requested_by
 		WHERE pr.status = 'COMPLETED'
-		  AND NOT EXISTS (
-		      SELECT 1 FROM purchase_order po
-		      WHERE po.pr_id = pr.id
-		      AND po.status != 'CANCELLED'
+		  AND EXISTS (
+		      SELECT 1 FROM purchase_request_line prl
+		      WHERE prl.pr_id = pr.id
+		      AND prl.qty_to_order - prl.qty_ordered > 0
 		  )
 		ORDER BY pr.created_at DESC`)
 	if err != nil {
@@ -802,6 +981,67 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		var r AvailablePR
 		if err := rows.Scan(&r.PRID, &r.PRNo, &r.Status, &r.RequestedBy, &r.RequestedByName, &r.CreatedAt); err != nil {
 			return err
+		}
+		items = append(items, r)
+	}
+
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+// GetPRLinesForPO godoc
+// @Summary      List a PR's lines with remaining orderable qty
+// @Description  Returns every line of the given PR with a computed remaining = qty_to_order - qty_ordered, so the PO-create form can show accurate "still orderable" quantities per line when building a split order (qty already covered by stock via qty_reserved is excluded from what's orderable). Lines that are fully ordered (remaining <= 0) are included with is_fully_ordered=true rather than dropped, so the UI can show them struck out instead of silently disappearing.
+// @Tags         Purchase Order
+// @Security     BearerAuth
+// @Produce      json
+// @Param        pr_id  path  int  true  "PR ID"
+// @Success      200    {object}  fiber.Map
+// @Router       /po/pr-lines/{pr_id} [get]
+func (h *POHandler) GetPRLinesForPO(c *fiber.Ctx) error {
+	prID, err := strconv.ParseInt(c.Params("pr_id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid pr_id")
+	}
+
+	rows, err := h.db.Query(context.Background(), `
+		SELECT prl.id, prl.pr_id, prl.line_no, prl.mat_code, mn.mat_name,
+		       prl.qty_requested, prl.qty_reserved, prl.qty_to_order, prl.qty_ordered,
+		       (prl.qty_to_order - prl.qty_ordered) AS remaining, prl.status, prl.remarks
+		FROM purchase_request_line prl
+		LEFT JOIN material_code mc ON mc.mat_code = prl.mat_code
+		LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
+		WHERE prl.pr_id = $1
+		ORDER BY prl.line_no`, prID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type PRLineAvailable struct {
+		ID             int64   `json:"id"`
+		PRID           int64   `json:"pr_id"`
+		LineNo         int     `json:"line_no"`
+		MatCode        string  `json:"mat_code"`
+		MatName        *string `json:"mat_name,omitempty"`
+		QtyRequested   float64 `json:"qty_requested"`
+		QtyReserved    float64 `json:"qty_reserved"`
+		QtyToOrder     float64 `json:"qty_to_order"`
+		QtyOrdered     float64 `json:"qty_ordered"`
+		Remaining      float64 `json:"remaining"`
+		Status         string  `json:"status"`
+		Remarks        *string `json:"remarks,omitempty"`
+		IsFullyOrdered bool    `json:"is_fully_ordered"`
+	}
+
+	items := []PRLineAvailable{}
+	for rows.Next() {
+		var r PRLineAvailable
+		if err := rows.Scan(&r.ID, &r.PRID, &r.LineNo, &r.MatCode, &r.MatName,
+			&r.QtyRequested, &r.QtyReserved, &r.QtyToOrder, &r.QtyOrdered, &r.Remaining, &r.Status, &r.Remarks); err != nil {
+			return err
+		}
+		if r.Remaining <= 0 {
+			r.IsFullyOrdered = true
 		}
 		items = append(items, r)
 	}
@@ -838,8 +1078,8 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
 
-	if req.SupplierCode == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "supplier_code is required")
+	if req.SupplierID == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "supplier_id is required")
 	}
 	if req.LocationText == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "location_text is required")
@@ -873,13 +1113,6 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	if req.Currency == "" {
 		req.Currency = "THB"
 	}
-	newStatus := req.Status
-	if newStatus == "" {
-		newStatus = "DRAFT"
-	}
-	if newStatus != "DRAFT" && newStatus != "PENDING_APPROVAL" {
-		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
-	}
 
 	ctx := context.Background()
 
@@ -897,12 +1130,25 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	if err := h.db.QueryRow(ctx, `SELECT status, order_type FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus, &currentOrderType); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
-	if currentStatus != "DRAFT" {
-		detail := fmt.Sprintf("PO must be DRAFT to use this endpoint (current status: %s)", currentStatus)
+	if currentStatus != "DRAFT" && currentStatus != "PENDING_APPROVAL" {
+		detail := fmt.Sprintf("PO must be DRAFT or PENDING_APPROVAL to use this endpoint (current status: %s)", currentStatus)
 		if currentStatus == "APPROVED" {
 			detail += " — use PUT /po/{id}/edit-approved instead"
 		}
 		return fiber.NewError(fiber.StatusBadRequest, detail)
+	}
+
+	// Default to the PO's current status, not a hardcoded "DRAFT" — otherwise editing a
+	// PENDING_APPROVAL PO without the client explicitly re-sending status would silently
+	// downgrade it back to DRAFT. Editing while PENDING_APPROVAL is meant to leave status
+	// untouched (see status-log/approval_request guards below, which key off newStatus ==
+	// currentStatus to avoid re-logging/re-opening an approval that's already in flight).
+	newStatus := req.Status
+	if newStatus == "" {
+		newStatus = currentStatus
+	}
+	if newStatus != "DRAFT" && newStatus != "PENDING_APPROVAL" {
+		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
 
 	orderType := req.OrderType
@@ -985,14 +1231,14 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE purchase_order SET
-		    supplier_code=$1, pr_id=$2, rfq_id=$3, location_text=$4, warehouse_code=$5, project_code=$6, requested_by=$7, approver_id=$8, ref=$9,
+		    supplier_id=$1, pr_id=$2, rfq_id=$3, location_text=$4, warehouse_code=$5, project_code=$6, requested_by=$7, approver_id=$8, ref=$9,
 		    currency=$10, expected_date=$11, payment_terms=$12, remarks=$13,
 		    total_amount=$14, vat_amount=$15, net_amount=$16, status=$17,
 		    use_discount=$18, discount_type=$19, discount_amount=$20, use_vat=$21, use_wht=$22, wht_amount=$23,
 		    order_type=$24, work_type=$25,
 		    updated_at=NOW(), updated_by=$26
 		WHERE id=$27`,
-		req.SupplierCode, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref,
+		req.SupplierID, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref,
 		req.Currency, req.ExpectedDate, req.PaymentTerms, req.Remarks,
 		totalAmount, vatAmount, netAmount, newStatus,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
@@ -1000,13 +1246,33 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		claims.UserID, poID,
 	); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
-			detail := "invalid supplier_code, pr_id, rfq_id, warehouse_code or project_code"
+			detail := "invalid supplier_id, pr_id, rfq_id, warehouse_code or project_code"
 			if pgErr.ConstraintName != "" {
 				detail += " (constraint: " + pgErr.ConstraintName + ")"
 			}
 			return fiber.NewError(fiber.StatusBadRequest, detail)
 		}
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update PO: "+err.Error())
+	}
+
+	oldRefs := []poLinePRRef{}
+	{
+		oldRows, err := tx.Query(ctx, `SELECT pr_line_id, qty_ordered FROM purchase_order_line WHERE po_id=$1`, poID)
+		if err != nil {
+			return err
+		}
+		for oldRows.Next() {
+			var prLineID *int64
+			var qty float64
+			if err := oldRows.Scan(&prLineID, &qty); err != nil {
+				oldRows.Close()
+				return err
+			}
+			if prLineID != nil {
+				oldRefs = append(oldRefs, poLinePRRef{PRLineID: prLineID, Qty: qty})
+			}
+		}
+		oldRows.Close()
 	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM purchase_order_line WHERE po_id=$1`, poID); err != nil {
@@ -1036,6 +1302,18 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
+	{
+		newRefs := make([]poLinePRRef, 0, len(req.Lines))
+		for _, l := range req.Lines {
+			if l.PRLineID != nil {
+				newRefs = append(newRefs, poLinePRRef{PRLineID: l.PRLineID, Qty: l.QtyOrdered})
+			}
+		}
+		if err := reconcilePRLineQty(ctx, tx, oldRefs, newRefs); err != nil {
+			return err
+		}
+	}
+
 	if newStatus != currentStatus {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO po_status_log (po_id, from_status, to_status, changed_by, remarks)
@@ -1045,9 +1323,12 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	// Submitting to PENDING_APPROVAL opens the step-1 approval request, same as POST /po.
+	// Submitting to PENDING_APPROVAL opens the step-1 approval request, same as POST /po — but
+	// only on the transition INTO PENDING_APPROVAL. Editing a PO that's already
+	// PENDING_APPROVAL (newStatus == currentStatus) must not open a second approval_request
+	// alongside the one already PENDING from the original submit.
 	var approvalID *int64
-	if newStatus == "PENDING_APPROVAL" {
+	if newStatus == "PENDING_APPROVAL" && currentStatus != "PENDING_APPROVAL" {
 		var hasConfig bool
 		if err := tx.QueryRow(ctx, `
 			SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PO' AND step_no=1 AND is_active=true)`,
@@ -1072,8 +1353,8 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	}
 
 	auditData, _ := json.Marshal(fiber.Map{
-		"supplier_code": req.SupplierCode,
-		"pr_id":         req.PRID, "total_amount": totalAmount, "status": newStatus,
+		"supplier_id": req.SupplierID,
+		"pr_id":       req.PRID, "total_amount": totalAmount, "status": newStatus,
 	})
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
@@ -1248,8 +1529,8 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 	if strings.TrimSpace(req.Reason) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "reason is required")
 	}
-	if req.SupplierCode == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "supplier_code is required")
+	if req.SupplierID == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "supplier_id is required")
 	}
 	if req.LocationText == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "location_text is required")
@@ -1311,26 +1592,96 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Totals are always computed server-side, never trusted from the request.
-	var totalAmount float64
-	for _, l := range req.Lines {
-		totalAmount += l.QtyOrdered * l.UnitPrice
+	// Totals and per-line discount/VAT/WHT are always computed server-side, never trusted
+	// from the request — mirrors Create/Update's calculation exactly. This previously
+	// hardcoded a flat 7% VAT here and dropped discount/wht_rate/line_discount/line_vat/
+	// line_wht/line_net from the line re-insert below entirely, which silently reset an
+	// APPROVED PO's tax/discount panel settings back to defaults on every edit-approved save
+	// — the exact bug already fixed once in Update (see its comment), recurring here because
+	// this is a separate code path.
+	useDiscount := req.UseDiscount != nil && *req.UseDiscount
+	useVAT := req.UseVAT != nil && *req.UseVAT
+	useWHT := req.UseWHT != nil && *req.UseWHT
+	discountType := "pct"
+	if req.DiscountType != nil && *req.DiscountType != "" {
+		discountType = *req.DiscountType
 	}
-	vatAmount := totalAmount * 0.07
-	netAmount := totalAmount + vatAmount
+
+	type lineCalc struct {
+		base, discAmt, afterDisc, vatAmt, whtAmt, net float64
+		discType                                      string
+	}
+	calcs := make([]lineCalc, len(req.Lines))
+	var totalAmount, discountAmount, whtAmount float64
+	for i, l := range req.Lines {
+		lc := lineCalc{base: l.QtyOrdered * l.UnitPrice}
+		lc.discType = l.DiscType
+		if lc.discType == "" {
+			lc.discType = "pct"
+		}
+		if useDiscount && l.Discount != 0 {
+			if lc.discType == "amt" {
+				lc.discAmt = l.Discount
+			} else {
+				lc.discAmt = lc.base * l.Discount / 100
+			}
+		}
+		lc.afterDisc = lc.base - lc.discAmt
+		if useVAT {
+			lc.vatAmt = lc.afterDisc * 0.07
+		}
+		if useWHT && l.WhtRate != nil {
+			lc.whtAmt = lc.afterDisc * (*l.WhtRate) / 100
+		}
+		lc.net = lc.afterDisc + lc.vatAmt - lc.whtAmt
+		calcs[i] = lc
+
+		totalAmount += lc.base
+		discountAmount += lc.discAmt
+		whtAmount += lc.whtAmt
+	}
+	vatAmount := totalAmount - discountAmount
+	if useVAT {
+		vatAmount *= 0.07
+	} else {
+		vatAmount = 0
+	}
+	netAmount := totalAmount - discountAmount + vatAmount - whtAmount
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE purchase_order SET
-		    supplier_code=$1, location_text=$2, project_code=COALESCE($3, project_code), requested_by=COALESCE($4, requested_by),
+		    supplier_id=$1, location_text=$2, project_code=COALESCE($3, project_code), requested_by=COALESCE($4, requested_by),
 		    warehouse_code=COALESCE($5, warehouse_code), currency=$6, expected_date=$7,
 		    payment_terms=$8, remarks=$9, total_amount=$10, vat_amount=$11, net_amount=$12,
-		    status='PENDING_REAPPROVAL', updated_at=NOW(), updated_by=$13
-		WHERE id=$14`,
-		req.SupplierCode, req.LocationText, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Currency, req.ExpectedDate,
+		    use_discount=$13, discount_type=$14, discount_amount=$15, use_vat=$16, use_wht=$17, wht_amount=$18,
+		    status='PENDING_REAPPROVAL', updated_at=NOW(), updated_by=$19
+		WHERE id=$20`,
+		req.SupplierID, req.LocationText, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Currency, req.ExpectedDate,
 		req.PaymentTerms, req.Remarks, totalAmount, vatAmount, netAmount,
+		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
 		claims.UserID, poID,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update PO: "+err.Error())
+	}
+
+	oldRefs := []poLinePRRef{}
+	{
+		oldRows, err := tx.Query(ctx, `SELECT pr_line_id, qty_ordered FROM purchase_order_line WHERE po_id=$1`, poID)
+		if err != nil {
+			return err
+		}
+		for oldRows.Next() {
+			var prLineID *int64
+			var qty float64
+			if err := oldRows.Scan(&prLineID, &qty); err != nil {
+				oldRows.Close()
+				return err
+			}
+			if prLineID != nil {
+				oldRefs = append(oldRefs, poLinePRRef{PRLineID: prLineID, Qty: qty})
+			}
+		}
+		oldRows.Close()
 	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM purchase_order_line WHERE po_id=$1`, poID); err != nil {
@@ -1342,19 +1693,33 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		if err != nil {
 			return err
 		}
-		discType := line.DiscType
-		if discType == "" {
-			discType = "pct"
-		}
+		lc := calcs[i]
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_order_line (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type, description, remarks, status)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'OPEN')`,
-			poID, i+1, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, discType, desc, line.Remarks,
+			INSERT INTO purchase_order_line
+			  (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type,
+			   discount, line_discount, line_vat, line_wht, line_net, wht_rate,
+			   description, remarks, status)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN')`,
+			poID, i+1, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, lc.discType,
+			line.Discount, lc.discAmt, lc.vatAmt, lc.whtAmt, lc.net, line.WhtRate,
+			desc, line.Remarks,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
 			}
 			return fiber.NewError(fiber.StatusInternalServerError, "line insert error: "+err.Error())
+		}
+	}
+
+	{
+		newRefs := make([]poLinePRRef, 0, len(req.Lines))
+		for _, l := range req.Lines {
+			if l.PRLineID != nil {
+				newRefs = append(newRefs, poLinePRRef{PRLineID: l.PRLineID, Qty: l.QtyOrdered})
+			}
+		}
+		if err := reconcilePRLineQty(ctx, tx, oldRefs, newRefs); err != nil {
+			return err
 		}
 	}
 
@@ -1505,8 +1870,8 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 
-	// Aggregate by pr_line_id since several request lines can target the same PR line.
-	deltas := map[int64]float64{}
+	// Validate every pr_line_id actually belongs to this PO's PR before locking/reconciling.
+	newRefs := make([]poLinePRRef, 0, len(req.Lines))
 	for i, l := range req.Lines {
 		if l.PRLineID == nil {
 			continue
@@ -1514,32 +1879,26 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 		if poPRID == nil {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: PO is not linked to a PR, pr_line_id not allowed", i))
 		}
-		deltas[*l.PRLineID] += l.QtyOrdered
+		newRefs = append(newRefs, poLinePRRef{PRLineID: l.PRLineID, Qty: l.QtyOrdered})
 	}
-
-	if len(deltas) > 0 {
-		prLineIDs := make([]int64, 0, len(deltas))
-		for id := range deltas {
-			prLineIDs = append(prLineIDs, id)
+	if len(newRefs) > 0 {
+		prLineIDs := make([]int64, 0, len(newRefs))
+		for _, r := range newRefs {
+			prLineIDs = append(prLineIDs, *r.PRLineID)
 		}
-
-		// Lock the touched PR lines so two concurrent PO saves can't double-book the same line.
-		lockRows, err := tx.Query(ctx, `
-			SELECT id FROM purchase_request_line
-			WHERE id = ANY($1) AND pr_id = $2
-			FOR UPDATE`, prLineIDs, *poPRID)
+		belongRows, err := tx.Query(ctx, `SELECT id FROM purchase_request_line WHERE id = ANY($1) AND pr_id = $2`, prLineIDs, *poPRID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "lock error: "+err.Error())
+			return err
 		}
-		locked := map[int64]bool{}
-		for lockRows.Next() {
+		belongs := map[int64]bool{}
+		for belongRows.Next() {
 			var id int64
-			lockRows.Scan(&id)
-			locked[id] = true
+			belongRows.Scan(&id)
+			belongs[id] = true
 		}
-		lockRows.Close()
+		belongRows.Close()
 		for _, id := range prLineIDs {
-			if !locked[id] {
+			if !belongs[id] {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("pr_line_id %d does not belong to this PO's PR", id))
 			}
 		}
@@ -1575,13 +1934,8 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 		insertedIDs = append(insertedIDs, lineID)
 	}
 
-	for prLineID, qty := range deltas {
-		if _, err := tx.Exec(ctx,
-			`UPDATE purchase_request_line SET qty_ordered = qty_ordered + $1 WHERE id = $2`,
-			qty, prLineID,
-		); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "pr line update error: "+err.Error())
-		}
+	if err := reconcilePRLineQty(ctx, tx, nil, newRefs); err != nil {
+		return err
 	}
 
 	var newPRStatus string
@@ -1591,15 +1945,15 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 			return err
 		}
 
-		lineRows, err := tx.Query(ctx, `SELECT qty_requested, qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
+		lineRows, err := tx.Query(ctx, `SELECT qty_to_order, qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
 		if err != nil {
 			return err
 		}
 		allFulfilled, someOrdered := true, false
 		for lineRows.Next() {
-			var qtyReq, qtyOrd float64
-			lineRows.Scan(&qtyReq, &qtyOrd)
-			if qtyOrd < qtyReq {
+			var qtyToOrder, qtyOrd float64
+			lineRows.Scan(&qtyToOrder, &qtyOrd)
+			if qtyOrd < qtyToOrder {
 				allFulfilled = false
 			}
 			if qtyOrd > 0 {
@@ -1828,7 +2182,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		totalAmount, netAmount      float64
 		useDiscount, useVat, useWht *bool
 		prNo                        *string
-		supplierName                string
+		supplierName                *string
 		supplierAddress             *string
 		supplierPaymentTerms        *string
 		supplierContactName         *string
@@ -1843,7 +2197,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		       s.supplier_name, s.address, s.payment_terms, s.contact_name, s.contact_phone,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
 		FROM purchase_order po
-		JOIN supplier s ON s.supplier_code = po.supplier_code
+		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		WHERE po.id = $1`, id,
 	).Scan(&poNo, &poDate, &expectedDate, &projectCode, &locationText,
@@ -1925,7 +2279,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		QuotationNo:      "***",
 		Tel:              supplierContactPhone,
 		Supplier: poPrintSupplier{
-			Name:          supplierName,
+			Name:          derefString(supplierName),
 			Address1:      supplierAddress,
 			TermOfPayment: firstNonNil(poPaymentTerms, supplierPaymentTerms),
 			Contact:       supplierContactName,
@@ -1987,7 +2341,7 @@ func (h *POHandler) GetReceivablePOs(c *fiber.Ctx) error {
 
 	args = append(args, size, offset)
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT po.id, po.po_no, po.po_date, po.supplier_code, po.status, po.status_receive,
+		SELECT po.id, po.po_no, po.po_date, po.supplier_id, po.status, po.status_receive,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round
 		%s
 		ORDER BY po.po_date DESC, po.po_no
@@ -2001,7 +2355,7 @@ func (h *POHandler) GetReceivablePOs(c *fiber.Ctx) error {
 		POID          int64     `json:"po_id"`
 		PONo          string    `json:"po_no"`
 		PODate        time.Time `json:"po_date"`
-		SupplierCode  string    `json:"supplier_code"`
+		SupplierID    *int64    `json:"supplier_id,omitempty"`
 		Status        string    `json:"status"`
 		StatusReceive string    `json:"status_receive"`
 		// RevisionRound: see PurchaseOrder.RevisionRound. po_no never changes.
@@ -2011,7 +2365,7 @@ func (h *POHandler) GetReceivablePOs(c *fiber.Ctx) error {
 	items := []receivablePO{}
 	for rows.Next() {
 		var r receivablePO
-		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierCode, &r.Status, &r.StatusReceive, &r.RevisionRound); err != nil {
+		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.Status, &r.StatusReceive, &r.RevisionRound); err != nil {
 			return err
 		}
 		items = append(items, r)

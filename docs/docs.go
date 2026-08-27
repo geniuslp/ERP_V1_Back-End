@@ -1272,9 +1272,9 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
-                        "type": "string",
-                        "description": "Filter by supplier code",
-                        "name": "supplier_code",
+                        "type": "integer",
+                        "description": "Filter by supplier id",
+                        "name": "supplier_id",
                         "in": "query"
                     },
                     {
@@ -3538,7 +3538,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "search by name or code",
+                        "description": "search by name",
                         "name": "q",
                         "in": "query"
                     }
@@ -3597,12 +3597,6 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
                     }
                 }
             }
@@ -3614,7 +3608,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Inserts multiple suppliers in a single UNNEST statement. is_active defaults to true at DB level.",
+                "description": "Inserts multiple suppliers where supplier_name is the only required field per item — every other field is optional and unvalidated. There is no supplier_code anymore; each row gets its id from the DB's auto-increment PK, returned per row in the response.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3652,7 +3646,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/master/suppliers/{code}": {
+        "/master/suppliers/{id}": {
             "get": {
                 "security": [
                     {
@@ -3665,12 +3659,12 @@ const docTemplate = `{
                 "tags": [
                     "Master"
                 ],
-                "summary": "Get supplier by code",
+                "summary": "Get supplier by id",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Supplier Code",
-                        "name": "code",
+                        "type": "integer",
+                        "description": "Supplier ID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     }
@@ -3708,9 +3702,9 @@ const docTemplate = `{
                 "summary": "Update supplier",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Supplier Code",
-                        "name": "code",
+                        "type": "integer",
+                        "description": "Supplier ID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     },
@@ -3760,9 +3754,9 @@ const docTemplate = `{
                 "summary": "Soft-delete supplier",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Supplier Code",
-                        "name": "code",
+                        "type": "integer",
+                        "description": "Supplier ID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     }
@@ -6245,7 +6239,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns COMPLETED PRs that do not already have an active (non-CANCELLED) PO.",
+                "description": "Returns COMPLETED PRs that still have at least one line with remaining (qty_to_order - qty_ordered) \u003e 0. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -6355,6 +6349,40 @@ const docTemplate = `{
                     "Purchase Order"
                 ],
                 "summary": "Preview the next PO number",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/pr-lines/{pr_id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns every line of the given PR with a computed remaining = qty_to_order - qty_ordered, so the PO-create form can show accurate \"still orderable\" quantities per line when building a split order (qty already covered by stock via qty_reserved is excluded from what's orderable). Lines that are fully ordered (remaining \u003c= 0) are included with is_fully_ordered=true rather than dropped, so the UI can show them struck out instead of silently disappearing.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "List a PR's lines with remaining orderable qty",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PR ID",
+                        "name": "pr_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -9833,6 +9861,51 @@ const docTemplate = `{
                 }
             }
         },
+        "/supplier/bulk": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Inserts a batch of suppliers where supplier_name is the only required field — every other field is optional and unvalidated. There is no supplier_code anymore; each row gets its id from the DB's auto-increment PK, returned per row in the response. No duplicate checking is performed on supplier_name — the same name can be inserted more than once, each as its own row.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Bulk insert suppliers",
+                "parameters": [
+                    {
+                        "description": "Suppliers to insert",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.BulkInsertSupplierRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/upload/memo": {
             "post": {
                 "security": [
@@ -11028,6 +11101,58 @@ const docTemplate = `{
                 }
             }
         },
+        "models.BulkInsertSupplierLine": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "contact_email": {
+                    "type": "string"
+                },
+                "contact_name": {
+                    "type": "string"
+                },
+                "contact_phone": {
+                    "type": "string"
+                },
+                "currency": {
+                    "type": "string"
+                },
+                "fax": {
+                    "type": "string"
+                },
+                "office_phone": {
+                    "type": "string"
+                },
+                "payment_terms": {
+                    "type": "string"
+                },
+                "sales_person": {
+                    "type": "string"
+                },
+                "supplier_name": {
+                    "type": "string"
+                },
+                "supplier_short_name": {
+                    "type": "string"
+                },
+                "tax_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.BulkInsertSupplierRequest": {
+            "type": "object",
+            "properties": {
+                "suppliers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BulkInsertSupplierLine"
+                    }
+                }
+            }
+        },
         "models.CancelMemoRequest": {
             "type": "object",
             "properties": {
@@ -11433,7 +11558,7 @@ const docTemplate = `{
             "required": [
                 "lines",
                 "location_text",
-                "supplier_code"
+                "supplier_id"
             ],
             "properties": {
                 "approver_id": {
@@ -11494,8 +11619,8 @@ const docTemplate = `{
                         "PENDING_APPROVAL"
                     ]
                 },
-                "supplier_code": {
-                    "type": "string"
+                "supplier_id": {
+                    "type": "integer"
                 },
                 "use_discount": {
                     "type": "boolean"
@@ -11966,9 +12091,6 @@ const docTemplate = `{
                 "payment_terms": {
                     "type": "string"
                 },
-                "supplier_code": {
-                    "type": "string"
-                },
                 "supplier_name": {
                     "type": "string"
                 },
@@ -11980,7 +12102,6 @@ const docTemplate = `{
         "models.CreateSupplierRequest": {
             "type": "object",
             "required": [
-                "supplier_code",
                 "supplier_name"
             ],
             "properties": {
@@ -11998,10 +12119,6 @@ const docTemplate = `{
                 },
                 "payment_terms": {
                     "type": "string"
-                },
-                "supplier_code": {
-                    "type": "string",
-                    "maxLength": 20
                 },
                 "supplier_name": {
                     "type": "string",
@@ -12261,6 +12378,9 @@ const docTemplate = `{
                 "supplier_code": {
                     "type": "string"
                 },
+                "supplier_id": {
+                    "type": "integer"
+                },
                 "supplier_name": {
                     "type": "string"
                 },
@@ -12322,11 +12442,18 @@ const docTemplate = `{
                 "lines",
                 "location_text",
                 "reason",
-                "supplier_code"
+                "supplier_id"
             ],
             "properties": {
                 "currency": {
                     "type": "string"
+                },
+                "discount_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
                 },
                 "expected_date": {
                     "type": "string"
@@ -12356,8 +12483,17 @@ const docTemplate = `{
                 "requested_by": {
                     "type": "integer"
                 },
-                "supplier_code": {
-                    "type": "string"
+                "supplier_id": {
+                    "type": "integer"
+                },
+                "use_discount": {
+                    "type": "boolean"
+                },
+                "use_vat": {
+                    "type": "boolean"
+                },
+                "use_wht": {
+                    "type": "boolean"
                 },
                 "warehouse_code": {
                     "type": "string"
@@ -12786,6 +12922,29 @@ const docTemplate = `{
                 }
             }
         },
+        "models.POAttachments": {
+            "type": "object",
+            "properties": {
+                "memo": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.MemoAttachment"
+                    }
+                },
+                "po": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.POAttachment"
+                    }
+                },
+                "pr": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.PRAttachment"
+                    }
+                }
+            }
+        },
         "models.POLine": {
             "type": "object",
             "properties": {
@@ -12837,6 +12996,9 @@ const docTemplate = `{
                 "pr_line_id": {
                     "type": "integer"
                 },
+                "pr_line_qty_reserved": {
+                    "type": "number"
+                },
                 "qty_ordered": {
                     "type": "number"
                 },
@@ -12886,53 +13048,6 @@ const docTemplate = `{
                 },
                 "uploaded_by": {
                     "type": "integer"
-                }
-            }
-        },
-        "models.PRLine": {
-            "type": "object",
-            "properties": {
-                "cost_code": {
-                    "description": "resolved combined code, e.g. \"LE30300\"",
-                    "type": "string"
-                },
-                "cost_subgroup_id": {
-                    "description": "Cost Code — chosen per line item, not tied to the material.",
-                    "type": "integer"
-                },
-                "cost_subgroup_name": {
-                    "description": "resolved subgroup_name",
-                    "type": "string"
-                },
-                "line_id": {
-                    "type": "integer"
-                },
-                "line_no": {
-                    "type": "integer"
-                },
-                "mat_code": {
-                    "type": "string"
-                },
-                "pr_id": {
-                    "type": "integer"
-                },
-                "qty_ordered": {
-                    "type": "number"
-                },
-                "qty_requested": {
-                    "type": "number"
-                },
-                "qty_reserved": {
-                    "type": "number"
-                },
-                "qty_to_order": {
-                    "type": "number"
-                },
-                "remarks": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
                 }
             }
         },
@@ -13024,6 +13139,9 @@ const docTemplate = `{
             "properties": {
                 "approver_id": {
                     "type": "integer"
+                },
+                "attachments": {
+                    "$ref": "#/definitions/models.POAttachments"
                 },
                 "can_edit_approved": {
                     "type": "boolean"
@@ -13119,8 +13237,8 @@ const docTemplate = `{
                 "status_receive": {
                     "type": "string"
                 },
-                "supplier_code": {
-                    "type": "string"
+                "supplier_id": {
+                    "type": "integer"
                 },
                 "supplier_name": {
                     "type": "string"
@@ -13154,77 +13272,6 @@ const docTemplate = `{
                 },
                 "work_type": {
                     "description": "header-level ประเภทงาน: P|E|S|F|G|H",
-                    "type": "string"
-                }
-            }
-        },
-        "models.PurchaseRequest": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string"
-                },
-                "job_code": {
-                    "type": "string"
-                },
-                "lines": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.PRLine"
-                    }
-                },
-                "location_text": {
-                    "type": "string"
-                },
-                "memo_id": {
-                    "type": "integer"
-                },
-                "memo_no": {
-                    "type": "string"
-                },
-                "memo_title": {
-                    "type": "string"
-                },
-                "order_type": {
-                    "type": "string"
-                },
-                "pr_date": {
-                    "type": "string"
-                },
-                "pr_id": {
-                    "type": "integer"
-                },
-                "pr_no": {
-                    "type": "string"
-                },
-                "pr_type": {
-                    "type": "string"
-                },
-                "priority": {
-                    "type": "string"
-                },
-                "project_code": {
-                    "type": "string"
-                },
-                "remarks": {
-                    "type": "string"
-                },
-                "requested_by": {
-                    "type": "integer"
-                },
-                "required_date": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "warehouse_code": {
-                    "type": "string"
-                },
-                "warehouse_name": {
                     "type": "string"
                 }
             }
@@ -13384,9 +13431,6 @@ const docTemplate = `{
                 "payment_terms": {
                     "type": "string"
                 },
-                "supplier_code": {
-                    "type": "string"
-                },
                 "supplier_name": {
                     "type": "string"
                 },
@@ -13435,9 +13479,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sales_person": {
-                    "type": "string"
-                },
-                "supplier_code": {
                     "type": "string"
                 },
                 "supplier_name": {

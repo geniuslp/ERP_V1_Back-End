@@ -5,6 +5,8 @@ import (
 	"log"
 	"strconv"
 
+	"erp-api/internal/models"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -47,7 +49,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	// available_for_po forces status=COMPLETED (PR's only "usable" terminal status) and adds a
 	// live EXISTS check: at least one line whose referenced-qty sum, from non-cancelled
 	// purchase_order_line rows joined the same way LinesWithPOStatus computes qty_remaining, is
-	// still below qty_requested. Same source as that endpoint, so the two can never disagree —
+	// still below qty_to_order. Same source as that endpoint, so the two can never disagree —
 	// a PR excluded here always shows qty_remaining=0 on every line there, and vice versa.
 	availableForPOFilter := "TRUE"
 	if availableForPO {
@@ -57,7 +59,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 			AND EXISTS (
 				SELECT 1 FROM purchase_request_line prl
 				WHERE prl.pr_id = pr.id
-				AND prl.qty_requested > COALESCE((
+				AND prl.qty_to_order > COALESCE((
 					SELECT SUM(pol.qty_ordered)
 					FROM purchase_order_line pol
 					WHERE pol.pr_line_id = prl.id AND pol.status != 'CANCELLED'
@@ -159,34 +161,27 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		CostSubgroupName *string `json:"cost_subgroup_name,omitempty"` // resolved cost_subgroup.subgroup_name
 	}
 
-	type PRAttachItem struct {
-		ID         int64  `json:"id"`
-		FileName   string `json:"file_name"`
-		FilePath   string `json:"file_path"`
-		FileSize   int64  `json:"file_size"`
-		FileType   string `json:"file_type"`
-		UploadedAt string `json:"uploaded_at"`
-		UploadedBy int64  `json:"uploaded_by"`
-	}
-
 	type PRDetail struct {
-		ID            int64          `json:"id"`
-		PRNo          string         `json:"pr_no"`
-		Status        string         `json:"status"`
-		RequestedBy   string         `json:"requested_by"`
-		RequesterID   int64          `json:"requester_id"`
-		ApproverID    *int64         `json:"approver_id"`
-		ApproverName  *string        `json:"approver_name"`
-		LocationText  string         `json:"location_text"`
-		ProjectCode   *string        `json:"project_code"`
-		WarehouseCode *string        `json:"warehouse_code"`
-		WarehouseName *string        `json:"warehouse_name"`
-		Remarks       *string        `json:"remarks"`
-		PRDate        string         `json:"pr_date"`
-		PRType        string         `json:"pr_type"`
-		JobCode       *string        `json:"job_code,omitempty"`
-		Lines         []PRLineItem   `json:"lines"`
-		Attachments   []PRAttachItem `json:"attachments"`
+		ID            int64                `json:"id"`
+		PRNo          string               `json:"pr_no"`
+		Status        string               `json:"status"`
+		RequestedBy   string               `json:"requested_by"`
+		RequesterID   int64                `json:"requester_id"`
+		ApproverID    *int64               `json:"approver_id"`
+		ApproverName  *string              `json:"approver_name"`
+		LocationText  string               `json:"location_text"`
+		ProjectCode   *string              `json:"project_code"`
+		WarehouseCode *string              `json:"warehouse_code"`
+		WarehouseName *string              `json:"warehouse_name"`
+		Remarks       *string              `json:"remarks"`
+		PRDate        string               `json:"pr_date"`
+		RequiredDate  *string              `json:"required_date,omitempty"`
+		PRType        string               `json:"pr_type"`
+		OrderType     string               `json:"order_type"`
+		JobCode       *string              `json:"job_code,omitempty"`
+		MemoID        *int64               `json:"memo_id,omitempty"`
+		Lines         []PRLineItem         `json:"lines"`
+		Attachments   models.PRAttachments `json:"attachments"`
 	}
 
 	// ── Header ──────────────────────────────────────────────────────────────
@@ -195,7 +190,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
 		       NULL AS approver_id, NULL AS approver_name,
 		       pr.location_text, pr.project_code, pr.warehouse_code, w.warehouse_name, pr.remarks,
-		       pr.pr_date::text, pr.pr_type, pr.job_code
+		       pr.pr_date::text, pr.required_date::text, pr.pr_type, pr.order_type, pr.job_code, pr.memo_id
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
 		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
@@ -203,12 +198,12 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 
 	var pr PRDetail
 	pr.Lines = make([]PRLineItem, 0)
-	pr.Attachments = make([]PRAttachItem, 0)
+	pr.Attachments.PR = []models.PRAttachment{}
 
 	if err := row.Scan(
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode,
-		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.PRType, &pr.JobCode,
+		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.MemoID,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
@@ -258,24 +253,42 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	}
 
 	// ── Attachments ──────────────────────────────────────────────────────────
-	attRows, err := h.db.Query(context.Background(), `
-		SELECT id, file_name, file_path, file_size, file_type,
-		       to_char(uploaded_at, 'YYYY-MM-DD HH24:MI'), COALESCE(uploaded_by, 0)
-		FROM pr_attachment WHERE pr_id = $1 ORDER BY uploaded_at`, id)
+	prAttRows, err := h.db.Query(context.Background(), `
+		SELECT id, pr_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at
+		FROM pr_attachment WHERE pr_id=$1 ORDER BY uploaded_at`, id)
 	if err != nil {
-		log.Printf("❌ attachments query error: %v", err)
-	} else {
-		defer attRows.Close()
-		for attRows.Next() {
-			var a PRAttachItem
-			if err := attRows.Scan(
-				&a.ID, &a.FileName, &a.FilePath, &a.FileSize,
-				&a.FileType, &a.UploadedAt, &a.UploadedBy,
-			); err != nil {
-				log.Printf("❌ attachments scan error: %v", err)
-			}
-			pr.Attachments = append(pr.Attachments, a)
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to fetch pr attachments: "+err.Error())
+	}
+	prAtts := []models.PRAttachment{}
+	for prAttRows.Next() {
+		var a models.PRAttachment
+		if err := prAttRows.Scan(&a.ID, &a.PRID, &a.FileName, &a.FilePath, &a.FileSize, &a.FileType, &a.UploadedBy, &a.UploadedAt); err != nil {
+			prAttRows.Close()
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan pr attachments: "+err.Error())
 		}
+		prAtts = append(prAtts, a)
+	}
+	prAttRows.Close()
+	pr.Attachments.PR = prAtts
+
+	if pr.MemoID != nil {
+		memoAttRows, err := h.db.Query(context.Background(), `
+			SELECT id, memo_id, file_path, file_name, file_size, file_type, uploaded_by, uploaded_at
+			FROM memo_attachment WHERE memo_id=$1 ORDER BY uploaded_at`, *pr.MemoID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to fetch memo attachments: "+err.Error())
+		}
+		memoAtts := []models.MemoAttachment{}
+		for memoAttRows.Next() {
+			var a models.MemoAttachment
+			if err := memoAttRows.Scan(&a.ID, &a.MemoID, &a.FilePath, &a.FileName, &a.FileSize, &a.FileType, &a.UploadedBy, &a.UploadedAt); err != nil {
+				memoAttRows.Close()
+				return fiber.NewError(fiber.StatusInternalServerError, "failed to scan memo attachments: "+err.Error())
+			}
+			memoAtts = append(memoAtts, a)
+		}
+		memoAttRows.Close()
+		pr.Attachments.Memo = &memoAtts
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": pr})

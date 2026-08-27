@@ -379,7 +379,8 @@ grn_no         varchar(30) NOT NULL
 grn_date       date        NOT NULL  DEFAULT CURRENT_DATE
 po_id          bigint      NOT NULL  — FK → purchase_order.id
 warehouse_code varchar(20) NOT NULL
-supplier_code  varchar(20) NOT NULL
+supplier_id    integer     nullable  — FK → supplier.id (clean-break migration off supplier_code,
+                                       2026-08-24 — no backfill, pre-migration rows are NULL here)
 delivery_note  varchar(50) nullable  — เลขใบส่งของ
 status         varchar(20) NOT NULL  DEFAULT 'DRAFT'  — DRAFT|CONFIRMED|POSTED
 quality_status varchar(20) NOT NULL  DEFAULT 'PENDING' — PENDING|PASSED|FAILED|PARTIAL
@@ -637,7 +638,9 @@ updated_by      bigint      nullable
 id               bigint        NOT NULL  PK
 po_no            varchar(30)   NOT NULL
 po_date          date          NOT NULL  DEFAULT CURRENT_DATE
-supplier_code    varchar(20)   NOT NULL
+supplier_id      integer       nullable  — FK → supplier.id (clean-break migration off
+                                            supplier_code, 2026-08-24 — no backfill,
+                                            pre-migration rows are NULL here)
 pr_id            bigint        nullable  — FK → purchase_request.id
 rfq_id           bigint        nullable  — FK → rfq.id
 currency         varchar(10)   NOT NULL  DEFAULT 'THB'
@@ -746,7 +749,8 @@ remarks         text          nullable
 ### rfq / rfq_line
 ```
 -- rfq
-id, rfq_no, rfq_date, supplier_code, pr_id, status (DEFAULT 'SENT'),
+id, rfq_no, rfq_date, supplier_id (FK → supplier.id — clean-break migration off
+supplier_code, 2026-08-24, nullable, no backfill), pr_id, status (DEFAULT 'SENT'),
 remarks, created_at, updated_at, created_by, updated_by
 
 -- rfq_line
@@ -1027,9 +1031,17 @@ updated_by    bigint      nullable
 ---
 
 ### supplier
+> 🔴 **2026-08-24 — `supplier_code` dropped entirely (clean-break migration, no backward
+> compat).** `supplier.id` (the existing integer PK) is now the only identifier. Every
+> table that used to reference suppliers via `supplier_code` (`purchase_order`, `grn`,
+> `rfq`) was switched to a nullable `supplier_id` FK → `supplier.id` in the same migration
+> — no backfill, so pre-migration rows have `supplier_id = NULL`. `work_order` is the one
+> exception: it never had a real FK to `supplier` (its `supplier_code`/`supplier_name`/
+> `supplier_address`/`supplier_phone` are free text, `supplier_name` still `NOT NULL`) and
+> keeps that shape unchanged — it only gained an additional, decoupled, nullable
+> `supplier_id` column for optional reporting linkage, not a hard requirement.
 ```
 id                   integer     NOT NULL  PK
-supplier_code        varchar(20) NOT NULL  UNIQUE
 supplier_name        varchar(200)NOT NULL
 supplier_short_name  varchar(50) nullable
 tax_id               varchar(20) nullable
@@ -1136,7 +1148,13 @@ wo_date                  date          NOT NULL  DEFAULT CURRENT_DATE
 employer_name            varchar(200)  NOT NULL  — compose จาก branch dropdown ฝั่ง frontend
 project_code             varchar(20)   nullable  — FK → project.project_code (ถ้าผูก)
 project_scope_text       text          nullable
-supplier_code            varchar(20)   nullable  — FK → supplier.supplier_code (ถ้าผูก)
+supplier_code            varchar(20)   nullable  — free text, NO FK to supplier (never had one,
+                                                    confirmed live 2026-08-24). Untouched by the
+                                                    supplier_code→supplier_id migration below.
+supplier_id              integer       nullable  — 🆕 2026-08-24, FK → supplier.id, optional/
+                                                    decoupled — purely additive for reporting,
+                                                    not authoritative; supplier_code/name/address/
+                                                    phone stay the source of truth for this doc.
 supplier_name            varchar(200)  NOT NULL
 contact_person           varchar(100)  nullable
 supplier_address         text          nullable
