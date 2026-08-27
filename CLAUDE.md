@@ -651,3 +651,78 @@ update `purchase_request_line.qty_ordered` ต้องอยู่ใน tx เ
 ### 5. PR line status เมื่อสั่งครบ/ไม่ครบ
 `qty_ordered >= qty_requested` → PR line ถือว่าสั่งครบ (ปิดไม่ให้เลือกมาสร้าง PO ซ้ำได้อีก)
 ยังไม่ครบ → ยังต้องโผล่ในรายการ "PR line ที่ยังสั่งได้" พร้อมโชว์ remaining ที่เหลือ
+
+---
+
+## 🧭 Session learnings (2026-08-27) — `internal/handlers/users.go` TODO note is stale + read-side bug
+
+### 1. SKILL.md's "User handler ยังไม่ได้สร้าง" TODO is out of date
+`internal/handlers/users.go` (`UsersHandler`) already fully implements `List`, `Get`, `Create`,
+`Update`, `UpdateRoles`, `ResetPassword`, `Delete` with bcrypt hashing, transactions, and
+Swagger annotations, wired up in `routes.go` under `/users` gated by
+`middleware.RequireRole("ADMIN_CENTER")`. Don't re-create this handler from scratch on a future
+task that cites the old TODO — check the file first.
+
+### 2. `users.department` vs `departments.dept_name` — two different things sharing a JSON key was the bug
+`users` table has both a free-text `department` column (used in this system as "ตำแหน่ง"/position)
+**and** a `dept_code` FK into the `departments` table (แผนก/department, joined for `dept_name`).
+`models.User` already models these as two separate fields (`Department` vs `DeptName`), but
+before this session `List` and `Get` both `SELECT`ed only `d.dept_name` (via `LEFT JOIN
+departments`) and returned it under the JSON key `"department"` — silently discarding
+`u.department` on every read. `Update` writes `u.department` correctly and commits the
+transaction fine (write side was never broken), so the symptom looked like "save succeeds but
+reverts after refresh": the saved position text was actually persisted, just never returned by
+any GET path, which showed the joined `dept_name` instead. Fixed by selecting both columns and
+returning them under distinct keys (`department` = free text/position, `dept_name` = joined
+department name) in both `List` and `Get`. **Rule**: when a model has two fields that could both
+plausibly map to a JSON key like `department`/`position`, check the SQL SELECT list actually
+returns the right one — this is the same class of schema-drift bug as the "20 instances" noted in
+Session learnings (2026-07-22) #2, just on the read side instead of the write side.
+
+### 3. Role updates (`user_roles`) were never actually buggy
+Both `Update` (single `role_id`) and `UpdateRoles` (`role_ids[]`) correctly do
+`DELETE FROM user_roles WHERE user_id=$1` followed by fresh `INSERT`s inside a transaction that
+calls `tx.Commit(context.Background())` before returning success — no early return before commit,
+no rollback-only path. `fetchRoleInfos` re-queries `user_roles` live on every `List`/`Get` call
+(no caching), so role changes have always shown correctly after refresh. When a "role/position
+revert after refresh" report comes in, check `department` (position) first — that's the field with
+the read-side bug, not roles.
+
+---
+
+## 🧭 Session learnings (2026-08-27, cont'd) — `supplier.supplier_name` was VARCHAR(60) in live DB, not 200
+
+### 1. `001_master_ddl.sql` is stale for `supplier` too — always check `information_schema.columns` live
+The checked-in DDL says `supplier_name VARCHAR(200)`, but the actual live DB had it as
+`VARCHAR(60)` until this session (widened via manual `ALTER TABLE ... ALTER COLUMN supplier_name
+TYPE VARCHAR(200)`, run in pgAdmin, matching `models.CreateSupplierReq.SupplierName`'s existing
+`validate:"required,max=200"` tag which was already correct — only the DB column and the two bulk
+insert handlers were out of sync). This caused `POST /master/suppliers/bulk` to 500 with a raw
+`SQLSTATE 22001` on any row with a supplier name over 60 characters (common for full Thai legal
+company names) instead of a clean 400. Same class of bug as "ไม่มี VIEW ใดๆ ใน dump เลย" at the top
+of this file — **never trust `001_master_ddl.sql` for current column widths; query
+`information_schema.columns` against the live DB (or ask the user to run a one-off `\d <table>`
+in pgAdmin) before assuming a length limit.**
+
+### 2. Bulk insert handlers now validate varchar lengths before the INSERT, not after
+`BulkCreateSupplier` (`/master/suppliers/bulk`) and `BulkInsertSupplier` (`/supplier/bulk`) in
+`internal/handlers/supplier_handler.go` both now check every string field's length against the
+real `supplier` column limits (`supplier_name` 200, `supplier_short_name` 30, `tax_id` 50,
+`contact_name`/`contact_email` 200, `contact_phone`/`office_phone`/`fax` 50, `payment_terms` 100,
+`currency` 10 — `address` is `TEXT` and `sales_person` is unlimited `VARCHAR`, so neither is
+checked) before opening the transaction, returning `400 {"item[N]: field exceeds max length X
+(got Y)"}` instead of letting a DB `SQLSTATE 22001` reach the client as a raw 500. **Pattern to
+reuse for any future bulk-insert handler**: validate all row-level length constraints up front, in
+a loop over the whole batch, before `tx.Begin()` — don't rely on the DB error surfacing something
+debuggable, since the current all-or-nothing transaction scope means one bad row aborts the whole
+batch and the raw pgx error alone doesn't reliably indicate which item/field the "60" or "200" in
+the message actually refers to.
+
+### 3. `len(string)` counts bytes, not characters — use `utf8.RuneCountInString` for length checks
+Postgres `VARCHAR(n)` counts *characters*, but Go's `len(string)` counts *bytes*. Thai text is
+multi-byte UTF-8, so `len(thaiString)` overcounts relative to what Postgres enforces — a
+59-character Thai company name could report `len() == 90+` and get rejected by an over-eager Go
+check even though Postgres would accept it. Always use `unicode/utf8`'s
+`utf8.RuneCountInString(value)` when validating a field's length against a DB `VARCHAR(n)` limit,
+never plain `len()`. This matters everywhere in this codebase given how much user-facing text
+(supplier names, material names, addresses, contact names) is Thai.

@@ -38,22 +38,22 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	var query string
 	switch role {
 	case "approver":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.department = 'บริหาร' AND u.is_active = true ORDER BY u.full_name`
 	case "requester":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE (u.department IN ('วิศวกรรม', 'ฝ่ายจัดซื้อ') OR u.department IS NULL)
 				 AND u.is_active = true
 				 ORDER BY u.full_name`
 	case "engineering":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.department = 'วิศวกรรม' AND u.is_active = true
 				 ORDER BY u.full_name`
 	default:
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, d.dept_name AS department, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 ORDER BY u.id`
 	}
@@ -68,7 +68,7 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		var u models.User
 		if err := rows.Scan(&u.ID, &u.Username, &u.FullName, &u.Email, &u.LocationCode,
-			&u.EmployeeCode, &u.Department, &u.DeptCode, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.EmployeeCode, &u.Department, &u.DeptName, &u.DeptCode, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return err
 		}
 
@@ -88,6 +88,7 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 			"location_code": u.LocationCode,
 			"employee_code": u.EmployeeCode,
 			"department":    u.Department,
+			"dept_name":     u.DeptName,
 			"dept_code":     u.DeptCode,
 			"is_active":     u.IsActive,
 			"created_at":    u.CreatedAt,
@@ -156,20 +157,21 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	row := h.db.QueryRow(context.Background(), `
-		SELECT u.id, u.username, u.full_name, u.email, u.dept_code, d.dept_name
+		SELECT u.id, u.username, u.full_name, u.email, u.department, u.dept_code, d.dept_name
 		FROM users u
 		LEFT JOIN departments d ON d.dept_code = u.dept_code
 		WHERE u.id=$1`, id)
 
 	var (
-		userID   int64
-		username string
-		fullName string
-		email    *string
-		deptCode *string
-		deptName *string
+		userID     int64
+		username   string
+		fullName   string
+		email      *string
+		department *string
+		deptCode   *string
+		deptName   *string
 	)
-	if err := row.Scan(&userID, &username, &fullName, &email, &deptCode, &deptName); err != nil {
+	if err := row.Scan(&userID, &username, &fullName, &email, &department, &deptCode, &deptName); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "user not found")
 	}
 
@@ -188,7 +190,7 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 		"email":      email,
 		"dept_code":  deptCode,
 		"dept_name":  deptName,
-		"department": deptName,
+		"department": department,
 		"roles":      roleInfos,
 	}})
 }

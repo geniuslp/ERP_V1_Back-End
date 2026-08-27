@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"unicode/utf8"
 
 	"erp-api/internal/middleware"
 	"erp-api/internal/models"
@@ -228,9 +229,44 @@ func (h *SupplierHandler) BulkCreateSupplier(c *fiber.Ctx) error {
 	if len(body.Items) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "items is empty")
 	}
+	maxLen := func(i int, field, value string, max int) error {
+		if n := utf8.RuneCountInString(value); n > max {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+				"item[%d]: %s exceeds max length %d (got %d)", i, field, max, n))
+		}
+		return nil
+	}
 	for i, item := range body.Items {
 		if item.SupplierName == "" {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("item[%d]: supplier_name is required", i))
+		}
+		if err := maxLen(i, "supplier_name", item.SupplierName, 200); err != nil {
+			return err
+		}
+		if item.TaxID != nil {
+			if err := maxLen(i, "tax_id", *item.TaxID, 50); err != nil {
+				return err
+			}
+		}
+		if item.ContactName != nil {
+			if err := maxLen(i, "contact_name", *item.ContactName, 200); err != nil {
+				return err
+			}
+		}
+		if item.ContactPhone != nil {
+			if err := maxLen(i, "contact_phone", *item.ContactPhone, 50); err != nil {
+				return err
+			}
+		}
+		if item.ContactEmail != nil {
+			if err := maxLen(i, "contact_email", *item.ContactEmail, 200); err != nil {
+				return err
+			}
+		}
+		if item.PaymentTerms != nil {
+			if err := maxLen(i, "payment_terms", *item.PaymentTerms, 100); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -294,9 +330,64 @@ func (h *SupplierHandler) BulkInsertSupplier(c *fiber.Ctx) error {
 	if len(req.Suppliers) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "suppliers is empty")
 	}
+	maxLen := func(i int, field, value string, max int) error {
+		if n := utf8.RuneCountInString(value); n > max {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+				"suppliers[%d]: %s exceeds max length %d (got %d)", i, field, max, n))
+		}
+		return nil
+	}
 	for i, s := range req.Suppliers {
 		if s.SupplierName == "" {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("suppliers[%d]: supplier_name is required", i))
+		}
+		if err := maxLen(i, "supplier_name", s.SupplierName, 200); err != nil {
+			return err
+		}
+		if s.SupplierShortName != nil {
+			if err := maxLen(i, "supplier_short_name", *s.SupplierShortName, 30); err != nil {
+				return err
+			}
+		}
+		if s.TaxID != nil {
+			if err := maxLen(i, "tax_id", *s.TaxID, 50); err != nil {
+				return err
+			}
+		}
+		if s.ContactName != nil {
+			if err := maxLen(i, "contact_name", *s.ContactName, 200); err != nil {
+				return err
+			}
+		}
+		if s.ContactPhone != nil {
+			if err := maxLen(i, "contact_phone", *s.ContactPhone, 50); err != nil {
+				return err
+			}
+		}
+		if s.ContactEmail != nil {
+			if err := maxLen(i, "contact_email", *s.ContactEmail, 200); err != nil {
+				return err
+			}
+		}
+		if s.OfficePhone != nil {
+			if err := maxLen(i, "office_phone", *s.OfficePhone, 50); err != nil {
+				return err
+			}
+		}
+		if s.Fax != nil {
+			if err := maxLen(i, "fax", *s.Fax, 50); err != nil {
+				return err
+			}
+		}
+		if s.PaymentTerms != nil {
+			if err := maxLen(i, "payment_terms", *s.PaymentTerms, 100); err != nil {
+				return err
+			}
+		}
+		if s.Currency != nil {
+			if err := maxLen(i, "currency", *s.Currency, 10); err != nil {
+				return err
+			}
 		}
 	}
 
