@@ -6386,20 +6386,22 @@ paths:
       - Attachments
     post:
       consumes:
-      - application/json
-      description: Link an already-uploaded file to a purchase order
+      - multipart/form-data
+      description: |-
+        Accepts the file directly (multipart) — writes it to disk, then inserts the
+        attachment record only if the write succeeded. Replaces the old two-step
+        upload-then-link flow (POST /upload/po has been removed — nothing else used it).
       parameters:
       - description: PO ID
         in: path
         name: id
         required: true
         type: integer
-      - description: Attachment metadata
-        in: body
-        name: body
+      - description: File to upload
+        in: formData
+        name: file
         required: true
-        schema:
-          $ref: '#/definitions/models.AddAttachmentRequest'
+        type: file
       produces:
       - application/json
       responses:
@@ -6413,7 +6415,7 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Add attachment record to PO
+      summary: Upload and attach a file to a PO in one step
       tags:
       - Attachments
   /po/{id}/attachments/{attach_id}:
@@ -7081,20 +7083,23 @@ paths:
       - Attachments
     post:
       consumes:
-      - application/json
-      description: Link an already-uploaded file to a purchase request
+      - multipart/form-data
+      description: |-
+        Accepts the file directly (multipart) — writes it to disk, then inserts the
+        attachment record only if the write succeeded. Replaces the old two-step
+        upload-then-link flow for existing PRs (POST /upload/pr is still used for the
+        create-PR-with-attachments flow, where no PR id exists yet).
       parameters:
       - description: PR ID
         in: path
         name: id
         required: true
         type: integer
-      - description: Attachment metadata
-        in: body
-        name: body
+      - description: File to upload
+        in: formData
+        name: file
         required: true
-        schema:
-          $ref: '#/definitions/models.AddAttachmentRequest'
+        type: file
       produces:
       - application/json
       responses:
@@ -7108,7 +7113,7 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Add attachment record to PR
+      summary: Upload and attach a file to a PR in one step
       tags:
       - Attachments
   /pr/{id}/attachments/{attach_id}:
@@ -8677,34 +8682,6 @@ paths:
       security:
       - BearerAuth: []
       summary: Upload a file for Memo attachment
-      tags:
-      - Attachments
-  /upload/po:
-    post:
-      consumes:
-      - multipart/form-data
-      description: Upload multipart file; returns stored path to use when saving the
-        attachment record
-      parameters:
-      - description: File to upload
-        in: formData
-        name: file
-        required: true
-        type: file
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/fiber.Map'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/fiber.Map'
-      security:
-      - BearerAuth: []
-      summary: Upload a file for PO attachment
       tags:
       - Attachments
   /upload/pr:

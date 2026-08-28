@@ -33,3 +33,14 @@ func toAbsoluteFileURLPtr(path *string) *string {
 	v := toAbsoluteFileURL(*path)
 	return &v
 }
+
+// toRelativeDiskPath reverses toAbsoluteFileURL: given a value that may be an absolute
+// "{publicBaseURL}/uploads/..." URL (as now returned by the upload endpoints, and thus as
+// clients may send it back when referencing a pre-uploaded file) or an already-relative disk
+// path, returns the relative disk path suitable for os.Stat/os.Open.
+func toRelativeDiskPath(path string) string {
+	if publicBaseURL != "" && strings.HasPrefix(path, publicBaseURL+"/") {
+		return strings.TrimPrefix(path, publicBaseURL+"/")
+	}
+	return path
+}

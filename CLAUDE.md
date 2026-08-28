@@ -781,3 +781,88 @@ inventory system, so this is presumed fine, but wasn't confirmed against an actu
 flow described in the 2026-07-27 entry (no `SELECT ... FOR UPDATE` lock, no `grn_line` insert, no
 `purchase_order.status_receive` recompute, no `po_status_log` insert) — that gap is unrelated to
 the inventory-writes fix and still needs its own task if the fuller flow is actually wanted.
+
+---
+
+## 🧭 Session learnings (2026-08-28) — attachment file_path absolute URLs + orphaned-attachment-row root cause
+
+### 1. `file_path` in every attachment/image response is now an absolute URL, not a relative path
+Added `PUBLIC_BASE_URL` env var (`internal/config/config.go`, default `http://localhost:8080`)
+and `internal/handlers/fileurl.go` (`toAbsoluteFileURL`/`toAbsoluteFileURLPtr`/`toRelativeDiskPath`,
+package-level, set once via `handlers.SetPublicBaseURL` in `routes.Register`). Every handler that
+returns a `file_path`/`thumbnail_url` read from `pr_attachment`, `po_attachment`,
+`memo_attachment`, or `stock_item_image` now absolutizes it before sending to the client — this
+was the fix for "clicking an attachment link opens a new tab that redirects to login": links were
+bare relative paths (`uploads/pr/...`) with no origin, so the frontend's own prepend logic was
+guessing the wrong host. Root cause was **not** the `/uploads` static route being JWT-protected —
+it never was; `app.Static("/uploads", "./uploads")` in `routes.go` is registered before any
+middleware and remains fully public (a separate, deliberately-deferred security concern, not
+touched here). DB storage of `file_path` is still the bare relative path — only API responses are
+absolutized, keeping the conversion idempotent (`toAbsoluteFileURL` passes through anything
+already starting with `http://`/`https://`) so old and new rows behave the same on read.
+
+### 2. `POST /pr/{id}/attachments` and `POST /po/{id}/attachments` now accept the file directly (multipart), no more two-step upload+link
+Old flow: `POST /upload/pr` (or `/upload/po`) wrote the file to disk and hand the client back a
+`file_path` string; a **separate** later request, `POST /{pr,po}/{id}/attachments`, took whatever
+`file_path` the client sent in its JSON body and inserted the DB row — with **no check that the
+file actually existed on disk**. This is the confirmed root cause of orphaned attachment rows
+(DB row present, file missing on disk): the two steps are decoupled HTTP requests with a client-
+trust gap in between, not an atomicity issue inside one handler. `Add`/`AddPO`
+(`internal/handlers/attachment.go`) were rewritten to accept `multipart/form-data` with a `file`
+field directly: write to disk first, `os.Remove` the just-written file and return the DB error if
+the `INSERT` fails, otherwise return the new row's absolute `file_path`. **`POST /upload/po` was
+removed entirely** (nothing else referenced it — PO attachments are only ever added to an existing
+PO, so there's no "PO doesn't exist yet" case needing a pre-upload step).
+**`POST /upload/pr` and `POST /upload/memo` were deliberately kept** — `CreatePRRequest.Attachments`
+and Memo's `Create`/`Update` still accept a *batch* of pre-uploaded attachment refs in the same
+JSON body as the rest of the document (lines, header fields, etc.), submitted before the PR/Memo
+row exists yet, so there's no id to multipart-POST a single file to. Merging those into a single
+multipart request would mean restructuring PR-create and Memo-create/update into multipart-with-
+JSON-fields entirely — a much larger, separate change, not done here.
+**🔴 Frontend impact — breaking change**: any frontend code calling the old two-step
+`POST /upload/pr` (or `/upload/po`) then `POST /po/{id}/attachments` / `POST /pr/{id}/attachments`
+with a JSON `{file_path, file_name, ...}` body **must be updated** to call the attachment endpoint
+directly with a multipart `file` field instead, for the *add-attachment-to-an-existing-PR-or-PO*
+flow specifically. The PR-create and Memo-create/update flows (which still pre-upload via
+`/upload/pr`/`/upload/memo` and submit a JSON attachments array) are unaffected.
+
+### 3. Quick-fix guard added to every remaining client-supplied-`file_path` insert path
+Since `CreatePRRequest.Attachments` and Memo's `Create`/`Update` still trust a client-supplied
+`file_path`, added an `os.Stat(toRelativeDiskPath(att.FilePath))` check immediately before each
+`INSERT` (`pr.go`'s `Create`, `memo.go`'s `Create` and `Update`) — rejects with 400
+(`"attachment %q was not found on disk — please re-upload"`) instead of silently creating another
+orphaned row. `toRelativeDiskPath` strips the `PUBLIC_BASE_URL` prefix back off before the
+filesystem check, since `/upload/pr`'s response `file_path` is now an absolute URL (see #1).
+
+### 4. 🔴 Known data-durability risk, NOT fixed — CORRECTED 2026-08-28: it's Docker's ephemeral writable layer, not git
+**This entry originally claimed `uploads/` was gitignored/untracked — that was wrong, verified and
+retracted the same day.** `git log --all -- uploads/` shows 79 files already committed across 8
+commits going back to the first commit, `.gitignore` has no `uploads/` pattern at all, and
+`git status uploads/` reports a clean tree — runtime-uploaded files **do** get swept into commits
+here (evidently via routine `git add -A`/`git commit` in this repo's actual workflow), they were
+never excluded. So a fresh `git checkout` on its own would NOT lose committed files.
+
+**The real, verified mechanism is Docker's container writable layer, confirmed by reading
+`docker-compose.yml` and `Dockerfile` directly:**
+- `docker-compose.yml`'s `api` service declares **no `volumes:` section at all** — nothing maps
+  `/app/uploads` (or anything else) to a host path or named volume.
+- `Dockerfile`'s final stage (`FROM alpine:3.19`) only `COPY --from=builder`s the compiled binary
+  and `docs/` — it never `COPY`s `uploads/` from the build context into the image, so even the 79
+  files committed to git are **not** baked into the image at build time either.
+- The app writes uploads to `./uploads` relative to its `WORKDIR /app` inside the container —
+  with no volume mount, that path lives entirely in the running container's writable layer.
+- **Any `docker compose build --no-cache && up -d --force-recreate` (or any command that discards
+  the existing container and starts a new one from the image) throws away that writable layer —
+  meaning every file uploaded since the container last started is lost, unconditionally,
+  regardless of whether it was ever committed to git.** This fully explains the missing file
+  without needing the git-tracking theory: the container's `uploads/` and the git repo's
+  `uploads/` are two entirely separate copies of the data that only stay in sync if someone
+  manually re-syncs them (e.g. committing from inside the container, or copying files out before
+  a rebuild) — nothing in the current Dockerfile/compose setup keeps them consistent automatically.
+
+**Action needed** (infra/deploy change, not application code, not done as part of this session):
+add a named volume or bind mount for `/app/uploads` in `docker-compose.yml` so the writable-layer
+discard on rebuild/recreate stops mattering. Until that's done, any deploy step that rebuilds or
+recreates the `api` container should copy `uploads/` out of the old container first (or restore it
+into the new one from git/backup) — a plain `git pull` immediately before the rebuild is not
+sufficient by itself, since the final image never picks the directory up regardless.

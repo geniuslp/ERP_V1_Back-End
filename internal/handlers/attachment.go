@@ -130,14 +130,17 @@ func (h *AttachmentHandler) UploadMemoFile(c *fiber.Ctx) error {
 }
 
 // AddAttachment godoc
-// @Summary      Add attachment record to PR
-// @Description  Link an already-uploaded file to a purchase request
+// @Summary      Upload and attach a file to a PR in one step
+// @Description  Accepts the file directly (multipart) — writes it to disk, then inserts the
+// @Description  attachment record only if the write succeeded. Replaces the old two-step
+// @Description  upload-then-link flow for existing PRs (POST /upload/pr is still used for the
+// @Description  create-PR-with-attachments flow, where no PR id exists yet).
 // @Tags         Attachments
 // @Security     BearerAuth
-// @Accept       json
+// @Accept       multipart/form-data
 // @Produce      json
-// @Param        id    path  int                          true  "PR ID"
-// @Param        body  body  models.AddAttachmentRequest  true  "Attachment metadata"
+// @Param        id    path      int   true  "PR ID"
+// @Param        file  formData  file  true  "File to upload"
 // @Success      201   {object}  fiber.Map
 // @Failure      400   {object}  fiber.Map
 // @Router       /pr/{id}/attachments [post]
@@ -149,12 +152,26 @@ func (h *AttachmentHandler) Add(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid pr_id")
 	}
 
-	var req models.AddAttachmentRequest
-	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	file, err := c.FormFile("file")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "file field is required")
 	}
-	if req.FilePath == "" || req.FileName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "file_path and file_name are required")
+
+	now := time.Now()
+	dir := filepath.Join("uploads", "pr", now.Format("2006"), now.Format("01"))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
+	}
+	saveName := fmt.Sprintf("%d_%s", now.UnixMilli(), filepath.Base(file.Filename))
+	savePath := filepath.Join(dir, saveName)
+	if err := c.SaveFile(file, savePath); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
+	}
+	relPath := filepath.ToSlash(savePath)
+
+	contentType := file.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
 
 	var id int64
@@ -162,15 +179,20 @@ func (h *AttachmentHandler) Add(c *fiber.Ctx) error {
 		INSERT INTO pr_attachment (pr_id, file_name, file_path, file_size, file_type, uploaded_by)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id`,
-		prID, req.FileName, req.FilePath, req.FileSize, req.FileType, claims.UserID,
+		prID, file.Filename, relPath, file.Size, contentType, claims.UserID,
 	).Scan(&id)
 	if err != nil {
+		// Insert failed — don't leave an orphaned file with no DB row referencing it.
+		os.Remove(savePath)
 		return err
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"success": true,
-		"data":    fiber.Map{"id": id},
+		"data": fiber.Map{
+			"id":        id,
+			"file_path": toAbsoluteFileURL(relPath),
+		},
 	})
 }
 
@@ -215,60 +237,17 @@ func (h *AttachmentHandler) List(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }
 
-// UploadPOFile godoc
-// @Summary      Upload a file for PO attachment
-// @Description  Upload multipart file; returns stored path to use when saving the attachment record
+// AddPOAttachment godoc
+// @Summary      Upload and attach a file to a PO in one step
+// @Description  Accepts the file directly (multipart) — writes it to disk, then inserts the
+// @Description  attachment record only if the write succeeded. Replaces the old two-step
+// @Description  upload-then-link flow (POST /upload/po has been removed — nothing else used it).
 // @Tags         Attachments
 // @Security     BearerAuth
 // @Accept       multipart/form-data
 // @Produce      json
+// @Param        id    path      int   true  "PO ID"
 // @Param        file  formData  file  true  "File to upload"
-// @Success      200   {object}  fiber.Map
-// @Failure      400   {object}  fiber.Map
-// @Router       /upload/po [post]
-func (h *AttachmentHandler) UploadPOFile(c *fiber.Ctx) error {
-	file, err := c.FormFile("file")
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "file field is required")
-	}
-
-	now := time.Now()
-	dir := filepath.Join("uploads", "po", now.Format("2006"), now.Format("01"))
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
-	}
-
-	saveName := fmt.Sprintf("%d_%s", now.UnixMilli(), filepath.Base(file.Filename))
-	savePath := filepath.Join(dir, saveName)
-	if err := c.SaveFile(file, savePath); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
-	}
-
-	contentType := file.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-
-	return c.JSON(fiber.Map{
-		"success": true,
-		"data": models.UploadFileResponse{
-			FilePath: toAbsoluteFileURL(filepath.ToSlash(savePath)),
-			FileName: file.Filename,
-			FileSize: file.Size,
-			FileType: contentType,
-		},
-	})
-}
-
-// AddPOAttachment godoc
-// @Summary      Add attachment record to PO
-// @Description  Link an already-uploaded file to a purchase order
-// @Tags         Attachments
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      json
-// @Param        id    path  int                          true  "PO ID"
-// @Param        body  body  models.AddAttachmentRequest  true  "Attachment metadata"
 // @Success      201   {object}  fiber.Map
 // @Failure      400   {object}  fiber.Map
 // @Router       /po/{id}/attachments [post]
@@ -280,12 +259,26 @@ func (h *AttachmentHandler) AddPO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid po_id")
 	}
 
-	var req models.AddAttachmentRequest
-	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	file, err := c.FormFile("file")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "file field is required")
 	}
-	if req.FilePath == "" || req.FileName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "file_path and file_name are required")
+
+	now := time.Now()
+	dir := filepath.Join("uploads", "po", now.Format("2006"), now.Format("01"))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
+	}
+	saveName := fmt.Sprintf("%d_%s", now.UnixMilli(), filepath.Base(file.Filename))
+	savePath := filepath.Join(dir, saveName)
+	if err := c.SaveFile(file, savePath); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
+	}
+	relPath := filepath.ToSlash(savePath)
+
+	contentType := file.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
 
 	var id int64
@@ -293,15 +286,19 @@ func (h *AttachmentHandler) AddPO(c *fiber.Ctx) error {
 		INSERT INTO po_attachment (po_id, file_name, file_path, file_size, file_type, uploaded_by)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id`,
-		poID, req.FileName, req.FilePath, req.FileSize, req.FileType, claims.UserID,
+		poID, file.Filename, relPath, file.Size, contentType, claims.UserID,
 	).Scan(&id)
 	if err != nil {
+		os.Remove(savePath)
 		return err
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"success": true,
-		"data":    fiber.Map{"id": id},
+		"data": fiber.Map{
+			"id":        id,
+			"file_path": toAbsoluteFileURL(relPath),
+		},
 	})
 }
 

@@ -6710,9 +6710,9 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Link an already-uploaded file to a purchase order",
+                "description": "Accepts the file directly (multipart) — writes it to disk, then inserts the\nattachment record only if the write succeeded. Replaces the old two-step\nupload-then-link flow (POST /upload/po has been removed — nothing else used it).",
                 "consumes": [
-                    "application/json"
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -6720,7 +6720,7 @@ const docTemplate = `{
                 "tags": [
                     "Attachments"
                 ],
-                "summary": "Add attachment record to PO",
+                "summary": "Upload and attach a file to a PO in one step",
                 "parameters": [
                     {
                         "type": "integer",
@@ -6730,13 +6730,11 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Attachment metadata",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/models.AddAttachmentRequest"
-                        }
+                        "type": "file",
+                        "description": "File to upload",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -7492,9 +7490,9 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Link an already-uploaded file to a purchase request",
+                "description": "Accepts the file directly (multipart) — writes it to disk, then inserts the\nattachment record only if the write succeeded. Replaces the old two-step\nupload-then-link flow for existing PRs (POST /upload/pr is still used for the\ncreate-PR-with-attachments flow, where no PR id exists yet).",
                 "consumes": [
-                    "application/json"
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -7502,7 +7500,7 @@ const docTemplate = `{
                 "tags": [
                     "Attachments"
                 ],
-                "summary": "Add attachment record to PR",
+                "summary": "Upload and attach a file to a PR in one step",
                 "parameters": [
                     {
                         "type": "integer",
@@ -7512,13 +7510,11 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Attachment metadata",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/models.AddAttachmentRequest"
-                        }
+                        "type": "file",
+                        "description": "File to upload",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -9924,49 +9920,6 @@ const docTemplate = `{
                     "Attachments"
                 ],
                 "summary": "Upload a file for Memo attachment",
-                "parameters": [
-                    {
-                        "type": "file",
-                        "description": "File to upload",
-                        "name": "file",
-                        "in": "formData",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    }
-                }
-            }
-        },
-        "/upload/po": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Upload multipart file; returns stored path to use when saving the attachment record",
-                "consumes": [
-                    "multipart/form-data"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Attachments"
-                ],
-                "summary": "Upload a file for PO attachment",
                 "parameters": [
                     {
                         "type": "file",

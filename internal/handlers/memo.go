@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -369,6 +370,9 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	}
 
 	for _, att := range req.Attachments {
+		if _, err := os.Stat(toRelativeDiskPath(att.FilePath)); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO public.memo_attachment
 			    (memo_id, file_path, file_name, file_size, file_type, uploaded_by)
@@ -511,6 +515,9 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 	for _, att := range req.Attachments {
+		if _, err = os.Stat(toRelativeDiskPath(att.FilePath)); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
+		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO public.memo_attachment
 			    (memo_id, file_path, file_name, file_size, file_type, uploaded_by)

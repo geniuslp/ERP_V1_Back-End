@@ -129,10 +129,14 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	inv.Get("/transactions", inventoryH.ListTransactions)
 
 	// File upload
+	// NOTE: /upload/pr and /upload/memo remain — both PR and Memo create/update accept a
+	// batch of already-uploaded attachment refs in the same JSON body as the rest of the
+	// document, before the PR/Memo id exists, so a pre-upload step is still required there.
+	// /upload/po was removed: PO attachments are only ever added to an existing PO, so
+	// POST /po/{id}/attachments now accepts the file directly (see AddPO in attachment.go).
 	upload := api.Group("/upload")
 	upload.Post("/pr", attachH.UploadPRFile)
 	upload.Post("/memo", attachH.UploadMemoFile)
-	upload.Post("/po", attachH.UploadPOFile)
 
 	// Purchase Request
 	pr := api.Group("/pr")

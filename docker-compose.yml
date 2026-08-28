@@ -18,6 +18,8 @@ services:
       BCRYPT_COST:        "12"
     ports:
       - "8080:8080"
+    volumes:
+      - ./uploads:/app/uploads
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
       interval: 30s
