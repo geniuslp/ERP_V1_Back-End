@@ -68,7 +68,7 @@ func (h *AttachmentHandler) UploadPRFile(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": models.UploadFileResponse{
-			FilePath: filepath.ToSlash(savePath),
+			FilePath: toAbsoluteFileURL(filepath.ToSlash(savePath)),
 			FileName: file.Filename,
 			FileSize: file.Size,
 			FileType: contentType,
@@ -121,7 +121,7 @@ func (h *AttachmentHandler) UploadMemoFile(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": models.UploadFileResponse{
-			FilePath: filepath.ToSlash(savePath),
+			FilePath: toAbsoluteFileURL(filepath.ToSlash(savePath)),
 			FileName: file.Filename,
 			FileSize: file.Size,
 			FileType: contentType,
@@ -208,6 +208,7 @@ func (h *AttachmentHandler) List(c *fiber.Ctx) error {
 		); err != nil {
 			return err
 		}
+		a.FilePath = toAbsoluteFileURL(a.FilePath)
 		items = append(items, a)
 	}
 
@@ -251,7 +252,7 @@ func (h *AttachmentHandler) UploadPOFile(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": models.UploadFileResponse{
-			FilePath: filepath.ToSlash(savePath),
+			FilePath: toAbsoluteFileURL(filepath.ToSlash(savePath)),
 			FileName: file.Filename,
 			FileSize: file.Size,
 			FileType: contentType,
@@ -338,6 +339,7 @@ func (h *AttachmentHandler) ListPO(c *fiber.Ctx) error {
 		); err != nil {
 			return err
 		}
+		a.FilePath = toAbsoluteFileURL(a.FilePath)
 		items = append(items, a)
 	}
 

@@ -95,6 +95,7 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 		); err != nil {
 			return nil, err
 		}
+		a.FilePath = toAbsoluteFileURL(a.FilePath)
 		m.Attachments = append(m.Attachments, a)
 	}
 

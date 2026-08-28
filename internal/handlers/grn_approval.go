@@ -90,8 +90,8 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 }
 
 // ConfirmGRN godoc
-// @Summary      Confirm GRN and post to inventory
-// @Description  Confirms GRN and automatically creates inventory_transaction (GRN_IN)
+// @Summary      Confirm GRN
+// @Description  Confirms GRN and updates purchase_order_line.qty_received. Does not touch inventory/inventory_transaction — that table pair is unused (see CLAUDE.md); stock movement happens via POST /grn/receive instead.
 // @Tags         GRN
 // @Security     BearerAuth
 // @Produce      json
@@ -118,47 +118,31 @@ func (h *GRNHandler) Confirm(c *fiber.Ctx) error {
 		UPDATE grn SET status='CONFIRMED', confirmed_by=$1, confirmed_at=NOW() WHERE id=$2`,
 		claims.UserID, id)
 
-	// Auto-post inventory transactions for accepted qty
+	// NOTE: does NOT touch inventory/inventory_transaction — see CLAUDE.md
+	// "Session learnings (2026-07-27) #3": that legacy table pair is decided
+	// as unused; stock movement on receipt goes through stock_item/
+	// stock_inventory via GoodsReceiptHandler.Receive (POST /grn/receive)
+	// instead, not this confirm step.
 	rows, _ := h.db.Query(context.Background(),
 		`SELECT mat_code, qty_accepted FROM grn_line WHERE grn_id=$1 AND qty_accepted > 0`, id)
 	if rows != nil {
 		defer rows.Close()
-		var seq int64
-		h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(id),0)+1 FROM inventory_transaction`).Scan(&seq)
 
 		for rows.Next() {
 			var matCode string
 			var qty float64
 			rows.Scan(&matCode, &qty)
 
-			txnNo := fmt.Sprintf("TXN-%s-%06d", time.Now().Format("2006"), seq)
-			docType := "GRN"
-			tx.Exec(context.Background(), `
-				INSERT INTO inventory_transaction
-				  (txn_no, txn_type, mat_code, to_warehouse, qty, ref_doc_type, ref_doc_no, txn_date, created_by)
-				VALUES ($1,'GRN_IN',$2,$3,$4,$5,$6,CURRENT_DATE,$7)`,
-				txnNo, matCode, warehouseCode, qty, docType, grnNo, claims.UserID)
-
-			// Update inventory balance
-			tx.Exec(context.Background(), `
-				INSERT INTO inventory (mat_code, warehouse_code, qty_on_hand)
-				VALUES ($1,$2,$3)
-				ON CONFLICT (mat_code, warehouse_code)
-				DO UPDATE SET qty_on_hand = inventory.qty_on_hand + $3, updated_at = NOW()`,
-				matCode, warehouseCode, qty)
-
 			// Update PO line received qty
 			tx.Exec(context.Background(), `
 				UPDATE purchase_order_line SET qty_received = qty_received + $1
 				WHERE id IN (SELECT po_line_id FROM grn_line WHERE grn_id=$2 AND mat_code=$3 LIMIT 1)`,
 				qty, id, matCode)
-
-			seq++
 		}
 	}
 
 	tx.Commit(context.Background())
-	return c.JSON(fiber.Map{"success": true, "message": "GRN confirmed and inventory updated"})
+	return c.JSON(fiber.Map{"success": true, "message": "GRN confirmed"})
 }
 
 // ListGRN godoc

@@ -350,7 +350,7 @@ func (h *RequisitionHandler) Cancel(c *fiber.Ctx) error {
 // @Description  One DB transaction. Locks each line's stock_item row (SELECT ... FOR UPDATE), verifies
 // @Description  sufficient qty, decrements stock_item.qty at the requisition's warehouse, upserts
 // @Description  project_stock for the requisition's project_code, and records a stock_transaction
-// @Description  (txn_type=REQUISITION_ISSUE, ref_doc_type=REQUISITION) per line for movement history.
+// @Description  (txn_type='OUT', ref_doc_type=REQUISITION) per line for movement history.
 // @Tags         Requisition
 // @Security     BearerAuth
 // @Produce      json
@@ -437,7 +437,7 @@ func (h *RequisitionHandler) Confirm(c *fiber.Ctx) error {
 			INSERT INTO stock_transaction
 				(txn_no, txn_type, item_id, from_location, to_location, qty, qty_before, qty_after,
 				 ref_doc_type, ref_doc_id, created_by)
-			VALUES ($1,'REQUISITION_ISSUE',$2,$3,$4,$5,$6,$7,'REQUISITION',$8,$9)`,
+			VALUES ($1,'OUT',$2,$3,$4,$5,$6,$7,'REQUISITION',$8,$9)`,
 			txnNo, *ln.StockItemID, warehouseCode, projectCode, ln.QtyRequested, qtyOnHand, qtyAfter, id, claims.UserID,
 		); err != nil {
 			return err

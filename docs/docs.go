@@ -1346,14 +1346,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Confirms GRN and automatically creates inventory_transaction (GRN_IN)",
+                "description": "Confirms GRN and updates purchase_order_line.qty_received. Does not touch inventory/inventory_transaction — that table pair is unused (see CLAUDE.md); stock movement happens via POST /grn/receive instead.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "GRN"
                 ],
-                "summary": "Confirm GRN and post to inventory",
+                "summary": "Confirm GRN",
                 "parameters": [
                     {
                         "type": "integer",
@@ -7673,7 +7673,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system\ndoes not auto-cancel anything; the user must cancel the referencing PO(s) manually\nfirst. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='ISSUE') by restoring stock_item.qty and recording an\noffsetting RETURN transaction, then sets status back to DRAFT. Relies on the\nconfirmed rule that a PR never has duplicate mat_code across its own lines, so\nreversing by ref_doc_id=pr_id alone (without a pr_line_id column on\nstock_transaction) is unambiguous.",
+                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system\ndoes not auto-cancel anything; the user must cancel the referencing PO(s) manually\nfirst. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an\noffsetting 'IN' transaction, then sets status back to DRAFT. Relies on the\nconfirmed rule that a PR never has duplicate mat_code across its own lines, so\nreversing by ref_doc_id=pr_id alone (without a pr_line_id column on\nstock_transaction) is unambiguous.",
                 "produces": [
                     "application/json"
                 ],
@@ -8014,7 +8014,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One DB transaction. Locks each line's stock_item row (SELECT ... FOR UPDATE), verifies\nsufficient qty, decrements stock_item.qty at the requisition's warehouse, upserts\nproject_stock for the requisition's project_code, and records a stock_transaction\n(txn_type=REQUISITION_ISSUE, ref_doc_type=REQUISITION) per line for movement history.",
+                "description": "One DB transaction. Locks each line's stock_item row (SELECT ... FOR UPDATE), verifies\nsufficient qty, decrements stock_item.qty at the requisition's warehouse, upserts\nproject_stock for the requisition's project_code, and records a stock_transaction\n(txn_type='OUT', ref_doc_type=REQUISITION) per line for movement history.",
                 "produces": [
                     "application/json"
                 ],

@@ -161,6 +161,7 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 		); err != nil {
 			return err
 		}
+		it.ThumbnailURL = toAbsoluteFileURLPtr(it.ThumbnailURL)
 		items = append(items, it)
 	}
 	if items == nil {
@@ -216,6 +217,7 @@ func (h *StockItemHandler) GetByID(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "item not found")
 	}
+	it.ThumbnailURL = toAbsoluteFileURLPtr(it.ThumbnailURL)
 	return c.JSON(fiber.Map{"success": true, "data": it})
 }
 
@@ -242,17 +244,23 @@ func (h *StockItemHandler) Create(c *fiber.Ctx) error {
 	if req.Unit == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "unit is required")
 	}
+	if req.MatCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "mat_code is required")
+	}
 
 	ctx := context.Background()
 
-	itemCode := req.MatCode
-	if itemCode == "" {
-		var err error
-		itemCode, err = h.generateItemCode(ctx)
-		if err != nil {
-			return err
-		}
+	var matExists bool
+	if err := h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM material_code WHERE mat_code=$1)`, req.MatCode,
+	).Scan(&matExists); err != nil {
+		return err
 	}
+	if !matExists {
+		return fiber.NewError(fiber.StatusBadRequest, "mat_code does not exist in material_code")
+	}
+
+	itemCode := req.MatCode
 	qrCode := itemCode
 
 	var id int64
@@ -474,6 +482,36 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 	parsedRows, errs := parseStockItemExcelRows(rows)
 
 	ctx := context.Background()
+
+	// Every stock_item row must link to an existing material_code — batch-check
+	// so a typo'd/nonexistent mat_code is rejected per-row instead of silently
+	// creating an unlinked stock_item.
+	matCodes := make([]string, 0, len(parsedRows))
+	seenCodes := map[string]bool{}
+	for _, row := range parsedRows {
+		if !seenCodes[row.MatCode] {
+			seenCodes[row.MatCode] = true
+			matCodes = append(matCodes, row.MatCode)
+		}
+	}
+	existingCodes := map[string]bool{}
+	if len(matCodes) > 0 {
+		dbRows, qerr := h.db.Query(ctx,
+			`SELECT mat_code FROM material_code WHERE mat_code = ANY($1)`, matCodes)
+		if qerr != nil {
+			return qerr
+		}
+		for dbRows.Next() {
+			var code string
+			if err := dbRows.Scan(&code); err != nil {
+				dbRows.Close()
+				return err
+			}
+			existingCodes[code] = true
+		}
+		dbRows.Close()
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -482,6 +520,10 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 
 	imported := 0
 	for _, row := range parsedRows {
+		if !existingCodes[row.MatCode] {
+			errs = append(errs, fmt.Sprintf("row %d: mat_code %s does not exist in material_code", row.RowNo, row.MatCode))
+			continue
+		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO stock_item (mat_code, item_name, item_type, unit, qty, unit_cost)
 			VALUES ($1,$2,'CONSUMABLE',$3,$4,$5)

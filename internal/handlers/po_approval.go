@@ -355,6 +355,7 @@ func (h *POApprovalHandler) GetDetail(c *fiber.Ctx) error {
 			); err != nil {
 				log.Printf("❌ PO attachments scan error: %v", err)
 			}
+			a.FilePath = toAbsoluteFileURL(a.FilePath)
 			po.Attachments = append(po.Attachments, a)
 		}
 	}

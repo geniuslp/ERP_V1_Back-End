@@ -536,6 +536,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 			poAttRows.Close()
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan po attachments: "+err.Error())
 		}
+		a.FilePath = toAbsoluteFileURL(a.FilePath)
 		poAtts = append(poAtts, a)
 	}
 	poAttRows.Close()
@@ -555,6 +556,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 				prAttRows.Close()
 				return fiber.NewError(fiber.StatusInternalServerError, "failed to scan pr attachments: "+err.Error())
 			}
+			a.FilePath = toAbsoluteFileURL(a.FilePath)
 			prAtts = append(prAtts, a)
 		}
 		prAttRows.Close()
@@ -579,6 +581,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 					memoAttRows.Close()
 					return fiber.NewError(fiber.StatusInternalServerError, "failed to scan memo attachments: "+err.Error())
 				}
+				a.FilePath = toAbsoluteFileURL(a.FilePath)
 				memoAtts = append(memoAtts, a)
 			}
 			memoAttRows.Close()

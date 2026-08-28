@@ -516,15 +516,18 @@ They only share `stock_transaction` for movement history (`ref_doc_type = 'REQUI
 these into one table later without a deliberate decision — they were kept apart because
 `requisition` already existed with a different shape and re-doing it wasn't worth the churn.
 
-### 2. `stock_item.mat_code` uniqueness was changed — check before assuming single-warehouse
-Before this session, `stock_item` had `UNIQUE(mat_code)` — **one row per mat_code system-wide**,
-which made cross-warehouse transfer impossible (you can't have the same mat_code in two
-warehouses). Changed to `UNIQUE(mat_code, warehouse_code)`. Any old code doing
-`SELECT ... FROM stock_item WHERE mat_code=$1` without also filtering `warehouse_code` will
-silently break (or return the wrong row / error on multiple rows) once a second warehouse exists
-with real data — currently only `WH01` is in use, so this hasn't surfaced yet, but it will the
-moment `WH02`+ gets stock. Audit any handler that queries `stock_item` by `mat_code` alone before
-relying on it for a multi-warehouse scenario.
+### 2. `stock_item.mat_code` uniqueness — 🔴 CORRECTED 2026-08-27, this entry was stale
+This entry originally claimed the constraint was changed from `UNIQUE(mat_code)` to
+`UNIQUE(mat_code, warehouse_code)` to support cross-warehouse transfer. **Verified against the
+live DB on 2026-08-27: the actual constraint is `stock_item_code_uq UNIQUE(mat_code)` — single
+column, exactly like before this note claimed the change happened.** Whatever migration this note
+described either was never run or was rolled back — don't trust this note's original claim, and
+don't assume multi-warehouse `stock_item` rows are possible until you've re-checked
+`information_schema.table_constraints` yourself. Any code doing
+`SELECT ... FROM stock_item WHERE mat_code=$1` is currently safe (one row per `mat_code`
+system-wide) — this is another instance of the general rule: **don't trust a CLAUDE.md session
+note's claimed schema state without verifying against `information_schema` first**, same lesson as
+the `supplier.supplier_name` and `001_master_ddl.sql` staleness found the same day (see below).
 
 ### 3. Movement math works on `stock_item.qty` directly, not `stock_inventory`
 Both Requisition Issue and Stock Transfer Confirm decrement/increment `stock_item.qty` directly
@@ -539,15 +542,32 @@ between `stock_item.qty` and `stock_inventory.qty_on_hand` already existed befor
 another instance of it. Don't assume either column is authoritative without checking which flow
 last touched the item.
 
-### 4. `stock_transaction.txn_type` CHECK constraint is stricter than the constants suggest
+### 4. `stock_transaction.txn_type` CHECK constraint is stricter than the constants suggest — 🔴 CORRECTED 2026-08-27
 The live CHECK constraint only allows `IN, OUT, TRANSFER, ADJUST_PLUS, ADJUST_MINUS, BORROW_OUT,
 BORROW_RETURN` — **not** `ISSUE`/`RECEIVE`/`RETURN`, even though `stock_constants.go` defines
-`TxnTypeIssue = "ISSUE"` etc. and `pr.go` inserts using `TxnTypeIssue`. This looks like existing
-drift between the constants file and the DB constraint (not something fixed in this session,
-flagging for whoever investigates why PR-driven stock issue inserts might be failing). Requisition
-Issue and Stock Transfer Confirm use the constraint-legal literal values directly
-(`'OUT'`, `'IN'`, `'TRANSFER'`) rather than the `TxnType*` constants — do the same for any new
-insert into `stock_transaction` until the constants/constraint mismatch is resolved.
+`TxnTypeIssue = "ISSUE"` etc. This entry originally claimed "Requisition Issue and Stock Transfer
+Confirm use the constraint-legal literal values directly" — **that was wrong for Requisition**.
+A full-codebase audit on 2026-08-27 found `RequisitionHandler.Confirm` (`requisition.go`,
+`POST /requisition/{id}/confirm`) was hardcoding `txn_type='REQUISITION_ISSUE'`, a value that was
+never in the constraint's allowed list at all — every requisition confirm was 500ing on
+`stock_txn_type_check`, the same failure mode as the PR-submit bug this note originally flagged.
+Fixed to `'OUT'` (matching the direction convention `WH_TO_PROJECT` uses in `stock_transfer.go`).
+`StockTransfer.Confirm` was verified correct as originally claimed (`'TRANSFER'`/`'OUT'`/`'IN'`).
+Also fixed the same session: `pr.go`'s `deductStockOnSubmit`/`Reopen` (`TxnTypeIssue`/`TxnTypeReturn`
+→ `'OUT'`/`'IN'`) and `stock_transaction.go`'s `Create` `allowedTxnTypes` allow-list (dropped
+`TxnTypeReceive`/`TxnTypeIssue`/`TxnTypeReturn`, added `'IN'`/`'OUT'`). Verified clean at the same
+time: `stock_borrow.go` (`'BORROW_OUT'`/`'BORROW_RETURN'`), `stock_inventory.go`
+(`AdjustStock`/`Transfer`), `goods_receipt.go` (`'IN'`) — all already used constraint-legal values.
+`inventory.go`/`inventory_transaction` is a **separate table with its own separate CHECK
+constraint** that actually does allow `ISSUE/RETURN/TRANSFER_OUT/TRANSFER_IN/ADJUST_PLUS/
+ADJUST_MINUS/GRN_IN/BORROW_OUT/BORROW_RETURN` — confirmed self-consistent, not part of this drift,
+don't conflate the two tables. The `TxnTypeReceive`/`TxnTypeIssue`/`TxnTypeReturn` constants in
+`stock_constants.go` now have zero callers anywhere in the codebase — flagged as removable but not
+deleted, in case a frontend contract still depends on the string values (unverified, backend-only
+repo). **Rule going forward**: any new insert into `stock_transaction` must use one of `IN, OUT,
+TRANSFER, ADJUST_PLUS, ADJUST_MINUS, BORROW_OUT, BORROW_RETURN` as a literal — never trust the
+`TxnType*` constants, and never assume a CLAUDE.md note claiming "X already does this correctly"
+without re-checking the actual code, per the same lesson as the `stock_item` constraint note above.
 
 ### 5. No granular per-warehouse permission check exists yet
 The task asked for "caller must have rights on `to_warehouse_code`" style checks using the 4-layer
@@ -726,3 +746,38 @@ check even though Postgres would accept it. Always use `unicode/utf8`'s
 `utf8.RuneCountInString(value)` when validating a field's length against a DB `VARCHAR(n)` limit,
 never plain `len()`. This matters everywhere in this codebase given how much user-facing text
 (supplier names, material names, addresses, contact names) is Thai.
+
+---
+
+## 🧭 Session learnings (2026-08-27, cont'd) — GRN receiving/confirm brought back in line with the stock_item/inventory decision
+
+### 1. `BulkCreateMaterial` (`internal/handlers/master.go`) now auto-creates `stock_item`, matching `CreateMaterial`
+`POST /grn/receive` (`GoodsReceiptHandler.Receive`) requires a `stock_item` row for every
+`mat_code` it receives (see "Session learnings (2026-08-04)" #1-2 above). Single `CreateMaterial`
+already auto-created one per new material, but `BulkCreateMaterial` — the Excel/bulk-import path —
+never did, so any material created in bulk had no `stock_item` row and `POST /grn/receive` always
+rejected it with `"mat_code X: not found in stock_item"`, even though the material itself was
+completely valid. Fixed by adding a batched `INSERT INTO stock_item (...) SELECT UNNEST(...) ...
+ON CONFLICT (mat_code) DO NOTHING` step after the `material_code` bulk upsert, in the same
+transaction, using each row's `MatNameTH`/`UnitName` as `item_name`/`unit`. **This was the real
+root cause of what looked like a "GRN validates against the wrong table" bug** — the check against
+`stock_item` was correct and intentional; the gap was that one of the two material-creation paths
+never populated it.
+
+### 2. `GRNHandler.Confirm` (`POST /grn/{id}/confirm`, `internal/handlers/grn_approval.go`) no longer writes to `inventory`/`inventory_transaction`
+The code had drifted from the documented policy in "Session learnings (2026-07-27) #3" above,
+which explicitly bans inventory writes from this endpoint. The live code was still doing both: an
+`inventory_transaction` insert (`txn_type='GRN_IN'`, sequence via
+`SELECT COALESCE(MAX(id),0)+1 FROM inventory_transaction` — the same sequence pattern also used,
+separately, by the legacy `internal/handlers/inventory.go` module) and an `inventory.qty_on_hand`
+upsert. Removed both; `Confirm` now only updates `grn.status` and `purchase_order_line.qty_received`.
+**Known dependency, not fully verified**: `GET /inventory` / `GET /inventory/transactions`
+(`internal/handlers/inventory.go`, routed at `/inventory`) read exactly the tables this removal
+stops writing to. Those routes are still live/reachable — if any frontend page still calls them
+expecting post-GRN-confirm balances, they'll stop updating going forward (historical rows are
+unaffected). This module is documented elsewhere in this file as the deliberately-unused legacy
+inventory system, so this is presumed fine, but wasn't confirmed against an actual frontend.
+**Separately noted, not fixed**: the actual code in `Confirm` never matched the fuller "5-step"
+flow described in the 2026-07-27 entry (no `SELECT ... FOR UPDATE` lock, no `grn_line` insert, no
+`purchase_order.status_receive` recompute, no `po_status_log` insert) — that gap is unrelated to
+the inventory-writes fix and still needs its own task if the fuller flow is actually wanted.

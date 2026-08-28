@@ -55,6 +55,7 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	default:
 		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
+				 WHERE u.is_active = true
 				 ORDER BY u.id`
 	}
 

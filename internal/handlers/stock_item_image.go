@@ -126,6 +126,7 @@ func (h *StockItemImageHandler) UploadImages(c *fiber.Ctx) error {
 		).Scan(&img.ID, &img.CreatedAt); err != nil {
 			return err
 		}
+		img.FilePath = toAbsoluteFileURL(img.FilePath)
 		uploaded = append(uploaded, img)
 	}
 
@@ -166,6 +167,7 @@ func (h *StockItemImageHandler) ListImages(c *fiber.Ctx) error {
 		if err := rows.Scan(&img.ID, &img.ItemID, &img.FilePath, &img.FileName, &img.IsPrimary, &img.SortOrder, &img.CreatedAt); err != nil {
 			return err
 		}
+		img.FilePath = toAbsoluteFileURL(img.FilePath)
 		images = append(images, img)
 	}
 

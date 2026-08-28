@@ -177,8 +177,13 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 	})
 }
 
+// allowedTxnTypes mirrors the live stock_txn_type_check DB constraint exactly
+// (IN, OUT, TRANSFER, ADJUST_PLUS, ADJUST_MINUS, BORROW_OUT, BORROW_RETURN).
+// TxnTypeReceive/TxnTypeIssue/TxnTypeReturn ("RECEIVE"/"ISSUE"/"RETURN") are NOT
+// in this list on purpose — those constants don't match the constraint (see
+// CLAUDE.md "Session learnings (2026-08-16) #4" and the pr.go fix on 2026-08-27).
 var allowedTxnTypes = map[string]bool{
-	TxnTypeReceive: true, TxnTypeIssue: true, TxnTypeReturn: true,
+	"IN": true, "OUT": true,
 	TxnTypeAdjustPlus: true, TxnTypeAdjustMinus: true,
 	TxnTypeTransfer: true, TxnTypeBorrowOut: true, TxnTypeBorrowReturn: true,
 }
@@ -231,7 +236,7 @@ func (h *StockTransactionHandler) Create(c *fiber.Ctx) error {
 
 	if locationCode != nil {
 		delta := req.Qty
-		if req.TxnType == TxnTypeIssue || req.TxnType == TxnTypeAdjustMinus || req.TxnType == TxnTypeBorrowOut {
+		if req.TxnType == "OUT" || req.TxnType == TxnTypeAdjustMinus || req.TxnType == TxnTypeBorrowOut {
 			delta = -req.Qty
 		}
 		_, err = tx.Exec(ctx, `

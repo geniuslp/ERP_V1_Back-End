@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -18,6 +19,7 @@ type Config struct {
 	CORSOrigins     string
 	Environment     string
 	BcryptCost      int
+	PublicBaseURL   string
 }
 
 func Load() *Config {
@@ -34,6 +36,7 @@ func Load() *Config {
 		CORSOrigins:   getEnv("CORS_ORIGINS", "*"),
 		Environment:   getEnv("APP_ENV", "development"),
 		BcryptCost:    getInt("BCRYPT_COST", 12),
+		PublicBaseURL: strings.TrimRight(getEnv("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
 	}
 }
 

@@ -437,7 +437,11 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 			INSERT INTO stock_transaction
 			    (txn_no, txn_type, item_id, qty, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
 			VALUES ($1,$2,$3,$4,'PR',$5,'ตัด stock อัตโนมัติจากการ submit PR',CURRENT_DATE,$6)`,
-			txnNo, TxnTypeIssue, itemID, qtyReserved, prID, userID,
+			// 'OUT', not TxnTypeIssue ("ISSUE") — stock_txn_type_check only allows
+			// IN/OUT/TRANSFER/ADJUST_PLUS/ADJUST_MINUS/BORROW_OUT/BORROW_RETURN; the
+			// TxnType* constants in stock_constants.go don't match the live constraint.
+			// See CLAUDE.md "Session learnings (2026-08-16) #4" and the fix on 2026-08-27.
+			txnNo, "OUT", itemID, qtyReserved, prID, userID,
 		); err != nil {
 			return err
 		}
@@ -459,8 +463,8 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 // @Description  does not auto-cancel anything; the user must cancel the referencing PO(s) manually
 // @Description  first. Reverses any stock
 // @Description  deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
-// @Description  ref_doc_id=id, txn_type='ISSUE') by restoring stock_item.qty and recording an
-// @Description  offsetting RETURN transaction, then sets status back to DRAFT. Relies on the
+// @Description  ref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an
+// @Description  offsetting 'IN' transaction, then sets status back to DRAFT. Relies on the
 // @Description  confirmed rule that a PR never has duplicate mat_code across its own lines, so
 // @Description  reversing by ref_doc_id=pr_id alone (without a pr_line_id column on
 // @Description  stock_transaction) is unambiguous.
@@ -530,7 +534,7 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 		SELECT st.item_id, st.qty, si.mat_code
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
-		WHERE st.ref_doc_type = 'PR' AND st.ref_doc_id = $1 AND st.txn_type = $2`, id, TxnTypeIssue)
+		WHERE st.ref_doc_type = 'PR' AND st.ref_doc_id = $1 AND st.txn_type = $2`, id, "OUT")
 	if err != nil {
 		return err
 	}
@@ -576,7 +580,9 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 			INSERT INTO stock_transaction
 			    (txn_no, txn_type, item_id, qty, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
 			VALUES ($1,$2,$3,$4,'PR',$5,'คืน stock จากการ reopen PR',CURRENT_DATE,$6)`,
-			txnNo, TxnTypeReturn, q.ItemID, q.Qty, id, userID,
+			// 'IN', not TxnTypeReturn ("RETURN") — same constraint mismatch as the
+			// submit-side 'OUT' fix above; mirrors it as the reversal direction.
+			txnNo, "IN", q.ItemID, q.Qty, id, userID,
 		); err != nil {
 			return err
 		}

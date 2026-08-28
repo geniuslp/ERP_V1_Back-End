@@ -266,6 +266,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 			prAttRows.Close()
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan pr attachments: "+err.Error())
 		}
+		a.FilePath = toAbsoluteFileURL(a.FilePath)
 		prAtts = append(prAtts, a)
 	}
 	prAttRows.Close()
@@ -285,6 +286,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 				memoAttRows.Close()
 				return fiber.NewError(fiber.StatusInternalServerError, "failed to scan memo attachments: "+err.Error())
 			}
+			a.FilePath = toAbsoluteFileURL(a.FilePath)
 			memoAtts = append(memoAtts, a)
 		}
 		memoAttRows.Close()
