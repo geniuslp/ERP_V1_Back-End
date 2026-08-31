@@ -68,8 +68,16 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 		txnType = f.Type
 	}
 	if txnType != "" {
-		where = append(where, fmt.Sprintf("st.txn_type = $%d", i))
-		args = append(args, txnType)
+		// Accepts either a single value or a comma-separated list (e.g. the
+		// frontend's "Adjust" filter sends "ADJUST_PLUS,ADJUST_MINUS" since
+		// plain "ADJUST" isn't a real txn_type value) — ANY() handles both
+		// a one-element and multi-element slice identically.
+		types := strings.Split(txnType, ",")
+		for idx, t := range types {
+			types[idx] = strings.TrimSpace(t)
+		}
+		where = append(where, fmt.Sprintf("st.txn_type = ANY($%d)", i))
+		args = append(args, types)
 		i++
 	}
 	if f.DateFrom != "" {
@@ -93,10 +101,12 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 		i++
 	}
 	if f.Search != "" {
-		where = append(where, fmt.Sprintf("(si.mat_code ILIKE $%d OR si.item_name ILIKE $%d OR st.txn_no ILIKE $%d)", i, i+1, i+2))
+		where = append(where, fmt.Sprintf(
+			"(si.mat_code ILIKE $%d OR si.item_name ILIKE $%d OR st.txn_no ILIKE $%d OR po.po_no ILIKE $%d OR pr_doc.pr_no ILIKE $%d)",
+			i, i+1, i+2, i+3, i+4))
 		like := "%" + f.Search + "%"
-		args = append(args, like, like, like)
-		i += 3
+		args = append(args, like, like, like, like, like)
+		i += 5
 	}
 
 	whereClause := strings.Join(where, " AND ")

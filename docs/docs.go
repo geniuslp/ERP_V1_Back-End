@@ -2742,8 +2742,14 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "search keyword",
+                        "description": "search keyword (mat_name/mat_code)",
                         "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "search keyword across mat_code, mat_name_th, spec_description",
+                        "name": "search",
                         "in": "query"
                     },
                     {

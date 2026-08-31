@@ -97,7 +97,8 @@ func (h *MasterHandler) UpdateMatGroup(c *fiber.Ctx) error {
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        q         query  string  false  "search keyword"
+// @Param        q         query  string  false  "search keyword (mat_name/mat_code)"
+// @Param        search    query  string  false  "search keyword across mat_code, mat_name_th, spec_description"
 // @Param        group     query  string  false  "group_code filter"
 // @Param        active    query  bool    false  "active only"
 // @Param        page      query  int     false  "page number"  default(1)
@@ -106,6 +107,7 @@ func (h *MasterHandler) UpdateMatGroup(c *fiber.Ctx) error {
 // @Router       /master/materials [get]
 func (h *MasterHandler) ListMaterials(c *fiber.Ctx) error {
 	q := c.Query("q")
+	search := c.Query("search")
 	group := c.Query("group")
 	page := max(c.QueryInt("page", 1), 1)
 	size := min(c.QueryInt("page_size", 20), 100)
@@ -116,27 +118,40 @@ func (h *MasterHandler) ListMaterials(c *fiber.Ctx) error {
 	idx := 1
 
 	if q != "" {
-		where = append(where, fmt.Sprintf("(mat_name_th ILIKE $%d OR mat_name_en ILIKE $%d OR mat_code ILIKE $%d)", idx, idx, idx))
+		where = append(where, fmt.Sprintf("(mn.mat_name ILIKE $%d OR mc.mat_code ILIKE $%d)", idx, idx))
 		args = append(args, "%"+q+"%")
 		idx++
 	}
+	if search != "" {
+		where = append(where, fmt.Sprintf("(mc.mat_code ILIKE $%d OR mn.mat_name ILIKE $%d OR ss.spec_description ILIKE $%d)", idx, idx, idx))
+		args = append(args, "%"+search+"%")
+		idx++
+	}
 	if group != "" {
-		where = append(where, fmt.Sprintf("group_code = $%d", idx))
+		where = append(where, fmt.Sprintf("mg.group_code = $%d", idx))
 		args = append(args, group)
 		idx++
 	}
 
 	whereStr := strings.Join(where, " AND ")
 
+	fromJoin := `FROM material_code mc
+			JOIN mat_group mg ON mg.id = mc.group_id
+			JOIN subgroup sg  ON sg.id = mc.subgroup_id
+			JOIN mat_name mn  ON mn.id = mc.mat_name_id
+			JOIN spec_size ss ON ss.id = mc.spec_id
+			JOIN brand br     ON br.id = mc.brand_id
+			JOIN unit u       ON u.id = mc.unit_id`
+
 	var total int64
-	h.db.QueryRow(context.Background(), fmt.Sprintf(`SELECT COUNT(*) FROM v_material_full WHERE %s`, whereStr), args...).Scan(&total)
+	h.db.QueryRow(context.Background(), fmt.Sprintf(`SELECT COUNT(*) %s WHERE %s`, fromJoin, whereStr), args...).Scan(&total)
 
 	args = append(args, size, offset)
 	rows, err := h.db.Query(context.Background(),
-		fmt.Sprintf(`SELECT mat_code, group_name, subgroup_name, mat_name_th, mat_name_en,
-			spec_description, brand_name, unit_name, is_active
-			FROM v_material_full WHERE %s
-			ORDER BY mat_code LIMIT $%d OFFSET $%d`, whereStr, idx, idx+1), args...)
+		fmt.Sprintf(`SELECT mc.mat_code, mg.group_name, sg.subgroup_name, mn.mat_name, NULL::text,
+			ss.spec_description, br.brand_name, u.unit_name, mc.is_active
+			%s WHERE %s
+			ORDER BY mc.mat_code LIMIT $%d OFFSET $%d`, fromJoin, whereStr, idx, idx+1), args...)
 	if err != nil {
 		return err
 	}
@@ -362,6 +377,9 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 // @Router       /master/allMaterial [get]
 func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 	q := c.Query("q")
+	if q == "" {
+		q = c.Query("search")
+	}
 	subgroupID := c.QueryInt("subgroup_id", 0)
 	matNameID := c.QueryInt("mat_name_id", 0)
 	projectCode := strings.TrimSpace(c.Query("project_code"))
