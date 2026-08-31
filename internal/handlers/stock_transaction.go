@@ -104,12 +104,29 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 	// LEFT JOIN grn (via ref_doc_id when ref_doc_type='GRN') and purchase_order through grn.po_id,
 	// so GRN-sourced rows can carry po_id/po_no/scores without a second request; non-GRN rows
 	// (existing txn_types like ISSUE/TRANSFER/ADJUST) simply get NULLs here and are unaffected.
+	//
+	// ref_doc_no resolution: one LEFT JOIN per ref_doc_type actually written by any INSERT INTO
+	// stock_transaction in this codebase (GRN, PR, REQUISITION, BORROW — confirmed by grepping
+	// every insert site), each gated on st.ref_doc_type so exactly zero or one of them matches
+	// per row; COALESCE below picks whichever matched. 'PO' is never a literal ref_doc_type here
+	// (a GRN's PO is reached via grn.po_id, already joined) so it's not listed separately.
+	// For GRN-sourced rows specifically, ref_doc_no resolves to the PO number (po.po_no), not the
+	// GRN number — users recognize PO numbers, not GRN numbers. The GRN number itself is still
+	// exposed separately as grn_no (already joined) so traceability to the receiving document
+	// isn't lost, it's just no longer the primary ref_doc_no.
+	// STOCK_TRANSFER is a real ref_doc_type value (see stock_transfer.go) but the `stock_transfer`
+	// table does not exist in this database (confirmed via information_schema) — that's a
+	// pre-existing schema gap, not something to paper over here; those rows simply resolve
+	// ref_doc_no to NULL until that table exists.
 	joinClause := `
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
 		LEFT JOIN users u ON u.id = st.created_by
 		LEFT JOIN grn ON st.ref_doc_type = 'GRN' AND grn.id = st.ref_doc_id
-		LEFT JOIN purchase_order po ON po.id = grn.po_id`
+		LEFT JOIN purchase_order po ON po.id = grn.po_id
+		LEFT JOIN purchase_request pr_doc ON st.ref_doc_type = 'PR' AND pr_doc.id = st.ref_doc_id
+		LEFT JOIN requisition req_doc ON st.ref_doc_type = 'REQUISITION' AND req_doc.id = st.ref_doc_id
+		LEFT JOIN borrow borrow_doc ON st.ref_doc_type = 'BORROW' AND borrow_doc.id = st.ref_doc_id`
 
 	var total int64
 	countArgs := make([]interface{}, len(args))
@@ -130,10 +147,11 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 		       st.from_location, st.to_location, st.qty,
 		       st.qty_before, st.qty_after,
 		       st.ref_doc_type, st.ref_doc_id, st.remarks,
+		       COALESCE(po.po_no, pr_doc.pr_no, req_doc.req_no, borrow_doc.borrow_no) AS ref_doc_no,
 		       TO_CHAR(st.txn_date, 'YYYY-MM-DD') AS txn_date,
 		       COALESCE(u.full_name, '') AS created_by_name,
 		       st.created_at,
-		       grn.po_id, po.po_no,
+		       grn.po_id, po.po_no, grn.grn_no,
 		       grn.score_quality, grn.score_quantity, grn.score_ontime, grn.score_notes
 		%s
 		WHERE %s
@@ -152,9 +170,9 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 			&t.ItemID, &t.MatCode, &t.ItemName,
 			&t.FromLocation, &t.ToLocation, &t.Qty,
 			&t.QtyBefore, &t.QtyAfter,
-			&t.RefDocType, &t.RefDocID, &t.Remarks,
+			&t.RefDocType, &t.RefDocID, &t.Remarks, &t.RefDocNo,
 			&t.TxnDate, &t.CreatedByName, &t.CreatedAt,
-			&t.GRNPOID, &t.GRNPONo,
+			&t.GRNPOID, &t.GRNPONo, &t.GRNNo,
 			&t.GRNScoreQuality, &t.GRNScoreQuantity, &t.GRNScoreOntime, &t.GRNScoreNotes,
 		); err != nil {
 			return err

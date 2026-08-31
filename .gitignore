@@ -25,6 +25,9 @@ go.work.sum
 .env.local
 .env.*
 
+# Uploads
+/uploads/
+
 # IDE
 .vscode/
 .idea/

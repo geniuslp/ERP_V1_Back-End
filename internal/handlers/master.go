@@ -312,12 +312,15 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 		query := fmt.Sprintf(baseQuery, "", "", "")
 		rows, err = h.db.Query(context.Background(), query, q, limit)
 	} else {
-		// INNER JOIN stock_item scoped to warehouse_code — only materials with an actual
-		// stock_item row at that warehouse are returned, per requisition's hard requirement
-		// that a requisition draws from exactly one warehouse.
+		// INNER JOIN stock_item -> stock_inventory scoped to warehouse_code — only materials
+		// with actual stock AT THAT WAREHOUSE are returned, per requisition's hard requirement
+		// that a requisition draws from exactly one warehouse. Deliberately NOT using
+		// stock_item.qty (the system-wide rollup total) here: unlike the PO detail page, this
+		// picker's whole purpose is to show/filter by one specific warehouse's real quantity,
+		// so it needs stock_inventory's per-location qty_on_hand, not the cross-warehouse sum.
 		query := fmt.Sprintf(baseQuery,
-			", si.qty AS qty_on_hand",
-			"JOIN stock_item si ON si.mat_code = mc.mat_code AND si.warehouse_code = $3",
+			", si.qty_on_hand AS qty_on_hand",
+			"JOIN stock_item sitem ON sitem.mat_code = mc.mat_code JOIN stock_inventory si ON si.item_id = sitem.id AND si.warehouse_code = $3",
 			"")
 		rows, err = h.db.Query(context.Background(), query, q, limit, warehouseCode)
 	}

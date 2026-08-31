@@ -36,13 +36,12 @@ func toAbsoluteFileURL(path string) string {
 // stripKnownHost removes a "scheme://host[:port]" prefix from an absolute URL, returning just
 // the path portion (no leading slash). Non-absolute input passes through unchanged.
 func stripKnownHost(path string) string {
-	idx := strings.Index(path, "://")
-	if idx == -1 {
+	_, rest, ok := strings.Cut(path, "://")
+	if !ok {
 		return path
 	}
-	rest := path[idx+3:]
-	if slash := strings.Index(rest, "/"); slash != -1 {
-		return rest[slash+1:]
+	if _, p, ok := strings.Cut(rest, "/"); ok {
+		return p
 	}
 	return "" // absolute URL with no path component
 }

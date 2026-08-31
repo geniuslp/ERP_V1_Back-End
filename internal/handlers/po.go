@@ -507,9 +507,9 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		LEFT JOIN mat_name      mn ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size     ss ON ss.id = mc.spec_id
 		LEFT JOIN brand         b  ON b.id  = mc.brand_id
-		LEFT JOIN stock_item    si  ON si.mat_code = pol.mat_code AND si.warehouse_code = $2
+		LEFT JOIN stock_item    si  ON si.mat_code = pol.mat_code
 		LEFT JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
-		WHERE pol.po_id=$1 ORDER BY pol.line_no`, id, po.WarehouseCode)
+		WHERE pol.po_id=$1 ORDER BY pol.line_no`, id)
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {

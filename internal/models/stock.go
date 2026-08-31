@@ -132,6 +132,7 @@ type StockTransaction struct {
 	QtyAfter      *float64  `json:"qty_after,omitempty"`
 	RefDocType    *string   `json:"ref_doc_type"`
 	RefDocID      *int64    `json:"ref_doc_id"`
+	RefDocNo      *string   `json:"ref_doc_no,omitempty"` // human-readable doc number resolved from ref_doc_type+ref_doc_id (e.g. "PR202608-0007", req_no, borrow_no); for ref_doc_type='GRN' resolves to the PO number (po_no) via grn.po_id, not the GRN's own grn_no — see GRNNo for that. Null if ref_doc_type has no known/joinable table (e.g. STOCK_TRANSFER — see stock_transaction.go)
 	Remarks       *string   `json:"remarks"`
 	TxnDate       string    `json:"txn_date"`
 	CreatedByName string    `json:"created_by_name"`
@@ -140,6 +141,7 @@ type StockTransaction struct {
 	// Populated only when ref_doc_type = 'GRN' — joined through grn -> purchase_order.
 	GRNPOID          *int64  `json:"po_id,omitempty"`
 	GRNPONo          *string `json:"po_no,omitempty"`
+	GRNNo            *string `json:"grn_no,omitempty"` // GRN document number — kept for traceability now that ref_doc_no resolves to po_no for GRN rows instead
 	GRNScoreQuality  *int    `json:"score_quality,omitempty"`
 	GRNScoreQuantity *int    `json:"score_quantity,omitempty"`
 	GRNScoreOntime   *int    `json:"score_ontime,omitempty"`

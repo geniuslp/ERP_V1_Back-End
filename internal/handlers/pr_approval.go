@@ -179,6 +179,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		PRType        string               `json:"pr_type"`
 		OrderType     string               `json:"order_type"`
 		JobCode       *string              `json:"job_code,omitempty"`
+		JobName       *string              `json:"job_name,omitempty"` // resolved from cost_subject+cost_job — job_code is a plain varchar, not an FK, but conventionally composes as subject_code+cost_job.job_code (e.g. "MP" = Material + Metal Structure)
 		MemoID        *int64               `json:"memo_id,omitempty"`
 		Lines         []PRLineItem         `json:"lines"`
 		Attachments   models.PRAttachments `json:"attachments"`
@@ -190,10 +191,12 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
 		       NULL AS approver_id, NULL AS approver_name,
 		       pr.location_text, pr.project_code, pr.warehouse_code, w.warehouse_name, pr.remarks,
-		       pr.pr_date::text, pr.required_date::text, pr.pr_type, pr.order_type, pr.job_code, pr.memo_id
+		       pr.pr_date::text, pr.required_date::text, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pr.memo_id
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
 		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
+		LEFT JOIN cost_subject cs ON cs.subject_code = LEFT(pr.job_code, 1)
+		LEFT JOIN cost_job cj ON cj.subject_id = cs.id AND cj.job_code = SUBSTRING(pr.job_code FROM 2)
 		WHERE pr.id = $1`, id)
 
 	var pr PRDetail
@@ -203,7 +206,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	if err := row.Scan(
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode,
-		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.MemoID,
+		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.JobName, &pr.MemoID,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")

@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xuri/excelize/v2"
 
+	"erp-api/internal/middleware"
 	"erp-api/internal/models"
 )
 
@@ -308,7 +310,26 @@ func (h *StockItemHandler) Update(c *fiber.Ctx) error {
 	}
 
 	ctx := context.Background()
-	tag, err := h.db.Exec(ctx, `
+	claims := middleware.GetClaims(c)
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var qtyBefore float64
+	var matCode string
+	if err := tx.QueryRow(ctx,
+		`SELECT qty, mat_code FROM stock_item WHERE id=$1 FOR UPDATE`, id,
+	).Scan(&qtyBefore, &matCode); err != nil {
+		if err == pgx.ErrNoRows {
+			return fiber.NewError(fiber.StatusNotFound, "item not found")
+		}
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE stock_item
 		SET item_name=$1, description=$2, category_id=$3, item_type=$4, unit=$5, qty=$6, unit_cost=$7, updated_at=NOW()
 		WHERE id=$8`,
@@ -319,6 +340,43 @@ func (h *StockItemHandler) Update(c *fiber.Ctx) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return fiber.NewError(fiber.StatusNotFound, "item not found")
+	}
+
+	qtyAfter := req.Qty
+	if qtyAfter != qtyBefore {
+		txnType := "ADJUST_PLUS"
+		if qtyAfter < qtyBefore {
+			txnType = "ADJUST_MINUS"
+		}
+		qtyDelta := qtyAfter - qtyBefore
+		if qtyDelta < 0 {
+			qtyDelta = -qtyDelta
+		}
+
+		txnNo, err := generateTxnNo(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		var createdBy *int64
+		if claims != nil {
+			createdBy = &claims.UserID
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO stock_transaction
+			    (txn_no, txn_type, item_id, qty, qty_before, qty_after, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6,NULL,NULL,$7,CURRENT_DATE,$8)`,
+			txnNo, txnType, id, qtyDelta, qtyBefore, qtyAfter,
+			fmt.Sprintf("ปรับปรุงจำนวนสต็อกด้วยตนเองผ่านหน้าแก้ไขรายการ (รหัสวัสดุ %s)", matCode),
+			createdBy,
+		); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
 	}
 	return c.JSON(fiber.Map{"success": true})
 }

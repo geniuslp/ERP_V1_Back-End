@@ -28,6 +28,19 @@ func generateBorrowNo(ctx context.Context, tx pgx.Tx) (string, error) {
 	return fmt.Sprintf("BOR-%s-%04d", timeYYMM(), seq), nil
 }
 
+// rollupStockItemQty recomputes stock_item.qty as the sum of stock_inventory.qty_on_hand
+// across all locations for itemID, mirroring the rollup goods_receipt.go performs after
+// every stock_inventory write — keeps stock_item.qty an accurate system-wide total for
+// any caller that reads it without going through stock_inventory directly.
+func rollupStockItemQty(ctx context.Context, tx pgx.Tx, itemID int64) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE stock_item SET qty = (
+			SELECT COALESCE(SUM(qty_on_hand), 0) FROM stock_inventory WHERE item_id = $1
+		), updated_at = NOW()
+		WHERE id = $1`, itemID)
+	return err
+}
+
 func (h *StockBorrowHandler) loadLines(ctx context.Context, borrowID int64) ([]models.BorrowLine, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT bl.id, bl.borrow_id, bl.line_no,
@@ -485,6 +498,9 @@ func (h *StockBorrowHandler) Receive(c *fiber.Ctx) error {
 		if err != nil {
 			return err
 		}
+		if err := rollupStockItemQty(ctx, tx, itemID); err != nil {
+			return err
+		}
 
 		var seq int64
 		tx.QueryRow(ctx, "SELECT nextval('stock_txn_seq')").Scan(&seq)
@@ -580,6 +596,9 @@ func (h *StockBorrowHandler) Return(c *fiber.Ctx) error {
 				UPDATE stock_inventory SET qty_on_hand = qty_on_hand + $1, updated_at=NOW()
 				WHERE item_id=$2 AND location_code=$3`, ln.QtyReturned, itemID, locationCode)
 			if err != nil {
+				return err
+			}
+			if err := rollupStockItemQty(ctx, tx, itemID); err != nil {
 				return err
 			}
 		}
