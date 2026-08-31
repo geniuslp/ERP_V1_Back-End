@@ -737,15 +737,26 @@ definitions:
         type: number
       consultant_name:
         type: string
+      credit:
+        description: free text, format not finalized — no validation
+        type: string
       end_date:
         type: string
+      job_codes:
+        description: subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+        items:
+          type: string
+        type: array
       location_code:
+        description: free-text project address
         type: string
       owner_id:
         type: integer
       project_code:
         type: string
       project_name:
+        type: string
+      project_owner_name:
         type: string
       start_date:
         type: string
@@ -1151,6 +1162,37 @@ definitions:
       zone_type:
         type: string
     type: object
+  models.EditApprovedPOLine:
+    properties:
+      description:
+        type: string
+      disc_type:
+        enum:
+        - pct
+        - amt
+        type: string
+      discount:
+        type: number
+      id:
+        type: integer
+      mat_code:
+        type: string
+      pr_line_id:
+        type: integer
+      qty_ordered:
+        type: number
+      remarks:
+        type: string
+      unit_price:
+        minimum: 0
+        type: number
+      wht_rate:
+        type: number
+    required:
+    - mat_code
+    - qty_ordered
+    - unit_price
+    type: object
   models.EditApprovedPORequest:
     properties:
       currency:
@@ -1164,7 +1206,7 @@ definitions:
         type: string
       lines:
         items:
-          $ref: '#/definitions/models.CreatePOLine'
+          $ref: '#/definitions/models.EditApprovedPOLine'
         minItems: 1
         type: array
       location_text:
@@ -1580,25 +1622,35 @@ definitions:
         type: string
       created_by:
         type: integer
+      credit:
+        description: free text, format not finalized — no validation
+        type: string
       end_date:
         type: string
       id:
         type: integer
       is_active:
         type: boolean
+      job_codes:
+        items:
+          type: string
+        type: array
       location_code:
-        type: string
-      location_name:
+        description: free-text project address — no longer an FK/lookup against location.location_code
         type: string
       owner_id:
         type: integer
       owner_name:
+        description: joined from users.full_name via owner_id ("ผู้รับผิดชอบหลัก")
         type: string
       paid_amount:
         type: number
       project_code:
         type: string
       project_name:
+        type: string
+      project_owner_name:
+        description: free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name
         type: string
       remaining_amount:
         type: number
@@ -2046,18 +2098,29 @@ definitions:
         type: number
       consultant_name:
         type: string
+      credit:
+        description: free text, format not finalized — no validation
+        type: string
       end_date:
         description: '"YYYY-MM-DD"'
         type: string
       is_active:
         type: boolean
+      job_codes:
+        description: subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+        items:
+          type: string
+        type: array
       location_code:
+        description: free-text project address
         type: string
       owner_id:
         type: integer
       project_code:
         type: string
       project_name:
+        type: string
+      project_owner_name:
         type: string
       start_date:
         description: '"YYYY-MM-DD" — pgx casts to date automatically'
@@ -4268,6 +4331,12 @@ paths:
     post:
       consumes:
       - application/json
+      description: location_code is now a free-text project address (no longer validated/joined
+        against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G
+        (validated server-side, 400 on any other value). project_owner_name is free
+        text ("เจ้าของโครงการ"), distinct from owner_id/owner_name ("ผู้รับผิดชอบหลัก",
+        FK to users). credit is plain free text with no format validation (not finalized
+        yet).
       parameters:
       - description: Project data
         in: body
@@ -4349,6 +4418,12 @@ paths:
     put:
       consumes:
       - application/json
+      description: location_code is now a free-text project address (no longer validated/joined
+        against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G
+        (validated server-side, 400 on any other value). project_owner_name is free
+        text ("เจ้าของโครงการ"), distinct from owner_id/owner_name ("ผู้รับผิดชอบหลัก",
+        FK to users). credit is plain free text with no format validation (not finalized
+        yet).
       parameters:
       - description: Project ID
         in: path
@@ -7208,9 +7283,11 @@ paths:
     put:
       description: |-
         Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this
-        PR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system
-        does not auto-cancel anything; the user must cancel the referencing PO(s) manually
-        first. Reverses any stock
+        PR's lines (via purchase_order_line.pr_line_id) is not yet "closed" — closed means
+        status='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already
+        served its purpose and no longer needs to block PR edits). The system does not
+        auto-cancel/auto-close anything; the user must get the referencing PO(s) to one of
+        those states manually first. Reverses any stock
         deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
         ref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an
         offsetting 'IN' transaction, then sets status back to DRAFT. Relies on the

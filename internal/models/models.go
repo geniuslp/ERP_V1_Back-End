@@ -92,51 +92,59 @@ type CreateLocationRequest struct {
 // ─── Master: Project ─────────────────────────────────────────────────────────
 
 type ProjectFull struct {
-	Id              int        `json:"id"`
-	ProjectCode     string     `json:"project_code"`
-	ProjectName     string     `json:"project_name"`
-	LocationCode    *string    `json:"location_code,omitempty"`
-	LocationName    *string    `json:"location_name,omitempty"`
-	OwnerID         *int64     `json:"owner_id,omitempty"`
-	OwnerName       *string    `json:"owner_name,omitempty"`
-	BudgetAmount    float64    `json:"budget_amount"`
-	SpentAmount     float64    `json:"spent_amount"`
-	PaidAmount      float64    `json:"paid_amount"`
-	RemainingAmount float64    `json:"remaining_amount"`
-	ConsultantName  *string    `json:"consultant_name,omitempty"`
-	StartDate       *time.Time `json:"start_date,omitempty"`
-	EndDate         *time.Time `json:"end_date,omitempty"`
-	Status          string     `json:"status"`
-	IsActive        bool       `json:"is_active"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	CreatedBy       *int64     `json:"created_by,omitempty"`
-	UpdatedBy       *int64     `json:"updated_by,omitempty"`
+	Id               int        `json:"id"`
+	ProjectCode      string     `json:"project_code"`
+	ProjectName      string     `json:"project_name"`
+	LocationCode     *string    `json:"location_code,omitempty"` // free-text project address — no longer an FK/lookup against location.location_code
+	OwnerID          *int64     `json:"owner_id,omitempty"`
+	OwnerName        *string    `json:"owner_name,omitempty"`         // joined from users.full_name via owner_id ("ผู้รับผิดชอบหลัก")
+	ProjectOwnerName *string    `json:"project_owner_name,omitempty"` // free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name
+	JobCodes         []string   `json:"job_codes,omitempty"`
+	Credit           *string    `json:"credit,omitempty"` // free text, format not finalized — no validation
+	BudgetAmount     float64    `json:"budget_amount"`
+	SpentAmount      float64    `json:"spent_amount"`
+	PaidAmount       float64    `json:"paid_amount"`
+	RemainingAmount  float64    `json:"remaining_amount"`
+	ConsultantName   *string    `json:"consultant_name,omitempty"`
+	StartDate        *time.Time `json:"start_date,omitempty"`
+	EndDate          *time.Time `json:"end_date,omitempty"`
+	Status           string     `json:"status"`
+	IsActive         bool       `json:"is_active"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	CreatedBy        *int64     `json:"created_by,omitempty"`
+	UpdatedBy        *int64     `json:"updated_by,omitempty"`
 }
 
 type CreateProjectReq struct {
-	ProjectCode    string  `json:"project_code"`
-	ProjectName    string  `json:"project_name"`
-	LocationCode   *string `json:"location_code,omitempty"`
-	OwnerID        *int64  `json:"owner_id,omitempty"`
-	BudgetAmount   float64 `json:"budget_amount"`
-	ConsultantName *string `json:"consultant_name,omitempty"`
-	StartDate      *string `json:"start_date,omitempty"`
-	EndDate        *string `json:"end_date,omitempty"`
-	Status         string  `json:"status"`
+	ProjectCode      string   `json:"project_code"`
+	ProjectName      string   `json:"project_name"`
+	LocationCode     *string  `json:"location_code,omitempty"` // free-text project address
+	OwnerID          *int64   `json:"owner_id,omitempty"`
+	ProjectOwnerName *string  `json:"project_owner_name,omitempty"`
+	JobCodes         []string `json:"job_codes,omitempty"` // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+	Credit           *string  `json:"credit,omitempty"`    // free text, format not finalized — no validation
+	BudgetAmount     float64  `json:"budget_amount"`
+	ConsultantName   *string  `json:"consultant_name,omitempty"`
+	StartDate        *string  `json:"start_date,omitempty"`
+	EndDate          *string  `json:"end_date,omitempty"`
+	Status           string   `json:"status"`
 }
 
 type UpdateProjectReq struct {
-	ProjectCode    string  `json:"project_code"`
-	ProjectName    string  `json:"project_name"`
-	LocationCode   *string `json:"location_code,omitempty"`
-	OwnerID        *int64  `json:"owner_id,omitempty"`
-	BudgetAmount   float64 `json:"budget_amount"`
-	ConsultantName *string `json:"consultant_name,omitempty"`
-	StartDate      *string `json:"start_date,omitempty"` // "YYYY-MM-DD" — pgx casts to date automatically
-	EndDate        *string `json:"end_date,omitempty"`   // "YYYY-MM-DD"
-	Status         string  `json:"status"`
-	IsActive       bool    `json:"is_active"`
+	ProjectCode      string   `json:"project_code"`
+	ProjectName      string   `json:"project_name"`
+	LocationCode     *string  `json:"location_code,omitempty"` // free-text project address
+	OwnerID          *int64   `json:"owner_id,omitempty"`
+	ProjectOwnerName *string  `json:"project_owner_name,omitempty"`
+	JobCodes         []string `json:"job_codes,omitempty"` // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+	Credit           *string  `json:"credit,omitempty"`    // free text, format not finalized — no validation
+	BudgetAmount     float64  `json:"budget_amount"`
+	ConsultantName   *string  `json:"consultant_name,omitempty"`
+	StartDate        *string  `json:"start_date,omitempty"` // "YYYY-MM-DD" — pgx casts to date automatically
+	EndDate          *string  `json:"end_date,omitempty"`   // "YYYY-MM-DD"
+	Status           string   `json:"status"`
+	IsActive         bool     `json:"is_active"`
 }
 
 type ProjectListFilter struct {
@@ -1022,26 +1030,45 @@ type UpdatePOLineRequest struct {
 	DiscType    *string `json:"disc_type" validate:"omitempty,oneof=pct amt"`
 }
 
+// EditApprovedPOLine is one line in an EditApprovedPORequest. Same shape as CreatePOLine plus
+// an optional ID: omitted/null means "insert as a new line," present means "match against an
+// existing purchase_order_line.id" so EditApprovedPO can diff per-line instead of replacing the
+// whole line set (see EditApprovedPO's per-line rules re: qty_received).
+type EditApprovedPOLine struct {
+	ID          *int64   `json:"id,omitempty"`
+	MatCode     string   `json:"mat_code" validate:"required"`
+	PRLineID    *int64   `json:"pr_line_id,omitempty"`
+	QtyOrdered  float64  `json:"qty_ordered" validate:"required,gt=0"`
+	UnitPrice   float64  `json:"unit_price" validate:"required,gte=0"`
+	DiscType    string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
+	Discount    float64  `json:"discount,omitempty"`
+	WhtRate     *float64 `json:"wht_rate,omitempty"`
+	Description *string  `json:"description,omitempty"`
+	Remarks     *string  `json:"remarks,omitempty"`
+}
+
 // EditApprovedPORequest is the body for PUT /po/{id}/edit-approved — editing a PO that is
-// already APPROVED. Replaces header fields and lines wholesale (mirrors CreatePORequest,
-// minus pr_id/rfq_id/status which cannot change post-approval) and requires a mandatory
-// reason for po_edit_log.
+// already APPROVED. Replaces header fields wholesale (mirrors CreatePORequest, minus
+// pr_id/rfq_id/status which cannot change post-approval) and requires a mandatory reason for
+// po_edit_log. Lines are diffed per-line (see EditApprovedPOLine), not replaced wholesale —
+// this is a breaking change from the old CreatePOLine-based shape: every line the frontend
+// already has must now round-trip its `id`, or it will be (incorrectly) treated as a new line.
 type EditApprovedPORequest struct {
-	SupplierID    int64          `json:"supplier_id" validate:"required"`
-	LocationText  string         `json:"location_text" validate:"required"`
-	ProjectCode   *string        `json:"project_code,omitempty"`
-	RequestedBy   *int64         `json:"requested_by,omitempty"`
-	WarehouseCode *string        `json:"warehouse_code,omitempty"`
-	Currency      string         `json:"currency"`
-	ExpectedDate  *string        `json:"expected_date,omitempty"`
-	PaymentTerms  *string        `json:"payment_terms,omitempty"`
-	Remarks       *string        `json:"remarks,omitempty"`
-	UseDiscount   *bool          `json:"use_discount,omitempty"`
-	DiscountType  *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
-	UseVAT        *bool          `json:"use_vat,omitempty"`
-	UseWHT        *bool          `json:"use_wht,omitempty"`
-	Lines         []CreatePOLine `json:"lines" validate:"required,min=1,dive"`
-	Reason        string         `json:"reason" validate:"required"`
+	SupplierID    int64                `json:"supplier_id" validate:"required"`
+	LocationText  string               `json:"location_text" validate:"required"`
+	ProjectCode   *string              `json:"project_code,omitempty"`
+	RequestedBy   *int64               `json:"requested_by,omitempty"`
+	WarehouseCode *string              `json:"warehouse_code,omitempty"`
+	Currency      string               `json:"currency"`
+	ExpectedDate  *string              `json:"expected_date,omitempty"`
+	PaymentTerms  *string              `json:"payment_terms,omitempty"`
+	Remarks       *string              `json:"remarks,omitempty"`
+	UseDiscount   *bool                `json:"use_discount,omitempty"`
+	DiscountType  *string              `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
+	UseVAT        *bool                `json:"use_vat,omitempty"`
+	UseWHT        *bool                `json:"use_wht,omitempty"`
+	Lines         []EditApprovedPOLine `json:"lines" validate:"required,min=1,dive"`
+	Reason        string               `json:"reason" validate:"required"`
 }
 
 // ─── GRN ─────────────────────────────────────────────────────────────────────

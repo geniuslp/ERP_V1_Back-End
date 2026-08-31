@@ -1577,9 +1577,9 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		}
 	}
 
-	var currentStatus string
+	var currentStatus, currentStatusReceive string
 	var createdAt time.Time
-	if err := h.db.QueryRow(ctx, `SELECT status, created_at FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus, &createdAt); err != nil {
+	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, created_at FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus, &currentStatusReceive, &createdAt); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if currentStatus != "APPROVED" && currentStatus != "PENDING_REAPPROVAL" {
@@ -1587,6 +1587,12 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 	}
 	if time.Since(createdAt) >= 365*24*time.Hour {
 		return fiber.NewError(fiber.StatusBadRequest, "PO นี้สร้างมาเกิน 1 ปีแล้ว ไม่สามารถแก้ไขได้")
+	}
+	// Fully received — nothing left to procure, and every line is read-only (see the
+	// per-line diff below), so reject the whole edit up front instead of letting the
+	// request fail line-by-line partway through.
+	if currentStatusReceive == "RECEIVED" {
+		return fiber.NewError(fiber.StatusBadRequest, "PO นี้รับของครบแล้ว ไม่สามารถแก้ไขได้")
 	}
 
 	tx, err := h.db.Begin(ctx)
@@ -1667,63 +1673,225 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update PO: "+err.Error())
 	}
 
-	oldRefs := []poLinePRRef{}
+	// ── Per-line diff ────────────────────────────────────────────────────────
+	// Replaces the old delete-all/reinsert-all pattern, which hard-crashed with a raw FK
+	// violation (grn_line.po_line_id -> purchase_order_line.id, ON DELETE NO ACTION) the
+	// instant ANY line on the PO had GRN history — not just the line actually being
+	// changed. Existing lines are matched by EditApprovedPOLine.ID; FOR UPDATE locks them
+	// against a concurrent GRN receipt changing qty_received mid-edit.
+	type existingLine struct {
+		ID          int64
+		MatCode     string
+		PRLineID    *int64
+		QtyOrdered  float64
+		QtyReceived float64
+		UnitPrice   float64
+		DiscType    string
+		Discount    float64
+		WhtRate     *float64
+		Description *string
+		Remarks     *string
+	}
+	existingByID := map[int64]existingLine{}
 	{
-		oldRows, err := tx.Query(ctx, `SELECT pr_line_id, qty_ordered FROM purchase_order_line WHERE po_id=$1`, poID)
+		existingRows, err := tx.Query(ctx, `
+			SELECT id, mat_code, pr_line_id, qty_ordered, qty_received, unit_price,
+			       disc_type, discount, wht_rate, description, remarks
+			FROM purchase_order_line WHERE po_id=$1 FOR UPDATE`, poID)
 		if err != nil {
 			return err
 		}
-		for oldRows.Next() {
-			var prLineID *int64
-			var qty float64
-			if err := oldRows.Scan(&prLineID, &qty); err != nil {
-				oldRows.Close()
+		for existingRows.Next() {
+			var el existingLine
+			if err := existingRows.Scan(&el.ID, &el.MatCode, &el.PRLineID, &el.QtyOrdered, &el.QtyReceived,
+				&el.UnitPrice, &el.DiscType, &el.Discount, &el.WhtRate, &el.Description, &el.Remarks); err != nil {
+				existingRows.Close()
 				return err
 			}
-			if prLineID != nil {
-				oldRefs = append(oldRefs, poLinePRRef{PRLineID: prLineID, Qty: qty})
-			}
+			existingByID[el.ID] = el
 		}
-		oldRows.Close()
+		existingRows.Close()
 	}
 
-	if _, err := tx.Exec(ctx, `DELETE FROM purchase_order_line WHERE po_id=$1`, poID); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to clear old lines: "+err.Error())
+	oldRefs := make([]poLinePRRef, 0, len(existingByID))
+	for _, el := range existingByID {
+		if el.PRLineID != nil {
+			oldRefs = append(oldRefs, poLinePRRef{PRLineID: el.PRLineID, Qty: el.QtyOrdered})
+		}
 	}
+
+	strPtrEq := func(a, b *string) bool {
+		if a == nil || b == nil {
+			return a == b
+		}
+		return *a == *b
+	}
+	fltPtrEq := func(a, b *float64) bool {
+		if a == nil || b == nil {
+			return a == b
+		}
+		return *a == *b
+	}
+	i64PtrEq := func(a, b *int64) bool {
+		if a == nil || b == nil {
+			return a == b
+		}
+		return *a == *b
+	}
+
+	// ── Validation pass — no writes yet ─────────────────────────────────────
+	// Every legality check runs before any DB mutation, so an illegal request (e.g.
+	// deleting a received line) is rejected cleanly with 400 instead of partway through
+	// a sequence of writes that would otherwise need to be reasoned about as partial state
+	// within the transaction (still rolled back on error, but the error itself would be a
+	// raw DB constraint violation instead of a clear business message).
+	type lineDesc struct {
+		isNew  bool
+		existO existingLine // zero value when isNew
+		desc   *string
+	}
+	matchedIDs := map[int64]bool{}
+	decisions := make([]lineDesc, len(req.Lines))
 
 	for i, line := range req.Lines {
 		desc, err := normalizeDescription(line.Description)
 		if err != nil {
 			return err
 		}
+
+		if line.ID == nil {
+			decisions[i] = lineDesc{isNew: true, desc: desc}
+			continue
+		}
+
+		el, ok := existingByID[*line.ID]
+		if !ok {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: line id %d does not belong to this PO", i, *line.ID))
+		}
+		matchedIDs[*line.ID] = true
+
+		if el.QtyReceived > 0 && el.QtyReceived >= el.QtyOrdered {
+			// Fully received — read-only. Reject any change at all, not just qty.
+			unchanged := line.MatCode == el.MatCode &&
+				line.QtyOrdered == el.QtyOrdered &&
+				line.UnitPrice == el.UnitPrice &&
+				line.DiscType == el.DiscType &&
+				line.Discount == el.Discount &&
+				i64PtrEq(line.PRLineID, el.PRLineID) &&
+				fltPtrEq(line.WhtRate, el.WhtRate) &&
+				strPtrEq(desc, el.Description) &&
+				strPtrEq(line.Remarks, el.Remarks)
+			if !unchanged {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+					"lines[%d]: line id %d is fully received (qty_received=%.4f) and cannot be edited", i, el.ID, el.QtyReceived))
+			}
+			decisions[i] = lineDesc{existO: el, desc: desc}
+			continue
+		}
+
+		if el.QtyReceived > 0 && line.QtyOrdered < el.QtyReceived {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+				"lines[%d]: qty_ordered (%.4f) cannot be less than qty_received (%.4f) for line id %d — already partially received",
+				i, line.QtyOrdered, el.QtyReceived, el.ID))
+		}
+
+		decisions[i] = lineDesc{existO: el, desc: desc}
+	}
+
+	// Any existing line the payload didn't reference is a deletion attempt — validate
+	// before writing anything.
+	for id, el := range existingByID {
+		if matchedIDs[id] {
+			continue
+		}
+		if el.QtyReceived > 0 {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+				"line id %d has already been received (qty_received=%.4f) and cannot be deleted — cancel it instead", id, el.QtyReceived))
+		}
+	}
+
+	// ── Write pass ───────────────────────────────────────────────────────────
+	// Offset every existing line's line_no out of the 1..N range first, so reassigning
+	// final line numbers below (by payload order) can never transiently collide with an
+	// existing row's current line_no under the (po_id, line_no) unique constraint —
+	// e.g. line B taking line_no=1 while line A (currently line_no=1, untouched this
+	// request) hasn't been renumbered yet.
+	if len(existingByID) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE purchase_order_line SET line_no = line_no + 100000 WHERE po_id=$1`, poID); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to renumber lines: "+err.Error())
+		}
+	}
+
+	newRefs := make([]poLinePRRef, 0, len(req.Lines))
+
+	for i, line := range req.Lines {
+		lineNo := i + 1
 		lc := calcs[i]
+		d := decisions[i]
+
+		if d.isNew {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO purchase_order_line
+				  (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type,
+				   discount, line_discount, line_vat, line_wht, line_net, wht_rate,
+				   description, remarks, status)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN')`,
+				poID, lineNo, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, lc.discType,
+				line.Discount, lc.discAmt, lc.vatAmt, lc.whtAmt, lc.net, line.WhtRate,
+				d.desc, line.Remarks,
+			); err != nil {
+				if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
+					return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
+				}
+				return fiber.NewError(fiber.StatusInternalServerError, "line insert error: "+err.Error())
+			}
+			if line.PRLineID != nil {
+				newRefs = append(newRefs, poLinePRRef{PRLineID: line.PRLineID, Qty: line.QtyOrdered})
+			}
+			continue
+		}
+
+		el := d.existO
+		lineStatus := "OPEN"
+		if el.QtyReceived > 0 {
+			if el.QtyReceived >= line.QtyOrdered {
+				lineStatus = "RECEIVED"
+			} else {
+				lineStatus = "PARTIAL"
+			}
+		}
+
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_order_line
-			  (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type,
-			   discount, line_discount, line_vat, line_wht, line_net, wht_rate,
-			   description, remarks, status)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN')`,
-			poID, i+1, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, lc.discType,
+			UPDATE purchase_order_line SET
+			    line_no=$1, mat_code=$2, pr_line_id=$3, qty_ordered=$4, unit_price=$5, disc_type=$6,
+			    discount=$7, line_discount=$8, line_vat=$9, line_wht=$10, line_net=$11, wht_rate=$12,
+			    description=$13, remarks=$14, status=$15
+			WHERE id=$16`,
+			lineNo, line.MatCode, line.PRLineID, line.QtyOrdered, line.UnitPrice, lc.discType,
 			line.Discount, lc.discAmt, lc.vatAmt, lc.whtAmt, lc.net, line.WhtRate,
-			desc, line.Remarks,
+			d.desc, line.Remarks, lineStatus, el.ID,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, "line insert error: "+err.Error())
+			return fiber.NewError(fiber.StatusInternalServerError, "line update error: "+err.Error())
+		}
+		newRefs = append(newRefs, poLinePRRef{PRLineID: line.PRLineID, Qty: line.QtyOrdered})
+	}
+
+	for id, el := range existingByID {
+		if matchedIDs[id] {
+			continue
+		}
+		// Already confirmed qty_received=0 above.
+		_ = el
+		if _, err := tx.Exec(ctx, `DELETE FROM purchase_order_line WHERE id=$1`, id); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to delete line: "+err.Error())
 		}
 	}
 
-	{
-		newRefs := make([]poLinePRRef, 0, len(req.Lines))
-		for _, l := range req.Lines {
-			if l.PRLineID != nil {
-				newRefs = append(newRefs, poLinePRRef{PRLineID: l.PRLineID, Qty: l.QtyOrdered})
-			}
-		}
-		if err := reconcilePRLineQty(ctx, tx, oldRefs, newRefs); err != nil {
-			return err
-		}
+	if err := reconcilePRLineQty(ctx, tx, oldRefs, newRefs); err != nil {
+		return err
 	}
 
 	if _, err := tx.Exec(ctx, `

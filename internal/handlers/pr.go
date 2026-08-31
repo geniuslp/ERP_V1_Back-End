@@ -464,9 +464,11 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 // Reopen godoc
 // @Summary      Reopen a COMPLETED PR back to DRAFT for editing
 // @Description  Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this
-// @Description  PR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system
-// @Description  does not auto-cancel anything; the user must cancel the referencing PO(s) manually
-// @Description  first. Reverses any stock
+// @Description  PR's lines (via purchase_order_line.pr_line_id) is not yet "closed" — closed means
+// @Description  status='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already
+// @Description  served its purpose and no longer needs to block PR edits). The system does not
+// @Description  auto-cancel/auto-close anything; the user must get the referencing PO(s) to one of
+// @Description  those states manually first. Reverses any stock
 // @Description  deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
 // @Description  ref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an
 // @Description  offsetting 'IN' transaction, then sets status back to DRAFT. Relies on the
@@ -515,7 +517,7 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 		FROM purchase_order_line pol
 		JOIN purchase_order po ON po.id = pol.po_id
 		JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
-		WHERE prl.pr_id = $1 AND po.status != 'CANCELLED'
+		WHERE prl.pr_id = $1 AND po.status != 'CANCELLED' AND po.status_receive != 'RECEIVED'
 		ORDER BY po.po_no`, id)
 	if err != nil {
 		return err

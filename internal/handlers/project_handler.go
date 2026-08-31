@@ -23,8 +23,20 @@ func NewProjectHandler(db *pgxpool.Pool) *ProjectHandler {
 
 var validProjectStatus = map[string]bool{"ACTIVE": true, "INACTIVE": true, "CLOSED": true}
 
+// validJobCodes mirrors erp-frontend/src/constants/jobTypes.ts's JOB_TYPES codes exactly —
+// keep both lists in sync if that file changes.
+var validJobCodes = map[string]bool{
+	"MP": true, "ME": true, "MS": true, "MF": true, "MG": true, "MH": true, "G": true,
+}
+
+// p.owner_name is aliased to project_owner_name in the SELECT below — the real column (added
+// by manual ALTER TABLE) is literally named owner_name, which collides with the unrelated
+// "u.full_name AS owner_name" alias a few tokens later (the joined name behind owner_id,
+// "ผู้รับผิดชอบหลัก"). Aliasing keeps both columns distinguishable in the result set and
+// matches the existing Go field/JSON key (ProjectOwnerName / project_owner_name) without an
+// API-facing rename — only the SQL identifier was ever wrong, not the model shape.
 const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code,
-	l.location_name, p.owner_id, u.full_name AS owner_name,
+	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name, p.job_codes, p.credit,
 	p.budget_amount,
 	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 		WHERE po.project_code = p.project_code
@@ -52,15 +64,26 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 
 const projectSelectFrom = `
 	FROM project p
-	LEFT JOIN location l ON l.location_code = p.location_code
 	LEFT JOIN users    u ON u.id = p.owner_id`
 
 func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 	return row.Scan(&p.Id, &p.ProjectCode, &p.ProjectName, &p.LocationCode,
-		&p.LocationName, &p.OwnerID, &p.OwnerName,
+		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName, &p.JobCodes, &p.Credit,
 		&p.BudgetAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
+}
+
+// validateJobCodes rejects any job_codes entry outside the fixed JOB_TYPES set (see
+// validJobCodes above) — mirrors the oneof-style validation purchase_order.work_type gets
+// via a struct tag, done manually here since it's a slice, not a single enum field.
+func validateJobCodes(codes []string) error {
+	for _, jc := range codes {
+		if !validJobCodes[jc] {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid job_codes value: %q", jc))
+		}
+	}
+	return nil
 }
 
 // List godoc
@@ -170,6 +193,7 @@ func (h *ProjectHandler) GetByID(c *fiber.Ctx) error {
 
 // Create godoc
 // @Summary      Create project
+// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name ("ผู้รับผิดชอบหลัก", FK to users). credit is plain free text with no format validation (not finalized yet).
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -196,6 +220,9 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	if req.BudgetAmount < 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "budget_amount must be >= 0")
 	}
+	if err := validateJobCodes(req.JobCodes); err != nil {
+		return err
+	}
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -206,12 +233,12 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	var id int64
 	err := h.db.QueryRow(ctx, `
 		INSERT INTO project
-		    (project_code, project_name, location_code, owner_id,
+		    (project_code, project_name, location_code, owner_id, owner_name, job_codes, credit,
 		     budget_amount, consultant_name, start_date, end_date,
 		     status, is_active, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,now(),now(),$10,$10)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,now(),now(),$13,$13)
 		RETURNING id`,
-		req.ProjectCode, req.ProjectName, req.LocationCode, req.OwnerID,
+		req.ProjectCode, req.ProjectName, req.LocationCode, req.OwnerID, req.ProjectOwnerName, req.JobCodes, req.Credit,
 		req.BudgetAmount, req.ConsultantName,
 		req.StartDate, req.EndDate, req.Status, claims.UserID,
 	).Scan(&id)
@@ -232,6 +259,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      Update project
+// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name ("ผู้รับผิดชอบหลัก", FK to users). credit is plain free text with no format validation (not finalized yet).
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -263,6 +291,9 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if req.BudgetAmount < 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "budget_amount must be >= 0")
 	}
+	if err := validateJobCodes(req.JobCodes); err != nil {
+		return err
+	}
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -273,10 +304,12 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	tag, err := h.db.Exec(ctx, `
 		UPDATE project
 		SET project_code=$1, project_name=$2, location_code=$3, owner_id=$4,
-		    budget_amount=$5, consultant_name=$6,
-		    start_date=$7, end_date=$8, status=$9, is_active=$10, updated_at=now(), updated_by=$11
-		WHERE id=$12`,
+		    owner_name=$5, job_codes=$6, credit=$7,
+		    budget_amount=$8, consultant_name=$9,
+		    start_date=$10, end_date=$11, status=$12, is_active=$13, updated_at=now(), updated_by=$14
+		WHERE id=$15`,
 		req.ProjectCode, req.ProjectName, req.LocationCode, req.OwnerID,
+		req.ProjectOwnerName, req.JobCodes, req.Credit,
 		req.BudgetAmount, req.ConsultantName,
 		req.StartDate, req.EndDate, req.Status, req.IsActive, claims.UserID, id)
 	if err != nil {

@@ -3103,6 +3103,7 @@
                         "BearerAuth": []
                     }
                 ],
+                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"), distinct from owner_id/owner_name (\"ผู้รับผิดชอบหลัก\", FK to users). credit is plain free text with no format validation (not finalized yet).",
                 "consumes": [
                     "application/json"
                 ],
@@ -3190,6 +3191,7 @@
                         "BearerAuth": []
                     }
                 ],
+                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"), distinct from owner_id/owner_name (\"ผู้รับผิดชอบหลัก\", FK to users). credit is plain free text with no format validation (not finalized yet).",
                 "consumes": [
                     "application/json"
                 ],
@@ -7669,7 +7671,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet CANCELLED — the system\ndoes not auto-cancel anything; the user must cancel the referencing PO(s) manually\nfirst. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an\noffsetting 'IN' transaction, then sets status back to DRAFT. Relies on the\nconfirmed rule that a PR never has duplicate mat_code across its own lines, so\nreversing by ref_doc_id=pr_id alone (without a pr_line_id column on\nstock_transaction) is unambiguous.",
+                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet \"closed\" — closed means\nstatus='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already\nserved its purpose and no longer needs to block PR edits). The system does not\nauto-cancel/auto-close anything; the user must get the referencing PO(s) to one of\nthose states manually first. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an\noffsetting 'IN' transaction, then sets status back to DRAFT. Relies on the\nconfirmed rule that a PR never has duplicate mat_code across its own lines, so\nreversing by ref_doc_id=pr_id alone (without a pr_line_id column on\nstock_transaction) is unambiguous.",
                 "produces": [
                     "application/json"
                 ],
@@ -11789,10 +11791,22 @@
                 "consultant_name": {
                     "type": "string"
                 },
+                "credit": {
+                    "description": "free text, format not finalized — no validation",
+                    "type": "string"
+                },
                 "end_date": {
                     "type": "string"
                 },
+                "job_codes": {
+                    "description": "subset of MP/ME/MS/MF/MG/MH/G — validated server-side",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "location_code": {
+                    "description": "free-text project address",
                     "type": "string"
                 },
                 "owner_id": {
@@ -11802,6 +11816,9 @@
                     "type": "string"
                 },
                 "project_name": {
+                    "type": "string"
+                },
+                "project_owner_name": {
                     "type": "string"
                 },
                 "start_date": {
@@ -12389,6 +12406,51 @@
                 }
             }
         },
+        "models.EditApprovedPOLine": {
+            "type": "object",
+            "required": [
+                "mat_code",
+                "qty_ordered",
+                "unit_price"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "disc_type": {
+                    "type": "string",
+                    "enum": [
+                        "pct",
+                        "amt"
+                    ]
+                },
+                "discount": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "mat_code": {
+                    "type": "string"
+                },
+                "pr_line_id": {
+                    "type": "integer"
+                },
+                "qty_ordered": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "unit_price": {
+                    "type": "number",
+                    "minimum": 0
+                },
+                "wht_rate": {
+                    "type": "number"
+                }
+            }
+        },
         "models.EditApprovedPORequest": {
             "type": "object",
             "required": [
@@ -12415,7 +12477,7 @@
                     "type": "array",
                     "minItems": 1,
                     "items": {
-                        "$ref": "#/definitions/models.CreatePOLine"
+                        "$ref": "#/definitions/models.EditApprovedPOLine"
                     }
                 },
                 "location_text": {
@@ -13037,6 +13099,10 @@
                 "created_by": {
                     "type": "integer"
                 },
+                "credit": {
+                    "description": "free text, format not finalized — no validation",
+                    "type": "string"
+                },
                 "end_date": {
                     "type": "string"
                 },
@@ -13046,16 +13112,21 @@
                 "is_active": {
                     "type": "boolean"
                 },
-                "location_code": {
-                    "type": "string"
+                "job_codes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
-                "location_name": {
+                "location_code": {
+                    "description": "free-text project address — no longer an FK/lookup against location.location_code",
                     "type": "string"
                 },
                 "owner_id": {
                     "type": "integer"
                 },
                 "owner_name": {
+                    "description": "joined from users.full_name via owner_id (\"ผู้รับผิดชอบหลัก\")",
                     "type": "string"
                 },
                 "paid_amount": {
@@ -13065,6 +13136,10 @@
                     "type": "string"
                 },
                 "project_name": {
+                    "type": "string"
+                },
+                "project_owner_name": {
+                    "description": "free text (\"เจ้าของโครงการ\"), distinct from owner_id/owner_name",
                     "type": "string"
                 },
                 "remaining_amount": {
@@ -13734,6 +13809,10 @@
                 "consultant_name": {
                     "type": "string"
                 },
+                "credit": {
+                    "description": "free text, format not finalized — no validation",
+                    "type": "string"
+                },
                 "end_date": {
                     "description": "\"YYYY-MM-DD\"",
                     "type": "string"
@@ -13741,7 +13820,15 @@
                 "is_active": {
                     "type": "boolean"
                 },
+                "job_codes": {
+                    "description": "subset of MP/ME/MS/MF/MG/MH/G — validated server-side",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "location_code": {
+                    "description": "free-text project address",
                     "type": "string"
                 },
                 "owner_id": {
@@ -13751,6 +13838,9 @@
                     "type": "string"
                 },
                 "project_name": {
+                    "type": "string"
+                },
+                "project_owner_name": {
                     "type": "string"
                 },
                 "start_date": {
