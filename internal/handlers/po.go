@@ -55,14 +55,20 @@ type poLinePRRef struct {
 //
 // Touched PR lines are locked with SELECT ... FOR UPDATE first so two concurrent PO saves
 // against the same PR line can't both pass the remaining check and jointly over-order it. Any
-// net increase is rejected with 400 if it would push qty_ordered past qty_to_order; net
+// net increase is rejected with 400 if it would push qty_ordered past qty_requested; net
 // decreases (or a PO line's pr_line_id being removed/reduced) are always allowed. Must be
 // called inside the same transaction as the purchase_order_line insert/delete it reconciles.
 //
+// Uses qty_requested rather than qty_to_order because qty_to_order is a one-time snapshot
+// computed at PR-submit time against stock_item.qty and is never resynced afterward — this
+// caused false "qty exceeds remaining" rejections (reporting 0 remaining) even when
+// qty_requested still had plenty of unfulfilled quantity. Same fix already applied to
+// GetAvailablePRs in this file and to the available_for_po filter in pr_approval.go.
+//
 // The bound check compares this call's NEW TOTAL for a pr_line_id (newSum) against the max it
-// could hold (qty_to_order minus every OTHER PO's claim, i.e. current qty_ordered net of this
+// could hold (qty_requested minus every OTHER PO's claim, i.e. current qty_ordered net of this
 // call's own OLD contribution) — not the raw delta against a raw remaining. Comparing delta
-// against (qty_to_order - qty_ordered) directly double-counts this call's own prior contribution
+// against (qty_requested - qty_ordered) directly double-counts this call's own prior contribution
 // as already "spent," which falsely blocks (or, in an earlier broken attempt at this fix, falsely
 // allows) growing a PO line that already holds part of a PR line shared with other POs.
 func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poLinePRRef) error {
@@ -91,7 +97,7 @@ func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poL
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, qty_to_order, qty_ordered FROM purchase_request_line
+		SELECT id, qty_requested, qty_ordered FROM purchase_request_line
 		WHERE id = ANY($1)
 		FOR UPDATE`, prLineIDs)
 	if err != nil {
