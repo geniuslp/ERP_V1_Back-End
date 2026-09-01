@@ -49,8 +49,12 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	// available_for_po forces status=COMPLETED (PR's only "usable" terminal status) and adds a
 	// live EXISTS check: at least one line whose referenced-qty sum, from non-cancelled
 	// purchase_order_line rows joined the same way LinesWithPOStatus computes qty_remaining, is
-	// still below qty_to_order. Same source as that endpoint, so the two can never disagree —
-	// a PR excluded here always shows qty_remaining=0 on every line there, and vice versa.
+	// still below qty_requested. Uses qty_requested rather than qty_to_order because qty_to_order
+	// is a one-time snapshot computed at PR-submit time against stock_item.qty and is never
+	// resynced afterward — stock consumed elsewhere post-submit (or missing at submit time) left
+	// stale qty_to_order values that could hide PRs which still genuinely need purchasing (same
+	// fix already applied to GetAvailablePRs in po.go). A PR excluded here always shows
+	// qty_remaining=0 on every line there, and vice versa.
 	availableForPOFilter := "TRUE"
 	if availableForPO {
 		statusFilter = nil
@@ -59,7 +63,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 			AND EXISTS (
 				SELECT 1 FROM purchase_request_line prl
 				WHERE prl.pr_id = pr.id
-				AND prl.qty_to_order > COALESCE((
+				AND prl.qty_requested > COALESCE((
 					SELECT SUM(pol.qty_ordered)
 					FROM purchase_order_line pol
 					WHERE pol.pr_line_id = prl.id AND pol.status != 'CANCELLED'

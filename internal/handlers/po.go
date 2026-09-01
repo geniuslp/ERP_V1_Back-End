@@ -941,7 +941,7 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 
 // GetAvailablePRs godoc
 // @Summary      List PRs eligible to be linked to a new PO
-// @Description  Returns COMPLETED PRs that still have at least one line with remaining (qty_to_order - qty_ordered) > 0. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
+// @Description  Returns COMPLETED PRs that still have at least one line with remaining (qty_requested - qty_ordered) > 0. Uses qty_requested rather than qty_to_order because qty_to_order is a one-time snapshot computed at PR-submit time against stock_item.qty and is never resynced afterward — stock consumed elsewhere post-submit (or missing at submit time) left stale qty_to_order values that could hide PRs which still genuinely need purchasing. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -962,7 +962,7 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		  AND EXISTS (
 		      SELECT 1 FROM purchase_request_line prl
 		      WHERE prl.pr_id = pr.id
-		      AND prl.qty_to_order - prl.qty_ordered > 0
+		      AND prl.qty_requested - prl.qty_ordered > 0
 		  )
 		ORDER BY pr.created_at DESC`)
 	if err != nil {

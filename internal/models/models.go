@@ -92,59 +92,66 @@ type CreateLocationRequest struct {
 // ─── Master: Project ─────────────────────────────────────────────────────────
 
 type ProjectFull struct {
-	Id               int        `json:"id"`
-	ProjectCode      string     `json:"project_code"`
-	ProjectName      string     `json:"project_name"`
-	LocationCode     *string    `json:"location_code,omitempty"` // free-text project address — no longer an FK/lookup against location.location_code
-	OwnerID          *int64     `json:"owner_id,omitempty"`
-	OwnerName        *string    `json:"owner_name,omitempty"`         // joined from users.full_name via owner_id ("ผู้รับผิดชอบหลัก")
-	ProjectOwnerName *string    `json:"project_owner_name,omitempty"` // free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name
-	JobCodes         []string   `json:"job_codes,omitempty"`
-	Credit           *string    `json:"credit,omitempty"` // free text, format not finalized — no validation
-	BudgetAmount     float64    `json:"budget_amount"`
-	SpentAmount      float64    `json:"spent_amount"`
-	PaidAmount       float64    `json:"paid_amount"`
-	RemainingAmount  float64    `json:"remaining_amount"`
-	ConsultantName   *string    `json:"consultant_name,omitempty"`
-	StartDate        *time.Time `json:"start_date,omitempty"`
-	EndDate          *time.Time `json:"end_date,omitempty"`
-	Status           string     `json:"status"`
-	IsActive         bool       `json:"is_active"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	CreatedBy        *int64     `json:"created_by,omitempty"`
-	UpdatedBy        *int64     `json:"updated_by,omitempty"`
+	Id                    int        `json:"id"`
+	ProjectCode           string     `json:"project_code"`
+	ProjectName           string     `json:"project_name"`
+	LocationCode          *string    `json:"location_code,omitempty"`           // free-text project address — no longer an FK/lookup against location.location_code
+	DeptCode              *string    `json:"dept_code,omitempty"`               // "แผนก" — FK -> departments.dept_code
+	DeptName              *string    `json:"dept_name,omitempty"`               // joined from departments.dept_name via dept_code
+	OwnerID               *int64     `json:"owner_id,omitempty"`                // deprecated: superseded by responsible_person_name (kept, unused by new UI — not dropped, same approach as credit)
+	OwnerName             *string    `json:"owner_name,omitempty"`              // joined from users.full_name via owner_id ("ผู้รับผิดชอบหลัก" — legacy)
+	ProjectOwnerName      *string    `json:"project_owner_name,omitempty"`      // free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name
+	ResponsiblePersonName *string    `json:"responsible_person_name,omitempty"` // free text ("ผู้รับผิดชอบหลัก"), required on write — replaces the owner_id dropdown
+	JobCodes              []string   `json:"job_codes,omitempty"`
+	BudgetAmount          float64    `json:"budget_amount"`
+	SpentAmount           float64    `json:"spent_amount"`
+	PaidAmount            float64    `json:"paid_amount"`
+	RemainingAmount       float64    `json:"remaining_amount"`
+	ConsultantName        *string    `json:"consultant_name,omitempty"`
+	ConsultantPhone       *string    `json:"consultant_phone,omitempty"` // "เบอร์ติดต่อของที่ปรึกษา", freeform
+	StartDate             *time.Time `json:"start_date,omitempty"`
+	EndDate               *time.Time `json:"end_date,omitempty"`
+	Status                string     `json:"status"`
+	IsActive              bool       `json:"is_active"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	CreatedBy             *int64     `json:"created_by,omitempty"`
+	UpdatedBy             *int64     `json:"updated_by,omitempty"`
 }
 
 type CreateProjectReq struct {
-	ProjectCode      string   `json:"project_code"`
-	ProjectName      string   `json:"project_name"`
-	LocationCode     *string  `json:"location_code,omitempty"` // free-text project address
-	OwnerID          *int64   `json:"owner_id,omitempty"`
-	ProjectOwnerName *string  `json:"project_owner_name,omitempty"`
-	JobCodes         []string `json:"job_codes,omitempty"` // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
-	Credit           *string  `json:"credit,omitempty"`    // free text, format not finalized — no validation
-	BudgetAmount     float64  `json:"budget_amount"`
-	ConsultantName   *string  `json:"consultant_name,omitempty"`
-	StartDate        *string  `json:"start_date,omitempty"`
-	EndDate          *string  `json:"end_date,omitempty"`
-	Status           string   `json:"status"`
+	ProjectCode           string   `json:"project_code"`
+	ProjectName           string   `json:"project_name"`
+	LocationCode          *string  `json:"location_code,omitempty"` // free-text project address
+	DeptCode              *string  `json:"dept_code,omitempty"`     // "แผนก" — FK -> departments.dept_code
+	OwnerID               *int64   `json:"owner_id,omitempty"`      // deprecated, kept for backward compat — not required, not used to drive validation
+	ProjectOwnerName      *string  `json:"project_owner_name,omitempty"`
+	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
+	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+	BudgetAmount          float64  `json:"budget_amount"`
+	ConsultantName        *string  `json:"consultant_name,omitempty"`
+	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
+	StartDate             *string  `json:"start_date,omitempty"`
+	EndDate               *string  `json:"end_date,omitempty"`
+	Status                string   `json:"status"`
 }
 
 type UpdateProjectReq struct {
-	ProjectCode      string   `json:"project_code"`
-	ProjectName      string   `json:"project_name"`
-	LocationCode     *string  `json:"location_code,omitempty"` // free-text project address
-	OwnerID          *int64   `json:"owner_id,omitempty"`
-	ProjectOwnerName *string  `json:"project_owner_name,omitempty"`
-	JobCodes         []string `json:"job_codes,omitempty"` // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
-	Credit           *string  `json:"credit,omitempty"`    // free text, format not finalized — no validation
-	BudgetAmount     float64  `json:"budget_amount"`
-	ConsultantName   *string  `json:"consultant_name,omitempty"`
-	StartDate        *string  `json:"start_date,omitempty"` // "YYYY-MM-DD" — pgx casts to date automatically
-	EndDate          *string  `json:"end_date,omitempty"`   // "YYYY-MM-DD"
-	Status           string   `json:"status"`
-	IsActive         bool     `json:"is_active"`
+	ProjectCode           string   `json:"project_code"`
+	ProjectName           string   `json:"project_name"`
+	LocationCode          *string  `json:"location_code,omitempty"` // free-text project address
+	DeptCode              *string  `json:"dept_code,omitempty"`     // "แผนก" — FK -> departments.dept_code
+	OwnerID               *int64   `json:"owner_id,omitempty"`      // deprecated, kept for backward compat
+	ProjectOwnerName      *string  `json:"project_owner_name,omitempty"`
+	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
+	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+	BudgetAmount          float64  `json:"budget_amount"`
+	ConsultantName        *string  `json:"consultant_name,omitempty"`
+	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
+	StartDate             *string  `json:"start_date,omitempty"`       // "YYYY-MM-DD" — pgx casts to date automatically
+	EndDate               *string  `json:"end_date,omitempty"`         // "YYYY-MM-DD"
+	Status                string   `json:"status"`
+	IsActive              bool     `json:"is_active"`
 }
 
 type ProjectListFilter struct {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"erp-api/internal/middleware"
 	"erp-api/internal/models"
@@ -36,7 +37,8 @@ var validJobCodes = map[string]bool{
 // matches the existing Go field/JSON key (ProjectOwnerName / project_owner_name) without an
 // API-facing rename — only the SQL identifier was ever wrong, not the model shape.
 const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code,
-	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name, p.job_codes, p.credit,
+	p.dept_code, d.dept_name,
+	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name, p.responsible_person_name, p.job_codes,
 	p.budget_amount,
 	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 		WHERE po.project_code = p.project_code
@@ -58,18 +60,20 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 			WHERE wo.project_code = p.project_code
 			  AND wo.status = 'APPROVED'), 0)
 	) AS remaining_amount,
-	p.consultant_name,
+	p.consultant_name, p.consultant_phone,
 	p.start_date, p.end_date, p.status, p.is_active,
 	p.created_at, p.updated_at, p.created_by, p.updated_by`
 
 const projectSelectFrom = `
 	FROM project p
-	LEFT JOIN users    u ON u.id = p.owner_id`
+	LEFT JOIN users       u ON u.id = p.owner_id
+	LEFT JOIN departments d ON d.dept_code = p.dept_code`
 
 func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 	return row.Scan(&p.Id, &p.ProjectCode, &p.ProjectName, &p.LocationCode,
-		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName, &p.JobCodes, &p.Credit,
-		&p.BudgetAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName,
+		&p.DeptCode, &p.DeptName,
+		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName, &p.ResponsiblePersonName, &p.JobCodes,
+		&p.BudgetAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }
@@ -193,7 +197,7 @@ func (h *ProjectHandler) GetByID(c *fiber.Ctx) error {
 
 // Create godoc
 // @Summary      Create project
-// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name ("ผู้รับผิดชอบหลัก", FK to users). credit is plain free text with no format validation (not finalized yet).
+// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"). responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -210,6 +214,9 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	}
 	if req.ProjectCode == "" || req.ProjectName == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "project_code and project_name are required")
+	}
+	if strings.TrimSpace(req.ResponsiblePersonName) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "responsible_person_name is required")
 	}
 	if req.Status == "" {
 		req.Status = "ACTIVE"
@@ -233,18 +240,23 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	var id int64
 	err := h.db.QueryRow(ctx, `
 		INSERT INTO project
-		    (project_code, project_name, location_code, owner_id, owner_name, job_codes, credit,
-		     budget_amount, consultant_name, start_date, end_date,
+		    (project_code, project_name, location_code, dept_code, owner_id, owner_name, responsible_person_name, job_codes,
+		     budget_amount, consultant_name, consultant_phone, start_date, end_date,
 		     status, is_active, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,now(),now(),$13,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true,now(),now(),$15,$15)
 		RETURNING id`,
-		req.ProjectCode, req.ProjectName, req.LocationCode, req.OwnerID, req.ProjectOwnerName, req.JobCodes, req.Credit,
-		req.BudgetAmount, req.ConsultantName,
+		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID, req.ProjectOwnerName, req.ResponsiblePersonName, req.JobCodes,
+		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
 		req.StartDate, req.EndDate, req.Status, claims.UserID,
 	).Scan(&id)
 	if err != nil {
-		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
-			return fiber.NewError(fiber.StatusConflict, "project_code already exists")
+		if pgErr, ok := err.(*pgconn.PgError); ok {
+			if pgErr.Code == "23505" {
+				return fiber.NewError(fiber.StatusConflict, "project_code already exists")
+			}
+			if pgErr.Code == "23503" {
+				return fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
+			}
 		}
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
@@ -259,7 +271,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      Update project
-// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name ("ผู้รับผิดชอบหลัก", FK to users). credit is plain free text with no format validation (not finalized yet).
+// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"). responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -282,6 +294,9 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if req.ProjectCode == "" || req.ProjectName == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "project_code and project_name are required")
 	}
+	if strings.TrimSpace(req.ResponsiblePersonName) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "responsible_person_name is required")
+	}
 	if req.Status == "" {
 		req.Status = "ACTIVE"
 	}
@@ -303,18 +318,23 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 
 	tag, err := h.db.Exec(ctx, `
 		UPDATE project
-		SET project_code=$1, project_name=$2, location_code=$3, owner_id=$4,
-		    owner_name=$5, job_codes=$6, credit=$7,
-		    budget_amount=$8, consultant_name=$9,
-		    start_date=$10, end_date=$11, status=$12, is_active=$13, updated_at=now(), updated_by=$14
-		WHERE id=$15`,
-		req.ProjectCode, req.ProjectName, req.LocationCode, req.OwnerID,
-		req.ProjectOwnerName, req.JobCodes, req.Credit,
-		req.BudgetAmount, req.ConsultantName,
+		SET project_code=$1, project_name=$2, location_code=$3, dept_code=$4, owner_id=$5,
+		    owner_name=$6, responsible_person_name=$7, job_codes=$8,
+		    budget_amount=$9, consultant_name=$10, consultant_phone=$11,
+		    start_date=$12, end_date=$13, status=$14, is_active=$15, updated_at=now(), updated_by=$16
+		WHERE id=$17`,
+		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID,
+		req.ProjectOwnerName, req.ResponsiblePersonName, req.JobCodes,
+		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
 		req.StartDate, req.EndDate, req.Status, req.IsActive, claims.UserID, id)
 	if err != nil {
-		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
-			return fiber.NewError(fiber.StatusConflict, "project_code already exists")
+		if pgErr, ok := err.(*pgconn.PgError); ok {
+			if pgErr.Code == "23505" {
+				return fiber.NewError(fiber.StatusConflict, "project_code already exists")
+			}
+			if pgErr.Code == "23503" {
+				return fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
+			}
 		}
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}

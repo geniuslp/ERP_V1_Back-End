@@ -368,8 +368,13 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 // @Security     BearerAuth
 // @Produce      json
 // @Param        q            query  string  false  "Search keyword (mat_code, mat_name, spec_description, brand_name)"
+// @Param        search        query  string  false  "Alias for q — used if q is omitted"
+// @Param        group_id      query  int     false  "Filter by mat_group ID"
 // @Param        subgroup_id   query  int     false  "Filter by subgroup ID"
 // @Param        mat_name_id   query  int     false  "Filter by mat_name ID"
+// @Param        spec_id       query  int     false  "Filter by spec_size ID"
+// @Param        brand_id      query  int     false  "Filter by brand ID"
+// @Param        unit_id       query  int     false  "Filter by unit ID"
 // @Param        project_code  query  string  false  "When set, adds stock_on_hand per material from project_stock for that project (read-only reference, e.g. Petty Cash line picker)"
 // @Param        page          query  int     false  "Page number (default 1)"
 // @Success      200   {object}  models.PaginatedResponse
@@ -380,8 +385,12 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 	if q == "" {
 		q = c.Query("search")
 	}
+	groupID := c.QueryInt("group_id", 0)
 	subgroupID := c.QueryInt("subgroup_id", 0)
 	matNameID := c.QueryInt("mat_name_id", 0)
+	specID := c.QueryInt("spec_id", 0)
+	brandID := c.QueryInt("brand_id", 0)
+	unitID := c.QueryInt("unit_id", 0)
 	projectCode := strings.TrimSpace(c.Query("project_code"))
 	page := c.QueryInt("page", 1)
 	if page < 1 {
@@ -414,6 +423,11 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		args = append(args, q)
 		idx++
 	}
+	if groupID > 0 {
+		conditions = append(conditions, fmt.Sprintf("mc.group_id = $%d", idx))
+		args = append(args, groupID)
+		idx++
+	}
 	if subgroupID > 0 {
 		conditions = append(conditions, fmt.Sprintf("mc.subgroup_id = $%d", idx))
 		args = append(args, subgroupID)
@@ -422,6 +436,21 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 	if matNameID > 0 {
 		conditions = append(conditions, fmt.Sprintf("mc.mat_name_id = $%d", idx))
 		args = append(args, matNameID)
+		idx++
+	}
+	if specID > 0 {
+		conditions = append(conditions, fmt.Sprintf("mc.spec_id = $%d", idx))
+		args = append(args, specID)
+		idx++
+	}
+	if brandID > 0 {
+		conditions = append(conditions, fmt.Sprintf("mc.brand_id = $%d", idx))
+		args = append(args, brandID)
+		idx++
+	}
+	if unitID > 0 {
+		conditions = append(conditions, fmt.Sprintf("mc.unit_id = $%d", idx))
+		args = append(args, unitID)
 		idx++
 	}
 
@@ -602,13 +631,13 @@ func (h *MasterHandler) UpdateSubgroup(c *fiber.Ctx) error {
 }
 
 // ListMatNames godoc
-// @Summary      List mat_names by subgroup_id
+// @Summary      List mat_names, optionally filtered by subgroup_id
+// @Description  subgroup_id omitted returns every active mat_name (for a flat filter dropdown); provided, narrows to that subgroup (cascading form use).
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        subgroup_id  query  int  true  "Subgroup ID"
+// @Param        subgroup_id  query  int  false  "Subgroup ID"
 // @Success      200  {array}   fiber.Map
-// @Failure      400  {object}  fiber.Map
 // @Router       /master/mat-names [get]
 func (h *MasterHandler) ListMatNames(c *fiber.Ctx) error {
 	type matNameItem struct {
@@ -617,12 +646,16 @@ func (h *MasterHandler) ListMatNames(c *fiber.Ctx) error {
 		MatName     string `json:"mat_name"`
 	}
 	subgroupID := c.QueryInt("subgroup_id", 0)
-	if subgroupID == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "subgroup_id is required")
+	var rows pgx.Rows
+	var err error
+	if subgroupID > 0 {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, mat_name_code, mat_name FROM mat_name WHERE subgroup_id = $1 AND is_active = true ORDER BY mat_name`,
+			subgroupID)
+	} else {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, mat_name_code, mat_name FROM mat_name WHERE is_active = true ORDER BY mat_name`)
 	}
-	rows, err := h.db.Query(context.Background(),
-		`SELECT id, mat_name_code, mat_name FROM mat_name WHERE subgroup_id = $1 AND is_active = true ORDER BY mat_name`,
-		subgroupID)
 	if err != nil {
 		return err
 	}
@@ -682,13 +715,13 @@ func (h *MasterHandler) UpdateMatName(c *fiber.Ctx) error {
 }
 
 // ListSpecs godoc
-// @Summary      List spec_size rows by mat_name_id
+// @Summary      List spec_size rows, optionally filtered by mat_name_id
+// @Description  mat_name_id omitted returns every active spec_size (for a flat filter dropdown); provided, narrows to that mat_name (cascading form use).
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        mat_name_id  query  int  true  "Material Name ID"
+// @Param        mat_name_id  query  int  false  "Material Name ID"
 // @Success      200  {array}   fiber.Map
-// @Failure      400  {object}  fiber.Map
 // @Router       /master/specs [get]
 func (h *MasterHandler) ListSpecs(c *fiber.Ctx) error {
 	type specItem struct {
@@ -699,12 +732,16 @@ func (h *MasterHandler) ListSpecs(c *fiber.Ctx) error {
 		IsActive        bool   `json:"is_active"`
 	}
 	matNameID := c.QueryInt("mat_name_id", 0)
-	if matNameID == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "mat_name_id is required")
+	var rows pgx.Rows
+	var err error
+	if matNameID > 0 {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, spec_code, mat_name_id, spec_description, is_active FROM spec_size WHERE mat_name_id = $1 AND is_active = true ORDER BY spec_code`,
+			matNameID)
+	} else {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, spec_code, mat_name_id, spec_description, is_active FROM spec_size WHERE is_active = true ORDER BY spec_code`)
 	}
-	rows, err := h.db.Query(context.Background(),
-		`SELECT id, spec_code, mat_name_id, spec_description, is_active FROM spec_size WHERE mat_name_id = $1 AND is_active = true ORDER BY spec_code`,
-		matNameID)
 	if err != nil {
 		return err
 	}
@@ -764,13 +801,13 @@ func (h *MasterHandler) UpdateSpecSize(c *fiber.Ctx) error {
 }
 
 // ListBrands godoc
-// @Summary      List brand rows by spec_id
+// @Summary      List brand rows, optionally filtered by spec_id
+// @Description  spec_id omitted returns every active brand (for a flat filter dropdown); provided, narrows to that spec (cascading form use).
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        spec_id  query  int  true  "Spec ID"
+// @Param        spec_id  query  int  false  "Spec ID"
 // @Success      200  {array}   fiber.Map
-// @Failure      400  {object}  fiber.Map
 // @Router       /master/brands [get]
 func (h *MasterHandler) ListBrands(c *fiber.Ctx) error {
 	type brandItem struct {
@@ -781,12 +818,16 @@ func (h *MasterHandler) ListBrands(c *fiber.Ctx) error {
 		IsActive  bool   `json:"is_active"`
 	}
 	specID := c.QueryInt("spec_id", 0)
-	if specID == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "spec_id is required")
+	var rows pgx.Rows
+	var err error
+	if specID > 0 {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, brand_code, spec_id, brand_name, is_active FROM brand WHERE spec_id = $1 AND is_active = true ORDER BY brand_code`,
+			specID)
+	} else {
+		rows, err = h.db.Query(context.Background(),
+			`SELECT id, brand_code, spec_id, brand_name, is_active FROM brand WHERE is_active = true ORDER BY brand_code`)
 	}
-	rows, err := h.db.Query(context.Background(),
-		`SELECT id, brand_code, spec_id, brand_name, is_active FROM brand WHERE spec_id = $1 AND is_active = true ORDER BY brand_code`,
-		specID)
 	if err != nil {
 		return err
 	}
@@ -1329,6 +1370,15 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, true, NOW(), NOW())`,
 		matCode, groupID, subgroupID, matNameID, specID, brandID, unitID,
 	); err != nil {
+		// The COUNT check above is a courtesy — material_code.mat_code has a real
+		// UNIQUE constraint (material_code_mat_code_key), which is the actual
+		// authoritative guard against a concurrent request creating the same
+		// mat_code between the COUNT and this INSERT. Without this, that race
+		// would surface as a raw 500 instead of the same clean 409 the COUNT
+		// check already gives the non-racing case.
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+			return fiber.NewError(fiber.StatusConflict, "material already exists: "+matCode)
+		}
 		return err
 	}
 

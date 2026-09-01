@@ -1821,6 +1821,18 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Alias for q — used if q is omitted",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Filter by mat_group ID",
+                        "name": "group_id",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Filter by subgroup ID",
                         "name": "subgroup_id",
@@ -1830,6 +1842,24 @@ const docTemplate = `{
                         "type": "integer",
                         "description": "Filter by mat_name ID",
                         "name": "mat_name_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Filter by spec_size ID",
+                        "name": "spec_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Filter by brand ID",
+                        "name": "brand_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Filter by unit ID",
+                        "name": "unit_id",
                         "in": "query"
                     },
                     {
@@ -1868,20 +1898,20 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "spec_id omitted returns every active brand (for a flat filter dropdown); provided, narrows to that spec (cascading form use).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Master"
                 ],
-                "summary": "List brand rows by spec_id",
+                "summary": "List brand rows, optionally filtered by spec_id",
                 "parameters": [
                     {
                         "type": "integer",
                         "description": "Spec ID",
                         "name": "spec_id",
-                        "in": "query",
-                        "required": true
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1892,12 +1922,6 @@ const docTemplate = `{
                             "items": {
                                 "$ref": "#/definitions/fiber.Map"
                             }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -2627,20 +2651,20 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "subgroup_id omitted returns every active mat_name (for a flat filter dropdown); provided, narrows to that subgroup (cascading form use).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Master"
                 ],
-                "summary": "List mat_names by subgroup_id",
+                "summary": "List mat_names, optionally filtered by subgroup_id",
                 "parameters": [
                     {
                         "type": "integer",
                         "description": "Subgroup ID",
                         "name": "subgroup_id",
-                        "in": "query",
-                        "required": true
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -2651,12 +2675,6 @@ const docTemplate = `{
                             "items": {
                                 "$ref": "#/definitions/fiber.Map"
                             }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -3109,7 +3127,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"), distinct from owner_id/owner_name (\"ผู้รับผิดชอบหลัก\", FK to users). credit is plain free text with no format validation (not finalized yet).",
+                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). dept_code (\"แผนก\") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"). responsible_person_name (\"ผู้รับผิดชอบหลัก\") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone (\"เบอร์ติดต่อของที่ปรึกษา\") is freeform, no validation.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3197,7 +3215,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"), distinct from owner_id/owner_name (\"ผู้รับผิดชอบหลัก\", FK to users). credit is plain free text with no format validation (not finalized yet).",
+                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). dept_code (\"แผนก\") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"). responsible_person_name (\"ผู้รับผิดชอบหลัก\") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone (\"เบอร์ติดต่อของที่ปรึกษา\") is freeform, no validation.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3330,20 +3348,20 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "mat_name_id omitted returns every active spec_size (for a flat filter dropdown); provided, narrows to that mat_name (cascading form use).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Master"
                 ],
-                "summary": "List spec_size rows by mat_name_id",
+                "summary": "List spec_size rows, optionally filtered by mat_name_id",
                 "parameters": [
                     {
                         "type": "integer",
                         "description": "Material Name ID",
                         "name": "mat_name_id",
-                        "in": "query",
-                        "required": true
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -3354,12 +3372,6 @@ const docTemplate = `{
                             "items": {
                                 "$ref": "#/definitions/fiber.Map"
                             }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -6247,7 +6259,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns COMPLETED PRs that still have at least one line with remaining (qty_to_order - qty_ordered) \u003e 0. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.",
+                "description": "Returns COMPLETED PRs that still have at least one line with remaining (qty_requested - qty_ordered) \u003e 0. Uses qty_requested rather than qty_to_order because qty_to_order is a one-time snapshot computed at PR-submit time against stock_item.qty and is never resynced afterward — stock consumed elsewhere post-submit (or missing at submit time) left stale qty_to_order values that could hide PRs which still genuinely need purchasing. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -11790,6 +11802,9 @@ const docTemplate = `{
         },
         "models.CreateProjectReq": {
             "type": "object",
+            "required": [
+                "responsible_person_name"
+            ],
             "properties": {
                 "budget_amount": {
                     "type": "number"
@@ -11797,8 +11812,12 @@ const docTemplate = `{
                 "consultant_name": {
                     "type": "string"
                 },
-                "credit": {
-                    "description": "free text, format not finalized — no validation",
+                "consultant_phone": {
+                    "description": "freeform, no validation",
+                    "type": "string"
+                },
+                "dept_code": {
+                    "description": "\"แผนก\" — FK -\u003e departments.dept_code",
                     "type": "string"
                 },
                 "end_date": {
@@ -11816,6 +11835,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "owner_id": {
+                    "description": "deprecated, kept for backward compat — not required, not used to drive validation",
                     "type": "integer"
                 },
                 "project_code": {
@@ -11825,6 +11845,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "project_owner_name": {
+                    "type": "string"
+                },
+                "responsible_person_name": {
+                    "description": "\"ผู้รับผิดชอบหลัก\" — required free text",
                     "type": "string"
                 },
                 "start_date": {
@@ -13099,14 +13123,22 @@ const docTemplate = `{
                 "consultant_name": {
                     "type": "string"
                 },
+                "consultant_phone": {
+                    "description": "\"เบอร์ติดต่อของที่ปรึกษา\", freeform",
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
                 "created_by": {
                     "type": "integer"
                 },
-                "credit": {
-                    "description": "free text, format not finalized — no validation",
+                "dept_code": {
+                    "description": "\"แผนก\" — FK -\u003e departments.dept_code",
+                    "type": "string"
+                },
+                "dept_name": {
+                    "description": "joined from departments.dept_name via dept_code",
                     "type": "string"
                 },
                 "end_date": {
@@ -13129,10 +13161,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "owner_id": {
+                    "description": "deprecated: superseded by responsible_person_name (kept, unused by new UI — not dropped, same approach as credit)",
                     "type": "integer"
                 },
                 "owner_name": {
-                    "description": "joined from users.full_name via owner_id (\"ผู้รับผิดชอบหลัก\")",
+                    "description": "joined from users.full_name via owner_id (\"ผู้รับผิดชอบหลัก\" — legacy)",
                     "type": "string"
                 },
                 "paid_amount": {
@@ -13150,6 +13183,10 @@ const docTemplate = `{
                 },
                 "remaining_amount": {
                     "type": "number"
+                },
+                "responsible_person_name": {
+                    "description": "free text (\"ผู้รับผิดชอบหลัก\"), required on write — replaces the owner_id dropdown",
+                    "type": "string"
                 },
                 "spent_amount": {
                     "type": "number"
@@ -13808,6 +13845,9 @@ const docTemplate = `{
         },
         "models.UpdateProjectReq": {
             "type": "object",
+            "required": [
+                "responsible_person_name"
+            ],
             "properties": {
                 "budget_amount": {
                     "type": "number"
@@ -13815,8 +13855,12 @@ const docTemplate = `{
                 "consultant_name": {
                     "type": "string"
                 },
-                "credit": {
-                    "description": "free text, format not finalized — no validation",
+                "consultant_phone": {
+                    "description": "freeform, no validation",
+                    "type": "string"
+                },
+                "dept_code": {
+                    "description": "\"แผนก\" — FK -\u003e departments.dept_code",
                     "type": "string"
                 },
                 "end_date": {
@@ -13838,6 +13882,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "owner_id": {
+                    "description": "deprecated, kept for backward compat",
                     "type": "integer"
                 },
                 "project_code": {
@@ -13847,6 +13892,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "project_owner_name": {
+                    "type": "string"
+                },
+                "responsible_person_name": {
+                    "description": "\"ผู้รับผิดชอบหลัก\" — required free text",
                     "type": "string"
                 },
                 "start_date": {
