@@ -24,12 +24,6 @@ func NewProjectHandler(db *pgxpool.Pool) *ProjectHandler {
 
 var validProjectStatus = map[string]bool{"ACTIVE": true, "INACTIVE": true, "CLOSED": true}
 
-// validJobCodes mirrors erp-frontend/src/constants/jobTypes.ts's JOB_TYPES codes exactly —
-// keep both lists in sync if that file changes.
-var validJobCodes = map[string]bool{
-	"MP": true, "ME": true, "MS": true, "MF": true, "MG": true, "MH": true, "G": true,
-}
-
 // p.owner_name is aliased to project_owner_name in the SELECT below — the real column (added
 // by manual ALTER TABLE) is literally named owner_name, which collides with the unrelated
 // "u.full_name AS owner_name" alias a few tokens later (the joined name behind owner_id,
@@ -78,17 +72,7 @@ func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }
 
-// validateJobCodes rejects any job_codes entry outside the fixed JOB_TYPES set (see
-// validJobCodes above) — mirrors the oneof-style validation purchase_order.work_type gets
-// via a struct tag, done manually here since it's a slice, not a single enum field.
-func validateJobCodes(codes []string) error {
-	for _, jc := range codes {
-		if !validJobCodes[jc] {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid job_codes value: %q", jc))
-		}
-	}
-	return nil
-}
+// validateJobCodes is defined in job_type.go, shared with the PR/PO job_code fields.
 
 // List godoc
 // @Summary      List projects
@@ -97,7 +81,7 @@ func validateJobCodes(codes []string) error {
 // @Produce      json
 // @Param        search    query  string  false  "search project_code / project_name"
 // @Param        status    query  string  false  "filter status"
-// @Param        is_active query  string  false  "filter is_active"
+// @Param        is_active query  string  false  "filter is_active (default true; pass empty string for all)"
 // @Param        page      query  int     false  "page"
 // @Param        page_size query  int     false  "page_size"
 // @Success      200  {object}  models.PaginatedResponse
@@ -129,6 +113,12 @@ func (h *ProjectHandler) List(c *fiber.Ctx) error {
 		where += fmt.Sprintf(" AND p.status = $%d", i)
 		args = append(args, f.Status)
 		i++
+	}
+	// Default to active-only, matching ListWarehouses' "is_active" convention: unset means
+	// "true", an explicit empty string ("?is_active=") means no filter (both), and any other
+	// explicit value ("true"/"false") is respected as-is.
+	if !c.Request().URI().QueryArgs().Has("is_active") {
+		f.IsActive = "true"
 	}
 	if f.IsActive != "" {
 		where += fmt.Sprintf(" AND p.is_active = $%d", i)

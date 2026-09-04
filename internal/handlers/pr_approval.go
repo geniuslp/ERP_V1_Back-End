@@ -85,6 +85,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		ApproverName *string `json:"approver_name"`
 		LocationText string  `json:"location_text"`
 		ProjectCode  *string `json:"project_code"`
+		DeptCode     *string `json:"dept_code,omitempty"`
 		Remarks      *string `json:"remarks"`
 		PRDate       string  `json:"pr_date"`
 		PRType       string  `json:"pr_type"`
@@ -95,7 +96,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        COALESCE(u1.full_name, '') AS requested_by,
        NULL::text                 AS approver_name,
-       pr.location_text, pr.project_code, pr.remarks,
+       pr.location_text, pr.project_code, pr.dept_code, pr.remarks,
        pr.pr_date::text, pr.pr_type, pr.job_code
 FROM purchase_request pr
 LEFT JOIN users u1 ON u1.id = pr.requested_by
@@ -113,7 +114,7 @@ LIMIT $2 OFFSET $3`,
 	for rows.Next() {
 		var item PRListItem
 		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
-			&item.LocationText, &item.ProjectCode, &item.Remarks, &item.PRDate, &item.PRType, &item.JobCode)
+			&item.LocationText, &item.ProjectCode, &item.DeptCode, &item.Remarks, &item.PRDate, &item.PRType, &item.JobCode)
 		items = append(items, item)
 	}
 
@@ -175,6 +176,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		ApproverName  *string              `json:"approver_name"`
 		LocationText  string               `json:"location_text"`
 		ProjectCode   *string              `json:"project_code"`
+		DeptCode      *string              `json:"dept_code,omitempty"`
 		WarehouseCode *string              `json:"warehouse_code"`
 		WarehouseName *string              `json:"warehouse_name"`
 		Remarks       *string              `json:"remarks"`
@@ -194,7 +196,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		SELECT pr.id, pr.pr_no, pr.status,
 		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
 		       NULL AS approver_id, NULL AS approver_name,
-		       pr.location_text, pr.project_code, pr.warehouse_code, w.warehouse_name, pr.remarks,
+		       pr.location_text, pr.project_code, pr.dept_code, pr.warehouse_code, w.warehouse_name, pr.remarks,
 		       pr.pr_date::text, pr.required_date::text, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pr.memo_id
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
@@ -209,7 +211,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 
 	if err := row.Scan(
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
-		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode,
+		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode, &pr.DeptCode,
 		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.JobName, &pr.MemoID,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)

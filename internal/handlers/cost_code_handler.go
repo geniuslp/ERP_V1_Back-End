@@ -9,6 +9,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xuri/excelize/v2"
 )
@@ -44,8 +45,8 @@ func (h *CostCodeHandler) ListSubjects(c *fiber.Ctx) error {
 		SubjectCode string `json:"subject_code"`
 		SubjectName string `json:"subject_name"`
 		IsActive    bool   `json:"is_active"`
-		CreatedAt   string `json:"created_at"`
-		UpdatedAt   string `json:"updated_at"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
 	}
 	var items []subject
 	for rows.Next() {
@@ -93,8 +94,8 @@ func (h *CostCodeHandler) ListJobs(c *fiber.Ctx) error {
 		JobCode   string `json:"job_code"`
 		JobName   string `json:"job_name"`
 		IsActive  bool   `json:"is_active"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
 	}
 	var items []job
 	for rows.Next() {
@@ -142,8 +143,8 @@ func (h *CostCodeHandler) ListGroupsByJob(c *fiber.Ctx) error {
 		GroupCode string `json:"group_code"`
 		GroupName string `json:"group_name"`
 		IsActive  bool   `json:"is_active"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
 	}
 	var items []group
 	for rows.Next() {
@@ -154,6 +155,116 @@ func (h *CostCodeHandler) ListGroupsByJob(c *fiber.Ctx) error {
 		items = append(items, g)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+type CreateGroupReq struct {
+	JobID     int64  `json:"job_id"`
+	GroupCode string `json:"group_code"`
+	GroupName string `json:"group_name"`
+}
+
+// CreateGroup godoc
+// @Summary      Create a cost group under a job
+// @Description  Used by the per-Job-Type Cost Code modal (CostCodePage.tsx) to add a new
+// @Description  cost_group without going through the bulk subject/job/group/subgroup import.
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        body  body  CreateGroupReq  true  "New group"
+// @Success      201   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      409   {object}  fiber.Map
+// @Router       /master/cost-code/groups [post]
+func (h *CostCodeHandler) CreateGroup(c *fiber.Ctx) error {
+	var req CreateGroupReq
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.JobID == 0 || req.GroupCode == "" || req.GroupName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "job_id, group_code and group_name are required")
+	}
+	ctx := context.Background()
+	var id int64
+	err := h.db.QueryRow(ctx, `
+		INSERT INTO cost_group (job_id, group_code, group_name, is_active, created_at, updated_at)
+		VALUES ($1, $2, $3, true, NOW(), NOW())
+		RETURNING id`,
+		req.JobID, req.GroupCode, req.GroupName,
+	).Scan(&id)
+	if err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+			return fiber.NewError(fiber.StatusConflict, "group_code already exists under this job")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"id": id, "job_id": req.JobID, "group_code": req.GroupCode, "group_name": req.GroupName, "is_active": true,
+	}})
+}
+
+type UpdateGroupReq struct {
+	GroupName string `json:"group_name"`
+}
+
+// UpdateGroup godoc
+// @Summary      Rename a cost group
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int             true  "Group ID"
+// @Param        body  body  UpdateGroupReq  true  "New name"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /master/cost-code/groups/{id} [patch]
+func (h *CostCodeHandler) UpdateGroup(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req UpdateGroupReq
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.GroupName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "group_name is required")
+	}
+	tag, err := h.db.Exec(context.Background(),
+		`UPDATE cost_group SET group_name=$1, updated_at=NOW() WHERE id=$2`, req.GroupName, id)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if tag.RowsAffected() == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "group not found")
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// DeactivateGroup godoc
+// @Summary      Deactivate a cost group (is_active=false)
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "Group ID"
+// @Success      200  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/cost-code/groups/{id}/deactivate [patch]
+func (h *CostCodeHandler) DeactivateGroup(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	tag, err := h.db.Exec(context.Background(),
+		`UPDATE cost_group SET is_active=false, updated_at=NOW() WHERE id=$1`, id)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if tag.RowsAffected() == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "group not found")
+	}
+	return c.JSON(fiber.Map{"success": true})
 }
 
 // ─── Cost Subgroup ──────────────────────────────────────────────────────────
@@ -191,8 +302,8 @@ func (h *CostCodeHandler) ListSubgroupsByGroup(c *fiber.Ctx) error {
 		SubgroupCode string `json:"subgroup_code"`
 		SubgroupName string `json:"subgroup_name"`
 		IsActive     bool   `json:"is_active"`
-		CreatedAt    string `json:"created_at"`
-		UpdatedAt    string `json:"updated_at"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
 	}
 	var items []subgroup
 	for rows.Next() {
@@ -203,6 +314,116 @@ func (h *CostCodeHandler) ListSubgroupsByGroup(c *fiber.Ctx) error {
 		items = append(items, s)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
+type CreateSubgroupReq struct {
+	GroupID      int64  `json:"group_id"`
+	SubgroupCode string `json:"subgroup_code"`
+	SubgroupName string `json:"subgroup_name"`
+}
+
+// CreateSubgroup godoc
+// @Summary      Create a cost subgroup under a group
+// @Description  Used by the per-Job-Type Cost Code modal (CostCodePage.tsx) to add a new
+// @Description  cost_subgroup without going through the bulk subject/job/group/subgroup import.
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        body  body  CreateSubgroupReq  true  "New subgroup"
+// @Success      201   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      409   {object}  fiber.Map
+// @Router       /master/cost-code/subgroups [post]
+func (h *CostCodeHandler) CreateSubgroup(c *fiber.Ctx) error {
+	var req CreateSubgroupReq
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.GroupID == 0 || req.SubgroupCode == "" || req.SubgroupName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "group_id, subgroup_code and subgroup_name are required")
+	}
+	ctx := context.Background()
+	var id int64
+	err := h.db.QueryRow(ctx, `
+		INSERT INTO cost_subgroup (group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at)
+		VALUES ($1, $2, $3, true, NOW(), NOW())
+		RETURNING id`,
+		req.GroupID, req.SubgroupCode, req.SubgroupName,
+	).Scan(&id)
+	if err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+			return fiber.NewError(fiber.StatusConflict, "subgroup_code already exists under this group")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"id": id, "group_id": req.GroupID, "subgroup_code": req.SubgroupCode, "subgroup_name": req.SubgroupName, "is_active": true,
+	}})
+}
+
+type UpdateSubgroupReq struct {
+	SubgroupName string `json:"subgroup_name"`
+}
+
+// UpdateSubgroup godoc
+// @Summary      Rename a cost subgroup
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int                true  "Subgroup ID"
+// @Param        body  body  UpdateSubgroupReq  true  "New name"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /master/cost-code/subgroups/{id} [patch]
+func (h *CostCodeHandler) UpdateSubgroup(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req UpdateSubgroupReq
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.SubgroupName == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "subgroup_name is required")
+	}
+	tag, err := h.db.Exec(context.Background(),
+		`UPDATE cost_subgroup SET subgroup_name=$1, updated_at=NOW() WHERE id=$2`, req.SubgroupName, id)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if tag.RowsAffected() == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "subgroup not found")
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// DeactivateSubgroup godoc
+// @Summary      Deactivate a cost subgroup (is_active=false)
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "Subgroup ID"
+// @Success      200  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Router       /master/cost-code/subgroups/{id}/deactivate [patch]
+func (h *CostCodeHandler) DeactivateSubgroup(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	tag, err := h.db.Exec(context.Background(),
+		`UPDATE cost_subgroup SET is_active=false, updated_at=NOW() WHERE id=$1`, id)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if tag.RowsAffected() == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "subgroup not found")
+	}
+	return c.JSON(fiber.Map{"success": true})
 }
 
 // ─── Full joined list ───────────────────────────────────────────────────────
@@ -588,7 +809,11 @@ func (h *CostCodeHandler) ListCostCode(c *fiber.Ctx) error {
 	rows, err := h.db.Query(context.Background(),
 		fmt.Sprintf(`SELECT
 			sub.subject_code || j.job_code || g.group_code || sg.subgroup_code AS cost_code,
-			sub.subject_name, j.job_name, g.group_name, sg.subgroup_name, sg.is_active
+			sub.subject_code, sub.subject_name,
+			j.job_code, j.job_name,
+			g.group_code, g.group_name,
+			sg.subgroup_code, sg.subgroup_name,
+			sg.is_active
 		%s WHERE %s
 		ORDER BY cost_code LIMIT $%d OFFSET $%d`,
 			joins, whereStr, idx, idx+1),
@@ -600,16 +825,21 @@ func (h *CostCodeHandler) ListCostCode(c *fiber.Ctx) error {
 
 	type costCodeRow struct {
 		CostCode     string `json:"cost_code"`
+		SubjectCode  string `json:"subject_code"`
 		SubjectName  string `json:"subject_name"`
+		JobCode      string `json:"job_code"`
 		JobName      string `json:"job_name"`
+		GroupCode    string `json:"group_code"`
 		GroupName    string `json:"group_name"`
+		SubgroupCode string `json:"subgroup_code"`
 		SubgroupName string `json:"subgroup_name"`
 		IsActive     bool   `json:"is_active"`
 	}
 	var items []costCodeRow
 	for rows.Next() {
 		var r costCodeRow
-		if err := rows.Scan(&r.CostCode, &r.SubjectName, &r.JobName, &r.GroupName, &r.SubgroupName, &r.IsActive); err != nil {
+		if err := rows.Scan(&r.CostCode, &r.SubjectCode, &r.SubjectName, &r.JobCode, &r.JobName,
+			&r.GroupCode, &r.GroupName, &r.SubgroupCode, &r.SubgroupName, &r.IsActive); err != nil {
 			return err
 		}
 		items = append(items, r)

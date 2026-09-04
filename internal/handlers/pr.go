@@ -158,6 +158,8 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 
 // CreatePR godoc
 // @Summary      Create purchase request
+// @Description  job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).
+// @Description  lines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Accept       json
@@ -214,6 +216,13 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_type must be 'PO_WO', 'PO_ONLY', or 'WO_ONLY'")
 	}
 
+	if strings.TrimSpace(req.JobCode) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "job_code is required")
+	}
+	if err := ValidateJobCode(req.JobCode); err != nil {
+		return err
+	}
+
 	if req.MemoID != nil {
 		var existingPRNo string
 		err := h.db.QueryRow(context.Background(),
@@ -249,11 +258,11 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	err = tx.QueryRow(context.Background(), `
 		INSERT INTO purchase_request
 		    (pr_no, pr_date, requested_by, location_text, warehouse_code, required_date,
-		     project_code, status, order_type, pr_type, job_code, remarks, memo_id, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now(),$14,$14)
+		     project_code, dept_code, status, order_type, pr_type, job_code, remarks, memo_id, created_at, updated_at, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now(),$15,$15)
 		RETURNING id`,
 		req.PRNo, req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
-		req.RequiredDate, req.ProjectCode, req.Status, req.OrderType, req.PRType, req.JobCode, req.Remarks, req.MemoID, req.CreatedBy,
+		req.RequiredDate, req.ProjectCode, req.DeptCode, req.Status, req.OrderType, req.PRType, req.JobCode, req.Remarks, req.MemoID, req.CreatedBy,
 	).Scan(&prID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
@@ -261,10 +270,14 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 
 	// 2. Insert lines
 	for _, line := range req.Lines {
+		deductStock := true
+		if line.DeductStock != nil {
+			deductStock = *line.DeductStock
+		}
 		if _, err := tx.Exec(context.Background(), `
-			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id)
-			VALUES ($1,$2,$3,$4,'OPEN',$5)`,
-			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID,
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock)
+			VALUES ($1,$2,$3,$4,'OPEN',$5,$6)`,
+			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock,
 		); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
 		}
@@ -327,6 +340,45 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	if orderType == "cost" && projectCode == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
+
+	// Reopen's reversal query finds prior deductions by ref_doc_id + mat_code only (no
+	// pr_line_id column on stock_transaction), so it can't distinguish two lines with the
+	// same mat_code but different deduct_stock settings. Reject that combination up front.
+	{
+		deductByMatCode := make(map[string]bool)
+		mixed := make(map[string]bool)
+		rows, err := h.db.Query(ctx, `SELECT mat_code, deduct_stock FROM purchase_request_line WHERE pr_id=$1`, id)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var matCode string
+			var deductStock bool
+			if err := rows.Scan(&matCode, &deductStock); err != nil {
+				rows.Close()
+				return err
+			}
+			if prev, seen := deductByMatCode[matCode]; seen {
+				if prev != deductStock {
+					mixed[matCode] = true
+				}
+			} else {
+				deductByMatCode[matCode] = deductStock
+			}
+		}
+		rows.Close()
+		if len(mixed) > 0 {
+			matCodes := make([]string, 0, len(mixed))
+			for mc := range mixed {
+				matCodes = append(matCodes, mc)
+			}
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+				"mixed deduct_stock settings aren't supported for duplicate mat_code within one PR (mat_code: %s) — "+
+					"Reopen's stock reversal is keyed by mat_code, not by line, so it cannot tell which line's deduction to reverse",
+				strings.Join(matCodes, ", ")))
+		}
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -369,9 +421,11 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 // project_stock via addToProjectStock, matching how Requisition/StockTransfer track
 // project-level usage. All writes happen inside the caller's tx so a failure anywhere
 // rolls back PR completion too.
+// Lines with deduct_stock=false skip stock_item/stock_transaction entirely — qty_reserved
+// is forced to 0 and qty_to_order to qty_requested, routing the whole line to PO.
 func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int64, orderType string, projectCode *string, userID int64) error {
 	rows, err := tx.Query(ctx, `
-		SELECT id, mat_code, qty_requested
+		SELECT id, mat_code, qty_requested, deduct_stock
 		FROM purchase_request_line
 		WHERE pr_id = $1`, prID)
 	if err != nil {
@@ -381,11 +435,12 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 		ID           int64
 		MatCode      string
 		QtyRequested float64
+		DeductStock  bool
 	}
 	var lines []line
 	for rows.Next() {
 		var l line
-		if err := rows.Scan(&l.ID, &l.MatCode, &l.QtyRequested); err != nil {
+		if err := rows.Scan(&l.ID, &l.MatCode, &l.QtyRequested, &l.DeductStock); err != nil {
 			rows.Close()
 			return err
 		}
@@ -394,6 +449,18 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 	rows.Close()
 
 	for _, l := range lines {
+		if !l.DeductStock {
+			if _, err := tx.Exec(ctx, `
+				UPDATE purchase_request_line
+				SET qty_reserved = 0, qty_to_order = qty_requested
+				WHERE id = $1`,
+				l.ID,
+			); err != nil {
+				return err
+			}
+			continue
+		}
+
 		var itemID int64
 		var available float64
 		var unit *string
@@ -537,15 +604,22 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 			"กรุณายกเลิก PO ต่อไปนี้ก่อนแก้ไข PR: %s", strings.Join(blockingPONos, ", ")))
 	}
 
+	// FOR UPDATE here is belt-and-suspenders: the purchase_request row lock acquired above
+	// already serializes concurrent Reopen calls for this PR (a second Reopen blocks until
+	// the first commits, then re-reads status='DRAFT' and is rejected), so this select can't
+	// actually race in practice. Locking these rows too costs nothing and guards against any
+	// future code path that reverses stock_transaction rows without first locking the PR.
 	issueRows, err := tx.Query(ctx, `
-		SELECT st.item_id, st.qty, si.mat_code
+		SELECT st.id, st.item_id, st.qty, si.mat_code
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
-		WHERE st.ref_doc_type = 'PR' AND st.ref_doc_id = $1 AND st.txn_type = $2`, id, "OUT")
+		WHERE st.ref_doc_type = 'PR' AND st.ref_doc_id = $1 AND st.txn_type = $2 AND st.reversed_at IS NULL
+		FOR UPDATE OF st`, id, "OUT")
 	if err != nil {
 		return err
 	}
 	type issuedQty struct {
+		TxnID   int64
 		ItemID  int64
 		Qty     float64
 		MatCode string
@@ -553,7 +627,7 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 	var issued []issuedQty
 	for issueRows.Next() {
 		var q issuedQty
-		if err := issueRows.Scan(&q.ItemID, &q.Qty, &q.MatCode); err != nil {
+		if err := issueRows.Scan(&q.TxnID, &q.ItemID, &q.Qty, &q.MatCode); err != nil {
 			issueRows.Close()
 			return err
 		}
@@ -590,6 +664,15 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 			// 'IN', not TxnTypeReturn ("RETURN") — same constraint mismatch as the
 			// submit-side 'OUT' fix above; mirrors it as the reversal direction.
 			txnNo, "IN", q.ItemID, q.Qty, id, userID,
+		); err != nil {
+			return err
+		}
+
+		// Mark the OUT row consumed so a future Reopen (after another submit→reopen cycle)
+		// doesn't re-reverse it — this was the root cause of the double/triple-reversal bug.
+		if _, err := tx.Exec(ctx,
+			`UPDATE stock_transaction SET reversed_at = NOW() WHERE id = $1`,
+			q.TxnID,
 		); err != nil {
 			return err
 		}
@@ -637,6 +720,8 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 // @Description  erp_audit_log. Status stays DRAFT afterward — the user must explicitly call
 // @Description  POST /pr/{id}/submit to re-run deductStockOnSubmit against the new
 // @Description  qty_requested values and go back to COMPLETED.
+// @Description  job_code: omit to keep the PR's current value; job_code must be one of the 12 fixed job type codes if sent.
+// @Description  lines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Accept       json
@@ -709,8 +794,8 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	var currentStatus, prNo, currentOrderType, currentPRType string
-	if err := h.db.QueryRow(ctx, `SELECT status, pr_no, order_type, pr_type FROM purchase_request WHERE id=$1`, prID).Scan(&currentStatus, &prNo, &currentOrderType, &currentPRType); err != nil {
+	var currentStatus, prNo, currentOrderType, currentPRType, currentJobCode string
+	if err := h.db.QueryRow(ctx, `SELECT status, pr_no, order_type, pr_type, job_code FROM purchase_request WHERE id=$1`, prID).Scan(&currentStatus, &prNo, &currentOrderType, &currentPRType, &currentJobCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
 	if currentStatus != "DRAFT" {
@@ -733,6 +818,14 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_type must be 'PO_WO', 'PO_ONLY', or 'WO_ONLY'")
 	}
 
+	jobCode := req.JobCode
+	if jobCode == "" {
+		jobCode = currentJobCode
+	}
+	if err := ValidateJobCode(jobCode); err != nil {
+		return err
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -742,10 +835,10 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	if _, err := tx.Exec(ctx, `
 		UPDATE purchase_request SET
 		    pr_date=$1, requested_by=$2, location_text=$3, warehouse_code=$4,
-		    required_date=$5, project_code=$6, order_type=$7, pr_type=$8, job_code=$9, remarks=$10, updated_at=NOW(), updated_by=$11
-		WHERE id=$12`,
+		    required_date=$5, project_code=$6, dept_code=$7, order_type=$8, pr_type=$9, job_code=$10, remarks=$11, updated_at=NOW(), updated_by=$12
+		WHERE id=$13`,
 		req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
-		req.RequiredDate, req.ProjectCode, orderType, prType, req.JobCode, req.Remarks, claims.UserID, prID,
+		req.RequiredDate, req.ProjectCode, req.DeptCode, orderType, prType, jobCode, req.Remarks, claims.UserID, prID,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update PR: "+err.Error())
 	}
@@ -761,10 +854,14 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		if lineNo == 0 {
 			lineNo = i + 1
 		}
+		deductStock := true
+		if line.DeductStock != nil {
+			deductStock = *line.DeductStock
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id)
-			VALUES ($1,$2,$3,$4,'OPEN',$5)`,
-			prID, lineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID,
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock)
+			VALUES ($1,$2,$3,$4,'OPEN',$5,$6)`,
+			prID, lineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code", i))
@@ -867,7 +964,7 @@ func (h *PRHandler) NextNumber(c *fiber.Ctx) error {
 
 // LinesWithPOStatus godoc
 // @Summary      Get PR lines enriched with PO claim status
-// @Description  Returns purchase_request_line rows for the PR with the quantity already claimed by purchase orders, which PO numbers claimed each line, and qty_remaining = qty_requested - qty_ordered. Pass exclude_po_id when editing an existing PO so its own claim is left out of referenced_pos.
+// @Description  Returns purchase_request_line rows for the PR with the quantity already claimed by purchase orders, which PO numbers claimed each line, and qty_remaining = qty_requested - qty_ordered. Pass exclude_po_id when editing an existing PO so its own claim is left out of referenced_pos. Each line includes spec_name (nullable) — the material spec, same field name/join as GET /pr/{id}.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
@@ -903,7 +1000,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(ctx, `
     SELECT
-        base.id, base.line_no, base.mat_code, base.mat_name, base.unit_name,
+        base.id, base.line_no, base.mat_code, base.mat_name, base.unit_name, base.spec_name,
         base.qty_requested, base.qty_reserved, base.qty_ordered, base.qty_remaining,
         base.status, base.referenced_pos,
         ph.last_price,
@@ -914,6 +1011,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
     FROM (
         SELECT
             prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
+            ss.spec_description AS spec_name,
             prl.qty_requested, prl.qty_reserved,
             -- Both qty_ordered and qty_remaining are derived from the live referenced_pos
             -- sum below, not the cached prl.qty_ordered column, so neither can disagree
@@ -937,6 +1035,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
         JOIN material_code mc ON mc.mat_code = prl.mat_code
         JOIN mat_name mn       ON mn.id = mc.mat_name_id
         JOIN unit u            ON u.id = mc.unit_id
+        LEFT JOIN spec_size ss ON ss.id = mc.spec_id
         LEFT JOIN purchase_order_line pol
                ON pol.pr_line_id = prl.id
               AND pol.status != 'CANCELLED'
@@ -947,7 +1046,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
         LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
         LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
         WHERE prl.pr_id = $1
-        GROUP BY prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
+        GROUP BY prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name, ss.spec_description,
                  prl.qty_requested, prl.qty_reserved, prl.qty_ordered, prl.status,
                  prl.cost_subgroup_id, csub.subject_code, cj.job_code, cj.job_name, cg.group_code,
                  csg.subgroup_code, csg.subgroup_name
@@ -997,7 +1096,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
 		var lastPrice *float64
 		var lastPriceDate *time.Time
 		var priceHistJSON []byte
-		if err := rows.Scan(&l.PRLineID, &l.LineNo, &l.MatCode, &l.MatName, &l.Unit,
+		if err := rows.Scan(&l.PRLineID, &l.LineNo, &l.MatCode, &l.MatName, &l.Unit, &l.SpecName,
 			&l.QtyRequested, &l.QtyReserved, &l.QtyOrdered, &l.QtyRemaining, &l.LineStatus, &refJSON,
 			&lastPrice, &lastPriceDate, &priceHistJSON,
 			&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName,

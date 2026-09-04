@@ -2075,6 +2075,151 @@ const docTemplate = `{
                         }
                     }
                 }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Used by the per-Job-Type Cost Code modal (CostCodePage.tsx) to add a new\ncost_group without going through the bulk subject/job/group/subgroup import.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Create a cost group under a job",
+                "parameters": [
+                    {
+                        "description": "New group",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateGroupReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/groups/{id}": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Rename a cost group",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Group ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UpdateGroupReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/groups/{id}/deactivate": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Deactivate a cost group (is_active=false)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Group ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
             }
         },
         "/master/cost-code/import": {
@@ -2275,6 +2420,151 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Used by the per-Job-Type Cost Code modal (CostCodePage.tsx) to add a new\ncost_subgroup without going through the bulk subject/job/group/subgroup import.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Create a cost subgroup under a group",
+                "parameters": [
+                    {
+                        "description": "New subgroup",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateSubgroupReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/subgroups/{id}": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Rename a cost subgroup",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Subgroup ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.UpdateSubgroupReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/subgroups/{id}/deactivate": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Deactivate a cost subgroup (is_active=false)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Subgroup ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -3095,7 +3385,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "filter is_active",
+                        "description": "filter is_active (default true; pass empty string for all)",
                         "name": "is_active",
                         "in": "query"
                     },
@@ -3558,7 +3848,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "search by name",
+                        "description": "search by supplier name",
+                        "name": "supplier_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "search by supplier name (alias of supplier_name)",
                         "name": "q",
                         "in": "query"
                     }
@@ -3584,6 +3880,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "remarks is optional free text, unvalidated.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3710,6 +4007,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "remarks is optional free text, unvalidated.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6214,7 +6512,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request.",
+                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request. job_code is required overall — if omitted and pr_id is set, it's auto-filled from the source PR's job_code (an explicit job_code in the body always wins). lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are optional free text, unvalidated.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6544,7 +6842,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Replaces header fields and all lines of a PO that is still in DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved for APPROVED POs; other statuses cannot be edited). Line totals and the PO total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code auto-fill rules as POST /po.",
+                "description": "Replaces header fields and all lines of a PO that is still in DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved for APPROVED POs; other statuses cannot be edited). Line totals and the PO total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code auto-fill rules as POST /po. job_code: omit to keep the PO's current value; an explicit value (or the linked PR's job_code, if pr_id is (re)sent) always overrides it. lines[].cost_subgroup_id: same precedence as POST /po — an explicit value always wins over the auto-fill from lines[].pr_line_id. receiver_name/receiver_phone are optional free text, unvalidated.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6873,7 +7171,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first.",
+                "description": "Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are editable here too, same as payment_terms/remarks.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6931,7 +7229,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Inserts purchase_order_line rows. For lines that reference a pr_line_id, increments purchase_request_line.qty_ordered and re-evaluates the parent PR status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking.",
+                "description": "Inserts purchase_order_line rows. For lines that reference a pr_line_id, increments purchase_request_line.qty_ordered and re-evaluates the parent PR status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7084,7 +7382,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Aggregates purchase_order, purchase_order_line, supplier, project, location and purchase_request into the shape consumed by the PurchaseOrderPrint frontend component. \"job\", \"contractDelivery\" and \"quotationNo\" are literal \"***\" placeholders — those fields don't exist in the schema yet.",
+                "description": "Aggregates purchase_order, purchase_order_line, supplier, project, location and purchase_request into the shape consumed by the PurchaseOrderPrint frontend component. \"job\" (po.job_code) and \"quotationNo\" (po.ref) are real columns. contractDelivery was removed — it never had a backing column, and the frontend's \"Contract Delivery\" label now displays receiver_name/receiver_phone instead.",
                 "produces": [
                     "application/json"
                 ],
@@ -7306,6 +7604,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7412,7 +7711,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only allowed while status='DRAFT' (including PRs freshly reopened via\nPUT /pr/{id}/reopen, which itself guarantees no active PO references any of\nthis PR's lines — see Reopen). Because that guard already holds by the time a\nPR can reach DRAFT, editing here is fully free: lines are deleted and\nreinserted from the payload with no FK-safety restrictions. Logs the edit to\nerp_audit_log. Status stays DRAFT afterward — the user must explicitly call\nPOST /pr/{id}/submit to re-run deductStockOnSubmit against the new\nqty_requested values and go back to COMPLETED.",
+                "description": "Only allowed while status='DRAFT' (including PRs freshly reopened via\nPUT /pr/{id}/reopen, which itself guarantees no active PO references any of\nthis PR's lines — see Reopen). Because that guard already holds by the time a\nPR can reach DRAFT, editing here is fully free: lines are deleted and\nreinserted from the payload with no FK-safety restrictions. Logs the edit to\nerp_audit_log. Status stays DRAFT afterward — the user must explicitly call\nPOST /pr/{id}/submit to re-run deductStockOnSubmit against the new\nqty_requested values and go back to COMPLETED.\njob_code: omit to keep the PR's current value; job_code must be one of the 12 fixed job type codes if sent.\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7607,7 +7906,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns purchase_request_line rows for the PR with the quantity already claimed by purchase orders, which PO numbers claimed each line, and qty_remaining = qty_requested - qty_ordered. Pass exclude_po_id when editing an existing PO so its own claim is left out of referenced_pos.",
+                "description": "Returns purchase_request_line rows for the PR with the quantity already claimed by purchase orders, which PO numbers claimed each line, and qty_remaining = qty_requested - qty_ordered. Pass exclude_po_id when editing an existing PO so its own claim is left out of referenced_pos. Each line includes spec_name (nullable) — the material spec, same field name/join as GET /pr/{id}.",
                 "produces": [
                     "application/json"
                 ],
@@ -10782,6 +11081,50 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.CreateGroupReq": {
+            "type": "object",
+            "properties": {
+                "group_code": {
+                    "type": "string"
+                },
+                "group_name": {
+                    "type": "string"
+                },
+                "job_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.CreateSubgroupReq": {
+            "type": "object",
+            "properties": {
+                "group_id": {
+                    "type": "integer"
+                },
+                "subgroup_code": {
+                    "type": "string"
+                },
+                "subgroup_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.UpdateGroupReq": {
+            "type": "object",
+            "properties": {
+                "group_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.UpdateSubgroupReq": {
+            "type": "object",
+            "properties": {
+                "subgroup_name": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.approvalDelegationRequest": {
             "type": "object",
             "properties": {
@@ -11104,10 +11447,10 @@ const docTemplate = `{
                 "sales_person": {
                     "type": "string"
                 },
-                "supplier_name": {
+                "sales_person_phone": {
                     "type": "string"
                 },
-                "supplier_short_name": {
+                "supplier_name": {
                     "type": "string"
                 },
                 "tax_id": {
@@ -11492,6 +11835,10 @@ const docTemplate = `{
                 "unit_price"
             ],
             "properties": {
+                "cost_subgroup_id": {
+                    "description": "CostSubgroupID: explicit value wins; if omitted and pr_line_id is set, auto-filled\nfrom that PR line's cost_subgroup_id. Never silently overwrites an explicit value.",
+                    "type": "integer"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -11550,6 +11897,10 @@ const docTemplate = `{
                 "expected_date": {
                     "type": "string"
                 },
+                "job_code": {
+                    "description": "JobCode: optional here — if omitted, auto-filled from the source PR's job_code when\npr_id is set (never silently overwrites an explicit value). Required overall; if\nomitted with no pr_id (or the PR has no usable value), Create/Update returns 400.",
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
                     "minItems": 1,
@@ -11571,6 +11922,12 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "project_code": {
+                    "type": "string"
+                },
+                "receiver_name": {
+                    "type": "string"
+                },
+                "receiver_phone": {
                     "type": "string"
                 },
                 "ref": {
@@ -11606,18 +11963,6 @@ const docTemplate = `{
                 },
                 "warehouse_code": {
                     "type": "string"
-                },
-                "work_type": {
-                    "description": "ประเภทงาน",
-                    "type": "string",
-                    "enum": [
-                        "P",
-                        "E",
-                        "S",
-                        "F",
-                        "G",
-                        "H"
-                    ]
                 }
             }
         },
@@ -11630,6 +11975,10 @@ const docTemplate = `{
             "properties": {
                 "cost_subgroup_id": {
                     "type": "integer"
+                },
+                "deduct_stock": {
+                    "description": "DeductStock: whether Submit should reserve this line against stock_item.qty.\nOmit (nil) to keep today's default behavior (true).",
+                    "type": "boolean"
                 },
                 "line_no": {
                     "type": "integer"
@@ -11646,6 +11995,7 @@ const docTemplate = `{
             "type": "object",
             "required": [
                 "created_by",
+                "job_code",
                 "lines",
                 "location_text",
                 "pr_date",
@@ -11662,7 +12012,11 @@ const docTemplate = `{
                 "created_by": {
                     "type": "integer"
                 },
+                "dept_code": {
+                    "type": "string"
+                },
                 "job_code": {
+                    "description": "required — one of the 12 fixed job type codes, see handlers.JobTypes",
                     "type": "string"
                 },
                 "lines": {
@@ -12091,6 +12445,15 @@ const docTemplate = `{
                 "payment_terms": {
                     "type": "string"
                 },
+                "remarks": {
+                    "type": "string"
+                },
+                "sales_person": {
+                    "type": "string"
+                },
+                "sales_person_phone": {
+                    "type": "string"
+                },
                 "supplier_name": {
                     "type": "string"
                 },
@@ -12444,6 +12807,10 @@ const docTemplate = `{
                 "unit_price"
             ],
             "properties": {
+                "cost_subgroup_id": {
+                    "description": "CostSubgroupID: same precedence as CreatePOLine — explicit value wins, else\nauto-filled from the referenced pr_line_id's cost_subgroup_id, else nil.",
+                    "type": "integer"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -12520,6 +12887,12 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "reason": {
+                    "type": "string"
+                },
+                "receiver_name": {
+                    "type": "string"
+                },
+                "receiver_phone": {
                     "type": "string"
                 },
                 "remarks": {
@@ -12999,6 +13372,10 @@ const docTemplate = `{
                 "brand": {
                     "type": "string"
                 },
+                "cost_subgroup_id": {
+                    "description": "CostSubgroupID: explicit value wins; auto-filled from the source PR line's\ncost_subgroup_id when pr_line_id is set and no explicit value is sent — same\nprecedence pattern as PurchaseOrder.JobCode's auto-fill from PR.",
+                    "type": "integer"
+                },
                 "current_stock": {
                     "type": "number"
                 },
@@ -13241,6 +13618,10 @@ const docTemplate = `{
                 "expected_date": {
                     "type": "string"
                 },
+                "job_code": {
+                    "description": "required — one of the 12 fixed job type codes, see handlers.JobTypes. Replaces the old work_type (P|E|S|F|G|H) column.",
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
                     "items": {
@@ -13278,6 +13659,12 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "project_code": {
+                    "type": "string"
+                },
+                "receiver_name": {
+                    "type": "string"
+                },
+                "receiver_phone": {
                     "type": "string"
                 },
                 "ref": {
@@ -13340,10 +13727,6 @@ const docTemplate = `{
                 },
                 "wht_amount": {
                     "type": "number"
-                },
-                "work_type": {
-                    "description": "header-level ประเภทงาน: P|E|S|F|G|H",
-                    "type": "string"
                 }
             }
         },
@@ -13549,13 +13932,16 @@ const docTemplate = `{
                 "payment_terms": {
                     "type": "string"
                 },
+                "remarks": {
+                    "type": "string"
+                },
                 "sales_person": {
                     "type": "string"
                 },
-                "supplier_name": {
+                "sales_person_phone": {
                     "type": "string"
                 },
-                "supplier_short_name": {
+                "supplier_name": {
                     "type": "string"
                 },
                 "tax_id": {
@@ -13733,6 +14119,10 @@ const docTemplate = `{
                 "cost_subgroup_id": {
                     "type": "integer"
                 },
+                "deduct_stock": {
+                    "description": "DeductStock: whether Submit should reserve this line against stock_item.qty.\nOmit (nil) to keep today's default behavior (true).",
+                    "type": "boolean"
+                },
                 "id": {
                     "type": "integer"
                 },
@@ -13756,7 +14146,11 @@ const docTemplate = `{
                 "requested_by"
             ],
             "properties": {
+                "dept_code": {
+                    "type": "string"
+                },
                 "job_code": {
+                    "description": "required overall — omit to keep the PR's current value, see PRHandler.Update",
                     "type": "string"
                 },
                 "lines": {
@@ -13963,13 +14357,16 @@ const docTemplate = `{
                 "payment_terms": {
                     "type": "string"
                 },
+                "remarks": {
+                    "type": "string"
+                },
                 "sales_person": {
                     "type": "string"
                 },
-                "supplier_name": {
+                "sales_person_phone": {
                     "type": "string"
                 },
-                "supplier_short_name": {
+                "supplier_name": {
                     "type": "string"
                 },
                 "tax_id": {

@@ -21,15 +21,15 @@ func NewSupplierHandler(db *pgxpool.Pool) *SupplierHandler {
 	return &SupplierHandler{db: db}
 }
 
-const supplierCols = `id, supplier_name, supplier_short_name, tax_id, address,
-	contact_name, contact_phone, contact_email, office_phone, fax, sales_person, currency, payment_terms,
+const supplierCols = `id, supplier_name, tax_id, address,
+	contact_name, contact_phone, contact_email, office_phone, fax, sales_person, sales_person_phone, currency, payment_terms, remarks,
 	is_active, created_at, updated_at, created_by, updated_by`
 
 func scanSupplier(s *models.SupplierFull, row interface {
 	Scan(dest ...any) error
 }) error {
-	return row.Scan(&s.Id, &s.SupplierName, &s.SupplierShortName, &s.TaxID, &s.Address,
-		&s.ContactName, &s.ContactPhone, &s.ContactEmail, &s.OfficePhone, &s.Fax, &s.SalesPerson, &s.Currency, &s.PaymentTerms,
+	return row.Scan(&s.Id, &s.SupplierName, &s.TaxID, &s.Address,
+		&s.ContactName, &s.ContactPhone, &s.ContactEmail, &s.OfficePhone, &s.Fax, &s.SalesPerson, &s.SalesPersonPhone, &s.Currency, &s.PaymentTerms, &s.Remarks,
 		&s.IsActive, &s.CreatedAt, &s.UpdatedAt, &s.CreatedBy, &s.UpdatedBy)
 }
 
@@ -38,23 +38,41 @@ func scanSupplier(s *models.SupplierFull, row interface {
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        q  query  string  false  "search by name"
+// @Param        supplier_name  query  string  false  "search by supplier name"
+// @Param        q              query  string  false  "search by supplier name (alias of supplier_name)"
 // @Success      200  {object}  fiber.Map
 // @Failure      500  {object}  fiber.Map
 // @Router       /master/suppliers [get]
 func (h *SupplierHandler) ListSuppliers(c *fiber.Ctx) error {
-	q := "%" + c.Query("q") + "%"
+	name := c.Query("supplier_name")
+	if name == "" {
+		name = c.Query("q")
+	}
+
+	where := "is_active = true"
+	args := []interface{}{}
+	if name != "" {
+		where += " AND supplier_name ILIKE $1"
+		args = append(args, "%"+name+"%")
+	}
+
+	var total int64
+	if err := h.db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM supplier WHERE `+where, args...).Scan(&total); err != nil {
+		return err
+	}
+
 	rows, err := h.db.Query(context.Background(),
 		`SELECT `+supplierCols+`
 		FROM supplier
-		WHERE is_active = true AND supplier_name ILIKE $1
-		ORDER BY id ASC`, q)
+		WHERE `+where+`
+		ORDER BY id ASC`, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	var items []models.SupplierFull
+	items := []models.SupplierFull{}
 	for rows.Next() {
 		var s models.SupplierFull
 		if err := scanSupplier(&s, rows); err != nil {
@@ -62,7 +80,7 @@ func (h *SupplierHandler) ListSuppliers(c *fiber.Ctx) error {
 		}
 		items = append(items, s)
 	}
-	return c.JSON(fiber.Map{"success": true, "data": items})
+	return c.JSON(fiber.Map{"success": true, "data": items, "total": total})
 }
 
 // GetSupplier godoc
@@ -91,6 +109,7 @@ func (h *SupplierHandler) GetSupplier(c *fiber.Ctx) error {
 
 // CreateSupplier godoc
 // @Summary      Create supplier
+// @Description  remarks is optional free text, unvalidated.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -113,11 +132,11 @@ func (h *SupplierHandler) CreateSupplier(c *fiber.Ctx) error {
 	var s models.SupplierFull
 	row := h.db.QueryRow(context.Background(),
 		`INSERT INTO supplier (supplier_name, tax_id, address,
-		contact_name, contact_phone, contact_email, payment_terms, is_active, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+		contact_name, contact_phone, contact_email, sales_person, sales_person_phone, payment_terms, remarks, is_active, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
 		RETURNING `+supplierCols,
 		req.SupplierName, req.TaxID, req.Address,
-		req.ContactName, req.ContactPhone, req.ContactEmail, req.PaymentTerms, req.IsActive, claims.UserID)
+		req.ContactName, req.ContactPhone, req.ContactEmail, req.SalesPerson, req.SalesPersonPhone, req.PaymentTerms, req.Remarks, req.IsActive, claims.UserID)
 	if err := scanSupplier(&s, row); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
@@ -126,6 +145,7 @@ func (h *SupplierHandler) CreateSupplier(c *fiber.Ctx) error {
 
 // UpdateSupplier godoc
 // @Summary      Update supplier
+// @Description  remarks is optional free text, unvalidated.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -154,15 +174,15 @@ func (h *SupplierHandler) UpdateSupplier(c *fiber.Ctx) error {
 
 	var s models.SupplierFull
 	row := h.db.QueryRow(context.Background(),
-		`UPDATE supplier SET supplier_name=$1, supplier_short_name=$2, tax_id=$3, address=$4,
-		contact_name=$5, contact_phone=$6, contact_email=$7, office_phone=$8, fax=$9,
-		sales_person=$10, currency=$11, payment_terms=$12,
-		updated_at=NOW(), updated_by=$13
-		WHERE id=$14 AND is_active=true
+		`UPDATE supplier SET supplier_name=$1, tax_id=$2, address=$3,
+		contact_name=$4, contact_phone=$5, contact_email=$6, office_phone=$7, fax=$8,
+		sales_person=$9, sales_person_phone=$10, currency=$11, payment_terms=$12, remarks=$13,
+		updated_at=NOW(), updated_by=$14
+		WHERE id=$15 AND is_active=true
 		RETURNING `+supplierCols,
-		req.SupplierName, req.SupplierShortName, req.TaxID, req.Address,
+		req.SupplierName, req.TaxID, req.Address,
 		req.ContactName, req.ContactPhone, req.ContactEmail, req.OfficePhone, req.Fax,
-		req.SalesPerson, req.Currency, req.PaymentTerms,
+		req.SalesPerson, req.SalesPersonPhone, req.Currency, req.PaymentTerms, req.Remarks,
 		claims.UserID, id)
 	if err := scanSupplier(&s, row); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "supplier not found")
@@ -185,8 +205,22 @@ func (h *SupplierHandler) DeleteSupplier(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid supplier id")
 	}
 	claims := middleware.GetClaims(c)
+	ctx := context.Background()
 
-	tag, execErr := h.db.Exec(context.Background(),
+	var inUse bool
+	if err := h.db.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM purchase_order WHERE supplier_id = $1
+			UNION ALL
+			SELECT 1 FROM rfq WHERE supplier_id = $1
+		)`, id).Scan(&inUse); err != nil {
+		return err
+	}
+	if inUse {
+		return fiber.NewError(fiber.StatusConflict, "supplier is referenced by existing purchase orders/RFQs and cannot be deleted")
+	}
+
+	tag, execErr := h.db.Exec(ctx,
 		`UPDATE supplier SET is_active=false, updated_at=NOW(), updated_by=$2
 		WHERE id=$1 AND is_active=true`,
 		id, claims.UserID)
@@ -344,11 +378,6 @@ func (h *SupplierHandler) BulkInsertSupplier(c *fiber.Ctx) error {
 		if err := maxLen(i, "supplier_name", s.SupplierName, 200); err != nil {
 			return err
 		}
-		if s.SupplierShortName != nil {
-			if err := maxLen(i, "supplier_short_name", *s.SupplierShortName, 30); err != nil {
-				return err
-			}
-		}
 		if s.TaxID != nil {
 			if err := maxLen(i, "tax_id", *s.TaxID, 50); err != nil {
 				return err
@@ -413,14 +442,14 @@ func (h *SupplierHandler) BulkInsertSupplier(c *fiber.Ctx) error {
 		var inserted models.BulkInsertSupplierResultLine
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO supplier
-				(supplier_name, supplier_short_name, tax_id, address,
+				(supplier_name, tax_id, address,
 				 contact_name, contact_phone, contact_email, office_phone, fax,
-				 payment_terms, currency, sales_person, is_active, created_by, updated_by)
+				 payment_terms, currency, sales_person, sales_person_phone, is_active, created_by, updated_by)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,$13,$13)
 			RETURNING id, supplier_name`,
-			s.SupplierName, s.SupplierShortName, s.TaxID, s.Address,
+			s.SupplierName, s.TaxID, s.Address,
 			s.ContactName, s.ContactPhone, s.ContactEmail, s.OfficePhone, s.Fax,
-			s.PaymentTerms, currency, s.SalesPerson, claims.UserID,
+			s.PaymentTerms, currency, s.SalesPerson, s.SalesPersonPhone, claims.UserID,
 		).Scan(&inserted.SupplierID, &inserted.SupplierName); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("suppliers[%d]: %s", i, err.Error()))
 		}

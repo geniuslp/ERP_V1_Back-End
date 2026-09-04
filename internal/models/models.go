@@ -413,48 +413,53 @@ type UpdateLocationReq struct {
 }
 
 type SupplierFull struct {
-	Id                int       `json:"id"`
-	SupplierName      string    `json:"supplier_name"`
-	SupplierShortName *string   `json:"supplier_short_name,omitempty"`
-	TaxID             *string   `json:"tax_id,omitempty"`
-	Address           *string   `json:"address,omitempty"`
-	ContactName       *string   `json:"contact_name,omitempty"`
-	ContactPhone      *string   `json:"contact_phone,omitempty"`
-	ContactEmail      *string   `json:"contact_email,omitempty"`
-	OfficePhone       *string   `json:"office_phone,omitempty"`
-	Fax               *string   `json:"fax,omitempty"`
-	SalesPerson       *string   `json:"sales_person,omitempty"`
-	Currency          *string   `json:"currency,omitempty"`
-	PaymentTerms      *string   `json:"payment_terms,omitempty"`
-	IsActive          bool      `json:"is_active"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	CreatedBy         *int64    `json:"created_by,omitempty"`
-	UpdatedBy         *int64    `json:"updated_by,omitempty"`
+	Id               int       `json:"id"`
+	SupplierName     string    `json:"supplier_name"`
+	TaxID            *string   `json:"tax_id,omitempty"`
+	Address          *string   `json:"address,omitempty"`
+	ContactName      *string   `json:"contact_name,omitempty"`
+	ContactPhone     *string   `json:"contact_phone,omitempty"`
+	ContactEmail     *string   `json:"contact_email,omitempty"`
+	OfficePhone      *string   `json:"office_phone,omitempty"`
+	Fax              *string   `json:"fax,omitempty"`
+	SalesPerson      *string   `json:"sales_person,omitempty"`
+	SalesPersonPhone *string   `json:"sales_person_phone,omitempty"`
+	Currency         *string   `json:"currency,omitempty"`
+	PaymentTerms     *string   `json:"payment_terms,omitempty"`
+	Remarks          *string   `json:"remarks,omitempty"`
+	IsActive         bool      `json:"is_active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	CreatedBy        *int64    `json:"created_by,omitempty"`
+	UpdatedBy        *int64    `json:"updated_by,omitempty"`
 }
 type CreateSupplierReq struct {
-	SupplierName string  `json:"supplier_name"`
-	TaxID        *string `json:"tax_id,omitempty"`
-	Address      *string `json:"address,omitempty"`
-	ContactName  *string `json:"contact_name,omitempty"`
-	ContactPhone *string `json:"contact_phone,omitempty"`
-	ContactEmail *string `json:"contact_email,omitempty"`
-	PaymentTerms *string `json:"payment_terms,omitempty"`
-	IsActive     bool    `json:"is_active"`
+	SupplierName     string  `json:"supplier_name"`
+	TaxID            *string `json:"tax_id,omitempty"`
+	Address          *string `json:"address,omitempty"`
+	ContactName      *string `json:"contact_name,omitempty"`
+	ContactPhone     *string `json:"contact_phone,omitempty"`
+	ContactEmail     *string `json:"contact_email,omitempty"`
+	SalesPerson      *string `json:"sales_person,omitempty"`
+	SalesPersonPhone *string `json:"sales_person_phone,omitempty"`
+	PaymentTerms     *string `json:"payment_terms,omitempty"`
+	Remarks          *string `json:"remarks,omitempty"`
+	IsActive         bool    `json:"is_active"`
 }
 type UpdateSupplierReq struct {
-	SupplierName      string  `json:"supplier_name"`
-	SupplierShortName *string `json:"supplier_short_name,omitempty"`
-	TaxID             *string `json:"tax_id,omitempty"`
-	Address           *string `json:"address,omitempty"`
-	ContactName       *string `json:"contact_name,omitempty"`
-	ContactPhone      *string `json:"contact_phone,omitempty"`
-	ContactEmail      *string `json:"contact_email,omitempty"`
-	OfficePhone       *string `json:"office_phone,omitempty"`
-	Fax               *string `json:"fax,omitempty"`
-	SalesPerson       *string `json:"sales_person,omitempty"`
-	Currency          *string `json:"currency,omitempty"`
-	PaymentTerms      *string `json:"payment_terms,omitempty"`
+	SupplierName     string  `json:"supplier_name"`
+	TaxID            *string `json:"tax_id,omitempty"`
+	Address          *string `json:"address,omitempty"`
+	ContactName      *string `json:"contact_name,omitempty"`
+	ContactPhone     *string `json:"contact_phone,omitempty"`
+	ContactEmail     *string `json:"contact_email,omitempty"`
+	OfficePhone      *string `json:"office_phone,omitempty"`
+	Fax              *string `json:"fax,omitempty"`
+	SalesPerson      *string `json:"sales_person,omitempty"`
+	SalesPersonPhone *string `json:"sales_person_phone,omitempty"`
+	Currency         *string `json:"currency,omitempty"`
+	PaymentTerms     *string `json:"payment_terms,omitempty"`
+	Remarks          *string `json:"remarks,omitempty"`
 }
 
 // BulkInsertSupplierLine is one supplier entry in a POST /supplier/bulk request.
@@ -462,18 +467,18 @@ type UpdateSupplierReq struct {
 // unvalidated. There is no supplier_code anymore — supplier.id (auto-increment
 // PK) is the only identifier, assigned by the DB on insert.
 type BulkInsertSupplierLine struct {
-	SupplierName      string  `json:"supplier_name"`
-	SupplierShortName *string `json:"supplier_short_name,omitempty"`
-	TaxID             *string `json:"tax_id,omitempty"`
-	Address           *string `json:"address,omitempty"`
-	ContactName       *string `json:"contact_name,omitempty"`
-	ContactPhone      *string `json:"contact_phone,omitempty"`
-	ContactEmail      *string `json:"contact_email,omitempty"`
-	OfficePhone       *string `json:"office_phone,omitempty"`
-	Fax               *string `json:"fax,omitempty"`
-	PaymentTerms      *string `json:"payment_terms,omitempty"`
-	Currency          *string `json:"currency,omitempty"`
-	SalesPerson       *string `json:"sales_person,omitempty"`
+	SupplierName     string  `json:"supplier_name"`
+	TaxID            *string `json:"tax_id,omitempty"`
+	Address          *string `json:"address,omitempty"`
+	ContactName      *string `json:"contact_name,omitempty"`
+	ContactPhone     *string `json:"contact_phone,omitempty"`
+	ContactEmail     *string `json:"contact_email,omitempty"`
+	OfficePhone      *string `json:"office_phone,omitempty"`
+	Fax              *string `json:"fax,omitempty"`
+	PaymentTerms     *string `json:"payment_terms,omitempty"`
+	Currency         *string `json:"currency,omitempty"`
+	SalesPerson      *string `json:"sales_person,omitempty"`
+	SalesPersonPhone *string `json:"sales_person_phone,omitempty"`
 }
 
 type BulkInsertSupplierRequest struct {
@@ -760,12 +765,13 @@ type PurchaseRequest struct {
 	WarehouseCode *string       `json:"warehouse_code,omitempty" db:"warehouse_code"`
 	WarehouseName *string       `json:"warehouse_name,omitempty" db:"warehouse_name"`
 	ProjectCode   *string       `json:"project_code,omitempty" db:"project_code"`
+	DeptCode      *string       `json:"dept_code,omitempty" db:"dept_code"`
 	RequiredDate  *string       `json:"required_date,omitempty" db:"required_date"`
 	Status        string        `json:"status" db:"status"`
 	Priority      string        `json:"priority" db:"priority"`
 	OrderType     string        `json:"order_type" db:"order_type"`
 	PRType        string        `json:"pr_type" db:"pr_type"`
-	JobCode       *string       `json:"job_code,omitempty" db:"job_code"`
+	JobCode       string        `json:"job_code" db:"job_code"` // required — one of the 12 fixed job type codes, see handlers.JobTypes
 	Remarks       *string       `json:"remarks,omitempty" db:"remarks"`
 	CreatedAt     time.Time     `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time     `json:"updated_at" db:"updated_at"`
@@ -792,6 +798,7 @@ type PRLine struct {
 	QtyOrdered   float64 `json:"qty_ordered" db:"qty_ordered"`
 	Remarks      *string `json:"remarks,omitempty" db:"remarks"`
 	Status       string  `json:"status" db:"status"`
+	DeductStock  bool    `json:"deduct_stock" db:"deduct_stock"`
 
 	// Cost Code — chosen per line item, not tied to the material.
 	CostSubgroupID   *int64  `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
@@ -825,6 +832,7 @@ type PRLineWithPOStatus struct {
 	MatCode       string         `json:"mat_code"`
 	MatName       string         `json:"mat_name"`
 	Unit          string         `json:"unit"`
+	SpecName      *string        `json:"spec_name,omitempty"` // resolved spec_size.spec_description, same field name/join as GET /pr/{id}
 	QtyRequested  float64        `json:"qty_requested"`
 	QtyReserved   float64        `json:"qty_reserved"`
 	QtyOrdered    float64        `json:"qty_ordered"`
@@ -860,10 +868,11 @@ type CreatePRRequest struct {
 	WarehouseCode *string                `json:"warehouse_code,omitempty"`
 	RequiredDate  *string                `json:"required_date,omitempty"`
 	ProjectCode   *string                `json:"project_code,omitempty"`
+	DeptCode      *string                `json:"dept_code,omitempty" db:"dept_code"`
 	MemoID        *int64                 `json:"memo_id,omitempty"`
 	OrderType     string                 `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
 	PRType        string                 `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY" — defaults to "PO_WO"
-	JobCode       *string                `json:"job_code,omitempty"`
+	JobCode       string                 `json:"job_code" validate:"required"` // required — one of the 12 fixed job type codes, see handlers.JobTypes
 	Status        string                 `json:"status"`
 	Remarks       *string                `json:"remarks,omitempty"`
 	CreatedBy     int64                  `json:"created_by" validate:"required"`
@@ -876,6 +885,9 @@ type CreatePRLine struct {
 	MatCode        string  `json:"mat_code" validate:"required"`
 	QtyRequested   float64 `json:"qty_requested" validate:"required,gt=0"`
 	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
+	// DeductStock: whether Submit should reserve this line against stock_item.qty.
+	// Omit (nil) to keep today's default behavior (true).
+	DeductStock *bool `json:"deduct_stock,omitempty"`
 }
 
 // UpdatePRRequest edits a PR's header and lines. Only allowed while status='DRAFT' (including
@@ -888,9 +900,10 @@ type UpdatePRRequest struct {
 	WarehouseCode *string        `json:"warehouse_code,omitempty"`
 	RequiredDate  *string        `json:"required_date,omitempty"`
 	ProjectCode   *string        `json:"project_code,omitempty"`
+	DeptCode      *string        `json:"dept_code,omitempty" db:"dept_code"`
 	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost"
 	PRType        string         `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY"
-	JobCode       *string        `json:"job_code,omitempty"`
+	JobCode       string         `json:"job_code,omitempty"` // required overall — omit to keep the PR's current value, see PRHandler.Update
 	Remarks       *string        `json:"remarks,omitempty"`
 	Lines         []UpdatePRLine `json:"lines" validate:"required,min=1"`
 }
@@ -905,6 +918,9 @@ type UpdatePRLine struct {
 	MatCode        string  `json:"mat_code" validate:"required"`
 	QtyRequested   float64 `json:"qty_requested" validate:"required,gt=0"`
 	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
+	// DeductStock: whether Submit should reserve this line against stock_item.qty.
+	// Omit (nil) to keep today's default behavior (true).
+	DeductStock *bool `json:"deduct_stock,omitempty"`
 }
 
 // ─── Purchase Order ───────────────────────────────────────────────────────────
@@ -940,9 +956,11 @@ type PurchaseOrder struct {
 	Status           string    `json:"status" db:"status"`
 	StatusReceive    string    `json:"status_receive" db:"status_receive"`
 	OrderType        string    `json:"order_type" db:"order_type"`
-	WorkType         *string   `json:"work_type,omitempty" db:"work_type"` // header-level ประเภทงาน: P|E|S|F|G|H
+	JobCode          string    `json:"job_code" db:"job_code"` // required — one of the 12 fixed job type codes, see handlers.JobTypes. Replaces the old work_type (P|E|S|F|G|H) column.
 	PaymentTerms     *string   `json:"payment_terms,omitempty" db:"payment_terms"`
 	Remarks          *string   `json:"remarks,omitempty" db:"remarks"`
+	ReceiverName     *string   `json:"receiver_name,omitempty" db:"receiver_name"`
+	ReceiverPhone    *string   `json:"receiver_phone,omitempty" db:"receiver_phone"`
 	CreatedBy        int64     `json:"created_by" db:"created_by"`
 	CreatedAt        time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
@@ -985,6 +1003,10 @@ type POLine struct {
 	Description       *string  `json:"description,omitempty" db:"description"`
 	Remarks           *string  `json:"remarks,omitempty" db:"remarks"`
 	Status            string   `json:"status" db:"status"`
+	// CostSubgroupID: explicit value wins; auto-filled from the source PR line's
+	// cost_subgroup_id when pr_line_id is set and no explicit value is sent — same
+	// precedence pattern as PurchaseOrder.JobCode's auto-fill from PR.
+	CostSubgroupID    *int64   `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
 	MatName           *string  `json:"mat_name,omitempty"`
 	SpecDescription   *string  `json:"spec,omitempty"`
 	BrandName         *string  `json:"brand,omitempty"`
@@ -1006,9 +1028,14 @@ type CreatePORequest struct {
 	ExpectedDate  *string        `json:"expected_date,omitempty"`
 	PaymentTerms  *string        `json:"payment_terms,omitempty"`
 	Remarks       *string        `json:"remarks,omitempty"`
+	ReceiverName  *string        `json:"receiver_name,omitempty"`
+	ReceiverPhone *string        `json:"receiver_phone,omitempty"`
 	Status        string         `json:"status" validate:"omitempty,oneof=DRAFT PENDING_APPROVAL"`
-	OrderType     string         `json:"order_type,omitempty"`                                       // "stock" | "cost" — defaults to "stock"
-	WorkType      *string        `json:"work_type,omitempty" validate:"omitempty,oneof=P E S F G H"` // ประเภทงาน
+	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
+	// JobCode: optional here — if omitted, auto-filled from the source PR's job_code when
+	// pr_id is set (never silently overwrites an explicit value). Required overall; if
+	// omitted with no pr_id (or the PR has no usable value), Create/Update returns 400.
+	JobCode       *string        `json:"job_code,omitempty"`
 	UseDiscount   *bool          `json:"use_discount,omitempty"`
 	DiscountType  *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
 	UseVAT        *bool          `json:"use_vat,omitempty"`
@@ -1019,6 +1046,9 @@ type CreatePORequest struct {
 type CreatePOLine struct {
 	MatCode     string   `json:"mat_code" validate:"required"`
 	PRLineID    *int64   `json:"pr_line_id,omitempty"`
+	// CostSubgroupID: explicit value wins; if omitted and pr_line_id is set, auto-filled
+	// from that PR line's cost_subgroup_id. Never silently overwrites an explicit value.
+	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
 	QtyOrdered  float64  `json:"qty_ordered" validate:"required,gt=0"`
 	UnitPrice   float64  `json:"unit_price" validate:"required,gte=0"`
 	DiscType    string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
@@ -1045,6 +1075,9 @@ type EditApprovedPOLine struct {
 	ID          *int64   `json:"id,omitempty"`
 	MatCode     string   `json:"mat_code" validate:"required"`
 	PRLineID    *int64   `json:"pr_line_id,omitempty"`
+	// CostSubgroupID: same precedence as CreatePOLine — explicit value wins, else
+	// auto-filled from the referenced pr_line_id's cost_subgroup_id, else nil.
+	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
 	QtyOrdered  float64  `json:"qty_ordered" validate:"required,gt=0"`
 	UnitPrice   float64  `json:"unit_price" validate:"required,gte=0"`
 	DiscType    string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
@@ -1070,6 +1103,8 @@ type EditApprovedPORequest struct {
 	ExpectedDate  *string              `json:"expected_date,omitempty"`
 	PaymentTerms  *string              `json:"payment_terms,omitempty"`
 	Remarks       *string              `json:"remarks,omitempty"`
+	ReceiverName  *string              `json:"receiver_name,omitempty"`
+	ReceiverPhone *string              `json:"receiver_phone,omitempty"`
 	UseDiscount   *bool                `json:"use_discount,omitempty"`
 	DiscountType  *string              `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
 	UseVAT        *bool                `json:"use_vat,omitempty"`
