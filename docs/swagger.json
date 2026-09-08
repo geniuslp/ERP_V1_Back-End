@@ -13366,9 +13366,16 @@
                 "brand": {
                     "type": "string"
                 },
+                "cost_code": {
+                    "description": "CostCode/CostSubgroupName — resolved via cost_subgroup -\u003e cost_group -\u003e\ncost_job -\u003e cost_subject, same join/convention as pr_approval.go's\nPRLineItem.CostCode and PrintData's poPrintItem.Code. Nil when\nCostSubgroupID is nil (no cost code assigned to this line).",
+                    "type": "string"
+                },
                 "cost_subgroup_id": {
                     "description": "CostSubgroupID: explicit value wins; auto-filled from the source PR line's\ncost_subgroup_id when pr_line_id is set and no explicit value is sent — same\nprecedence pattern as PurchaseOrder.JobCode's auto-fill from PR.",
                     "type": "integer"
+                },
+                "cost_subgroup_name": {
+                    "type": "string"
                 },
                 "current_stock": {
                     "type": "number"
@@ -13653,6 +13660,9 @@
                     "type": "string"
                 },
                 "project_code": {
+                    "type": "string"
+                },
+                "project_name": {
                     "type": "string"
                 },
                 "receiver_name": {
@@ -14256,6 +14266,7 @@
                     "type": "string"
                 },
                 "is_active": {
+                    "description": "IsActive: nil (omitted) means \"leave unchanged\" — Update reads the project's current\nvalue and preserves it rather than defaulting to false. See project_handler.go Update.",
                     "type": "boolean"
                 },
                 "job_codes": {

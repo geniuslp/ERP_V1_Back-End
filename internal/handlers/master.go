@@ -1632,6 +1632,28 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 		return err
 	}
 
+	// Every material must have a matching stock_item so GRN receiving can
+	// always find one — see CLAUDE.md "GRN receiving / stock link" note.
+	// Mirrors CreateMaterial's single-item auto-create, batched for the whole
+	// bulk-import set; ON CONFLICT DO NOTHING skips mat_codes that already
+	// have a stock_item (e.g. re-imported/updated materials).
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO stock_item (mat_code, item_name, unit, qty, created_at, updated_at)
+		SELECT mc.mat_code,
+		       COALESCE(mn.mat_name, mc.mat_code) AS item_name,
+		       COALESCE(u.unit_name, '-')         AS unit,
+		       0, NOW(), NOW()
+		FROM material_code mc
+		LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
+		LEFT JOIN unit     u  ON u.id  = mc.unit_id
+		WHERE mc.mat_code = ANY($1::text[])
+		ON CONFLICT (mat_code) DO NOTHING`,
+		matCodes,
+	); err != nil {
+		log.Println("❌ stock_item bulk insert:", err)
+		return err
+	}
+
 	if err = tx.Commit(ctx); err != nil {
 		log.Println("❌ commit:", err)
 		return err

@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // JobTypeInfo is one entry in the fixed, hardcoded Job Type list shared by PR (job_code),
@@ -61,4 +64,35 @@ func validateJobCodes(codes []string) error {
 		}
 	}
 	return nil
+}
+
+// validateJobCodeForProject checks jobCode is one of the fixed 12 codes, and — when
+// projectCode is non-nil/non-blank — additionally that it's a member of that project's
+// job_codes[] array. If the project_code doesn't exist, this silently skips the project-based
+// check (pgx.ErrNoRows) and leaves the bad-FK case to whatever project_code existence check
+// the caller already runs (Create/Update in pr.go); it is not this function's job to duplicate
+// that error. Shared by PR Create/Update (job_code is only project-restricted on PR today).
+func validateJobCodeForProject(ctx context.Context, db *pgxpool.Pool, jobCode string, projectCode *string) error {
+	if err := ValidateJobCode(jobCode); err != nil {
+		return err
+	}
+	if projectCode == nil || *projectCode == "" {
+		return nil
+	}
+
+	var allowed []string
+	err := db.QueryRow(ctx, `SELECT job_codes FROM project WHERE project_code=$1`, *projectCode).Scan(&allowed)
+	if err == pgx.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	for _, jc := range allowed {
+		if jc == jobCode {
+			return nil
+		}
+	}
+	return fiber.NewError(fiber.StatusBadRequest, "ประเภทงานที่เลือกไม่ตรงกับโครงการนี้")
 }

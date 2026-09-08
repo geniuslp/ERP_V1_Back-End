@@ -472,13 +472,14 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       COALESCE(s.supplier_name, ''),
 		       s.office_phone, s.sales_person,
 		       s.contact_email, s.contact_phone,
-		       pr.pr_no, w.address,
+		       pr.pr_no, w.address, pj.project_name,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
 		FROM purchase_order po
 		LEFT JOIN users u ON u.id = po.requested_by
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		LEFT JOIN warehouse w ON w.warehouse_code = po.warehouse_code
+		LEFT JOIN project pj ON pj.project_code = po.project_code
 		WHERE po.id = $1`, id)
 
 	var po models.PurchaseOrder
@@ -496,7 +497,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		&po.SupplierName,
 		&po.OfficePhone, &po.SalesPerson,
 		&po.ContactEmail, &po.ContactPhone,
-		&po.PRNo, &po.WarehouseAddress,
+		&po.PRNo, &po.WarehouseAddress, &po.ProjectName,
 		&po.RevisionRound); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
@@ -510,6 +511,8 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       pol.unit_price, pol.disc_type, pol.discount, pol.line_discount, pol.line_vat, pol.line_wht,
 		       pol.line_net, pol.wht_rate, pol.amount, pol.description, pol.remarks, pol.status,
 		       pol.cost_subgroup_id,
+		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+		       csg.subgroup_name AS cost_subgroup_name,
 		       mn.mat_name, ss.spec_description, b.brand_name,
 		       COALESCE(si.qty, 0), prl.qty_reserved
 		FROM purchase_order_line pol
@@ -519,6 +522,10 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		LEFT JOIN brand         b  ON b.id  = mc.brand_id
 		LEFT JOIN stock_item    si  ON si.mat_code = pol.mat_code
 		LEFT JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
+		LEFT JOIN cost_subgroup csg  ON csg.id = pol.cost_subgroup_id
+		LEFT JOIN cost_group    cg   ON cg.id = csg.group_id
+		LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
 		WHERE pol.po_id=$1 ORDER BY pol.line_no`, id)
 	if rows != nil {
 		defer rows.Close()
@@ -527,7 +534,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 			rows.Scan(&l.LineID, &l.POID, &l.LineNo, &l.MatCode, &l.PRLineID,
 				&l.QtyOrdered, &l.QtyReceived, &l.UnitPrice, &l.DiscType, &l.Discount, &l.LineDiscount,
 				&l.LineVAT, &l.LineWHT, &l.LineNet, &l.WhtRate, &l.Amount, &l.Description, &l.Remarks, &l.Status,
-				&l.CostSubgroupID,
+				&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName,
 				&l.MatName, &l.SpecDescription, &l.BrandName, &l.CurrentStock, &l.PRLineQtyReserved)
 			po.Lines = append(po.Lines, l)
 		}
@@ -805,7 +812,11 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if jobCode == nil || strings.TrimSpace(*jobCode) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "job_code is required (provide it explicitly or link a pr_id with a job_code set)")
 	}
-	if err := ValidateJobCode(*jobCode); err != nil {
+	// When linked to a PR, prJobCode was already validated against that PR's project at PR
+	// create/edit time, so this is mostly a no-op guard there; it matters for the client-
+	// override path with no pr_id, where an explicit job_code + project_code combination has
+	// never been checked against project.job_codes[] before.
+	if err := validateJobCodeForProject(ctx, h.db, *jobCode, projectCode); err != nil {
 		return err
 	}
 
@@ -1257,7 +1268,9 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	if jobCode == nil || strings.TrimSpace(*jobCode) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "job_code is required")
 	}
-	if err := ValidateJobCode(*jobCode); err != nil {
+	// Same project-aware guard as Create — mostly a no-op when inherited from a PR (already
+	// validated there), matters for the explicit job_code + project_code override path.
+	if err := validateJobCodeForProject(ctx, h.db, *jobCode, projectCode); err != nil {
 		return err
 	}
 
@@ -2620,9 +2633,9 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		if unitName != nil {
 			unit = *unitName
 		}
-		// Prefer the resolved Cost Code; fall back to mat_code for lines with
+		// Prefer the resolved Cost Code; fall back to "-" for lines with
 		// no cost_subgroup_id set (the join chain leaves costCode nil there).
-		code := matCode
+		code := "-"
 		if costCode != nil && *costCode != "" {
 			code = *costCode
 		}
@@ -2704,6 +2717,8 @@ func (h *POHandler) GetReceivablePOs(c *fiber.Ctx) error {
 	ctx := context.Background()
 	filter := `
 		FROM purchase_order po
+		LEFT JOIN supplier s ON s.id = po.supplier_id
+		LEFT JOIN project pj ON pj.project_code = po.project_code
 		WHERE po.status = 'APPROVED'
 		  AND po.status_receive IN ('NOT_SENT', 'SENT', 'PARTIALLY_RECEIVED')
 		  AND EXISTS (
@@ -2726,7 +2741,8 @@ func (h *POHandler) GetReceivablePOs(c *fiber.Ctx) error {
 	args = append(args, size, offset)
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT po.id, po.po_no, po.po_date, po.supplier_id, po.status, po.status_receive,
-		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round
+		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round,
+		       s.supplier_name, po.project_code, pj.project_name, COALESCE(po.net_amount, 0)
 		%s
 		ORDER BY po.po_date DESC, po.po_no
 		LIMIT $%d OFFSET $%d`, filter, idx, idx+1), args...)
@@ -2743,13 +2759,18 @@ func (h *POHandler) GetReceivablePOs(c *fiber.Ctx) error {
 		Status        string    `json:"status"`
 		StatusReceive string    `json:"status_receive"`
 		// RevisionRound: see PurchaseOrder.RevisionRound. po_no never changes.
-		RevisionRound int `json:"revision_round"`
+		RevisionRound int     `json:"revision_round"`
+		SupplierName  *string `json:"supplier_name,omitempty"`
+		ProjectCode   *string `json:"project_code,omitempty"`
+		ProjectName   *string `json:"project_name,omitempty"`
+		NetAmount     float64 `json:"net_amount"`
 	}
 
 	items := []receivablePO{}
 	for rows.Next() {
 		var r receivablePO
-		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.Status, &r.StatusReceive, &r.RevisionRound); err != nil {
+		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.Status, &r.StatusReceive, &r.RevisionRound,
+			&r.SupplierName, &r.ProjectCode, &r.ProjectName, &r.NetAmount); err != nil {
 			return err
 		}
 		items = append(items, r)

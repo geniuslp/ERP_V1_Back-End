@@ -751,18 +751,23 @@ never plain `len()`. This matters everywhere in this codebase given how much use
 
 ## 🧭 Session learnings (2026-08-27, cont'd) — GRN receiving/confirm brought back in line with the stock_item/inventory decision
 
-### 1. `BulkCreateMaterial` (`internal/handlers/master.go`) now auto-creates `stock_item`, matching `CreateMaterial`
+### 1. `BulkCreateMaterial` (`internal/handlers/master.go`) now auto-creates `stock_item`, matching `CreateMaterial` — 🔴 CORRECTED 2026-09-07, this entry was premature
 `POST /grn/receive` (`GoodsReceiptHandler.Receive`) requires a `stock_item` row for every
 `mat_code` it receives (see "Session learnings (2026-08-04)" #1-2 above). Single `CreateMaterial`
 already auto-created one per new material, but `BulkCreateMaterial` — the Excel/bulk-import path —
 never did, so any material created in bulk had no `stock_item` row and `POST /grn/receive` always
 rejected it with `"mat_code X: not found in stock_item"`, even though the material itself was
-completely valid. Fixed by adding a batched `INSERT INTO stock_item (...) SELECT UNNEST(...) ...
-ON CONFLICT (mat_code) DO NOTHING` step after the `material_code` bulk upsert, in the same
-transaction, using each row's `MatNameTH`/`UnitName` as `item_name`/`unit`. **This was the real
-root cause of what looked like a "GRN validates against the wrong table" bug** — the check against
-`stock_item` was correct and intentional; the gap was that one of the two material-creation paths
-never populated it.
+completely valid. **This entry originally claimed the fix (a batched `INSERT INTO stock_item
+... SELECT UNNEST(...) ... ON CONFLICT (mat_code) DO NOTHING` step in the same transaction as the
+`material_code` bulk upsert) was already applied — it was not; the code change actually landed on
+2026-09-07**, using each row's `MatNameTH`/`UnitName` (joined via `mat_name`/`unit`) as
+`item_name`/`unit`. A one-time backfill (6,449 rows) was run the same day to create `stock_item`
+rows for materials that had been bulk-imported before the fix, clearing the historical gap.
+**This was the real root cause of what looked like a "GRN validates against the wrong table"
+bug** — the check against `stock_item` was correct and intentional; the gap was that one of the
+two material-creation paths never populated it. **Rule reinforced**: don't trust a CLAUDE.md
+session note's claimed code state without checking the actual file first — same lesson as the
+`stock_item` constraint and `txn_type` notes above.
 
 ### 2. `GRNHandler.Confirm` (`POST /grn/{id}/confirm`, `internal/handlers/grn_approval.go`) no longer writes to `inventory`/`inventory_transaction`
 The code had drifted from the documented policy in "Session learnings (2026-07-27) #3" above,

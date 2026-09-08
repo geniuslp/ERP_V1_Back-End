@@ -306,6 +306,18 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	}
 	ctx := context.Background()
 
+	// is_active: nil means the client omitted it — preserve the project's current value
+	// instead of defaulting to false. Unlike Status (which has a real default, "ACTIVE"),
+	// IsActive has no sensible default; the only correct behavior for "not sent" is "unchanged".
+	isActive := req.IsActive
+	if isActive == nil {
+		var current bool
+		if err := h.db.QueryRow(ctx, `SELECT is_active FROM project WHERE id=$1`, id).Scan(&current); err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "project not found")
+		}
+		isActive = &current
+	}
+
 	tag, err := h.db.Exec(ctx, `
 		UPDATE project
 		SET project_code=$1, project_name=$2, location_code=$3, dept_code=$4, owner_id=$5,
@@ -316,7 +328,7 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID,
 		req.ProjectOwnerName, req.ResponsiblePersonName, req.JobCodes,
 		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
-		req.StartDate, req.EndDate, req.Status, req.IsActive, claims.UserID, id)
+		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			if pgErr.Code == "23505" {

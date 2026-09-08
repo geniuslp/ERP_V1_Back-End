@@ -219,7 +219,7 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	if strings.TrimSpace(req.JobCode) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "job_code is required")
 	}
-	if err := ValidateJobCode(req.JobCode); err != nil {
+	if err := validateJobCodeForProject(context.Background(), h.db, req.JobCode, req.ProjectCode); err != nil {
 		return err
 	}
 
@@ -822,7 +822,7 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	if jobCode == "" {
 		jobCode = currentJobCode
 	}
-	if err := ValidateJobCode(jobCode); err != nil {
+	if err := validateJobCodeForProject(ctx, h.db, jobCode, req.ProjectCode); err != nil {
 		return err
 	}
 

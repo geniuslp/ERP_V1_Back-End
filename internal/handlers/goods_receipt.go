@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -42,13 +43,16 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 	ctx := context.Background()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT id, po_no, po_date::text, expected_date::text, supplier_id,
-		       COALESCE(warehouse_code, ''), status, status_receive, currency, COALESCE(net_amount, 0)
-		FROM purchase_order
-		WHERE po_no ILIKE '%' || $1 || '%'
-		  AND status = 'APPROVED'
-		  AND status_receive IN ('NOT_SENT', 'SENT', 'PARTIALLY_RECEIVED')
-		ORDER BY po_date DESC, po_no ASC`, poNo)
+		SELECT po.id, po.po_no, po.po_date::text, po.expected_date::text, po.supplier_id,
+		       COALESCE(po.warehouse_code, ''), po.status, po.status_receive, po.currency, COALESCE(po.net_amount, 0),
+		       s.supplier_name, po.project_code, pj.project_name
+		FROM purchase_order po
+		LEFT JOIN supplier s ON s.id = po.supplier_id
+		LEFT JOIN project pj ON pj.project_code = po.project_code
+		WHERE po.po_no ILIKE '%' || $1 || '%'
+		  AND po.status = 'APPROVED'
+		  AND po.status_receive IN ('NOT_SENT', 'SENT', 'PARTIALLY_RECEIVED')
+		ORDER BY po.po_date DESC, po.po_no ASC`, poNo)
 	if err != nil {
 		return err
 	}
@@ -65,12 +69,16 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 		StatusReceive string  `json:"status_receive"`
 		Currency      string  `json:"currency"`
 		NetAmount     float64 `json:"net_amount"`
+		SupplierName  *string `json:"supplier_name,omitempty"`
+		ProjectCode   *string `json:"project_code,omitempty"`
+		ProjectName   *string `json:"project_name,omitempty"`
 	}
 	var results []poResp
 	for rows.Next() {
 		var p poResp
 		if err := rows.Scan(&p.POID, &p.PONo, &p.PODate, &p.ExpectedDate, &p.SupplierID,
-			&p.WarehouseCode, &p.Status, &p.StatusReceive, &p.Currency, &p.NetAmount); err != nil {
+			&p.WarehouseCode, &p.Status, &p.StatusReceive, &p.Currency, &p.NetAmount,
+			&p.SupplierName, &p.ProjectCode, &p.ProjectName); err != nil {
 			return err
 		}
 		results = append(results, p)
@@ -92,10 +100,10 @@ type receiveGRNLine struct {
 }
 
 type receiveGRNRequest struct {
-	POID          int64            `json:"po_id" validate:"required"`
-	WarehouseCode string           `json:"warehouse_code" validate:"required"`
-	DeliveryNote  *string          `json:"delivery_note,omitempty"`
-	Lines         []receiveGRNLine `json:"lines" validate:"required,min=1,dive"`
+	POID         int64            `json:"po_id" validate:"required"`
+	InvoiceNo    string           `json:"invoice_no" validate:"required"`
+	DeliveryNote *string          `json:"delivery_note,omitempty"`
+	Lines        []receiveGRNLine `json:"lines" validate:"required,min=1,dive"`
 }
 
 func generateGRNNo(ctx context.Context, db *pgxpool.Pool) (string, error) {
@@ -135,8 +143,8 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.POID == 0 || req.WarehouseCode == "" || len(req.Lines) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "po_id, warehouse_code, lines are required")
+	if req.POID == 0 || strings.TrimSpace(req.InvoiceNo) == "" || len(req.Lines) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "po_id, invoice_no, lines are required")
 	}
 	for _, l := range req.Lines {
 		if l.POLineID == 0 || l.MatCode == "" || l.AddQty <= 0 {
@@ -146,20 +154,10 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
-	var warehouseExists bool
-	if err := h.db.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM warehouse WHERE warehouse_code=$1)`, req.WarehouseCode,
-	).Scan(&warehouseExists); err != nil {
-		return err
-	}
-	if !warehouseExists {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid warehouse_code")
-	}
-
 	var poStatus, poStatusReceive string
-	var poLocationCode *string
+	var poLocationCode, poWarehouseCode *string
 	var supplierID *int64
-	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, location_code, supplier_id FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus, &poStatusReceive, &poLocationCode, &supplierID); err != nil {
+	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, location_code, warehouse_code, supplier_id FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus, &poStatusReceive, &poLocationCode, &poWarehouseCode, &supplierID); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if poStatus != "APPROVED" {
@@ -171,6 +169,10 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 	if supplierID == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "PO has no supplier_id set — cannot create a goods receipt against it")
 	}
+	if poWarehouseCode == nil || *poWarehouseCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "PO has no warehouse_code set — cannot create a goods receipt against it")
+	}
+	warehouseCode := *poWarehouseCode
 
 	grnNo, err := generateGRNNo(ctx, h.db)
 	if err != nil {
@@ -185,10 +187,10 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	var grnID int64
 	err = tx.QueryRow(ctx, `
-		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, status, quality_status, received_by)
-		VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, 'CONFIRMED', 'PENDING', $6)
+		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, invoice_no, status, quality_status, received_by)
+		VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, 'CONFIRMED', 'PENDING', $7)
 		RETURNING id`,
-		grnNo, req.POID, req.WarehouseCode, *supplierID, req.DeliveryNote, claims.UserID,
+		grnNo, req.POID, warehouseCode, *supplierID, req.DeliveryNote, req.InvoiceNo, claims.UserID,
 	).Scan(&grnID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create GRN: "+err.Error())
@@ -242,7 +244,7 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 			SET qty_on_hand = stock_inventory.qty_on_hand + EXCLUDED.qty_on_hand,
 			    warehouse_code = EXCLUDED.warehouse_code,
 			    updated_at = NOW()`,
-			itemID, locationCode, req.WarehouseCode, line.AddQty,
+			itemID, locationCode, warehouseCode, line.AddQty,
 		); err != nil {
 			return fmt.Errorf("upsert stock_inventory for mat_code %s: %w", line.MatCode, err)
 		}

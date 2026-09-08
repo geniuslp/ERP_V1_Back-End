@@ -429,6 +429,7 @@ type parsedStockItemRow struct {
 	Unit     string
 	MatCode  string
 	UnitCost float64
+	CostCode string // "COST CODE" column, e.g. "FS10101" — blank if not provided
 }
 
 // parseStockItemExcelRows reads the stock item import sheet and returns the
@@ -436,7 +437,8 @@ type parsedStockItemRow struct {
 //
 // Source file has a 3-row merged header (row 1-3); data starts at row 4 (index 3).
 // Columns: 0 no., 1 item, 2 description, 3 qty, 4 unit, 5 unit_code, 6 mat_code,
-// 7 cost_code_material (unused — cost code is now chosen per PR line, not per material),
+// 7 cost_code_material — now parsed and resolved to material_code.cost_subgroup_id
+// by ImportExcel, reversing the earlier "unused" decision,
 // 8 cost_code_labor, 9 unit_price, 10 amount.
 func parseStockItemExcelRows(rows [][]string) ([]parsedStockItemRow, []string) {
 	var parsed []parsedStockItemRow
@@ -450,6 +452,7 @@ func parseStockItemExcelRows(rows [][]string) ([]parsedStockItemRow, []string) {
 		qtyStr := strings.TrimSpace(getCell(row, 3))
 		unit := strings.TrimSpace(getCell(row, 4))
 		matCode := strings.TrimSpace(getCell(row, 6))
+		costCode := strings.TrimSpace(getCell(row, 7))
 		unitCostStr := strings.TrimSpace(getCell(row, 9))
 
 		if itemName == "" && matCode == "" {
@@ -490,6 +493,7 @@ func parseStockItemExcelRows(rows [][]string) ([]parsedStockItemRow, []string) {
 			Unit:     unit,
 			MatCode:  matCode,
 			UnitCost: unitCost,
+			CostCode: costCode,
 		})
 	}
 
@@ -570,6 +574,49 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 		dbRows.Close()
 	}
 
+	// Resolve each row's "COST CODE" (e.g. "FS10101") to a cost_subgroup_id by
+	// matching the full concatenated subject_code||job_code||group_code||subgroup_code
+	// against cost_subgroup's join chain — same convention as pr_approval.go/po.go's
+	// forward resolution, done in reverse. A code with no match is left unresolved;
+	// per the pattern PreviewImportExcel already uses for an unmatched mat_code
+	// (code_not_found doesn't block the row), an unmatched cost_code doesn't fail
+	// the row either — it's reported as a warning and the row still imports with
+	// cost_subgroup_id left untouched.
+	costCodes := make([]string, 0, len(parsedRows))
+	seenCostCodes := map[string]bool{}
+	for _, row := range parsedRows {
+		if row.CostCode != "" && !seenCostCodes[row.CostCode] {
+			seenCostCodes[row.CostCode] = true
+			costCodes = append(costCodes, row.CostCode)
+		}
+	}
+	costSubgroupByCode := map[string]int64{}
+	if len(costCodes) > 0 {
+		dbRows, qerr := h.db.Query(ctx, `
+			SELECT csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			       csg.id
+			FROM cost_subgroup csg
+			JOIN cost_group   cg   ON cg.id   = csg.group_id
+			JOIN cost_job     cj   ON cj.id   = cg.job_id
+			JOIN cost_subject csub ON csub.id = cj.subject_id
+			WHERE csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code = ANY($1)`,
+			costCodes,
+		)
+		if qerr != nil {
+			return qerr
+		}
+		for dbRows.Next() {
+			var code string
+			var id int64
+			if err := dbRows.Scan(&code, &id); err != nil {
+				dbRows.Close()
+				return err
+			}
+			costSubgroupByCode[code] = id
+		}
+		dbRows.Close()
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -597,6 +644,24 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 			errs = append(errs, fmt.Sprintf("row %d: %s", row.RowNo, err.Error()))
 			continue
 		}
+
+		if row.CostCode != "" {
+			if costSubgroupID, ok := costSubgroupByCode[row.CostCode]; ok {
+				// cost_subgroup_id lives on material_code (joined out to stock_item via
+				// mat_code), not on stock_item itself — that's what /master/stock's
+				// "Cost Code" column actually reads.
+				if _, err = tx.Exec(ctx,
+					`UPDATE material_code SET cost_subgroup_id=$1, updated_at=NOW() WHERE mat_code=$2`,
+					costSubgroupID, row.MatCode,
+				); err != nil {
+					errs = append(errs, fmt.Sprintf("row %d: failed to set cost_code: %s", row.RowNo, err.Error()))
+					continue
+				}
+			} else {
+				errs = append(errs, fmt.Sprintf("row %d: cost_code %s not found — imported without setting Cost Code", row.RowNo, row.CostCode))
+			}
+		}
+
 		imported++
 	}
 

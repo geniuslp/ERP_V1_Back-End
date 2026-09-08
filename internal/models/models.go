@@ -151,7 +151,9 @@ type UpdateProjectReq struct {
 	StartDate             *string  `json:"start_date,omitempty"`       // "YYYY-MM-DD" — pgx casts to date automatically
 	EndDate               *string  `json:"end_date,omitempty"`         // "YYYY-MM-DD"
 	Status                string   `json:"status"`
-	IsActive              bool     `json:"is_active"`
+	// IsActive: nil (omitted) means "leave unchanged" — Update reads the project's current
+	// value and preserves it rather than defaulting to false. See project_handler.go Update.
+	IsActive *bool `json:"is_active,omitempty"`
 }
 
 type ProjectListFilter struct {
@@ -939,6 +941,7 @@ type PurchaseOrder struct {
 	WarehouseCode    *string   `json:"warehouse_code,omitempty" db:"warehouse_code"`
 	WarehouseAddress *string   `json:"warehouse_address,omitempty"`
 	ProjectCode      *string   `json:"project_code,omitempty" db:"project_code"`
+	ProjectName      *string   `json:"project_name,omitempty"`
 	RequestedBy      *int64    `json:"requested_by,omitempty" db:"requested_by"`
 	RequestedByName  string    `json:"requested_by_name,omitempty"`
 	ApproverID       *int64    `json:"approver_id,omitempty"`
@@ -1007,6 +1010,12 @@ type POLine struct {
 	// cost_subgroup_id when pr_line_id is set and no explicit value is sent — same
 	// precedence pattern as PurchaseOrder.JobCode's auto-fill from PR.
 	CostSubgroupID    *int64   `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
+	// CostCode/CostSubgroupName — resolved via cost_subgroup -> cost_group ->
+	// cost_job -> cost_subject, same join/convention as pr_approval.go's
+	// PRLineItem.CostCode and PrintData's poPrintItem.Code. Nil when
+	// CostSubgroupID is nil (no cost code assigned to this line).
+	CostCode          *string  `json:"cost_code,omitempty"`
+	CostSubgroupName  *string  `json:"cost_subgroup_name,omitempty"`
 	MatName           *string  `json:"mat_name,omitempty"`
 	SpecDescription   *string  `json:"spec,omitempty"`
 	BrandName         *string  `json:"brand,omitempty"`
