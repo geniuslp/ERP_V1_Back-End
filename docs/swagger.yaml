@@ -327,6 +327,24 @@ definitions:
     - brand_code
     - brand_name
     type: object
+  models.CreateCustomerRequest:
+    properties:
+      address:
+        type: string
+      contact:
+        type: string
+      credit_term:
+        type: string
+      customer_code:
+        type: string
+      customer_name:
+        type: string
+      remarks:
+        type: string
+    required:
+    - customer_code
+    - customer_name
+    type: object
   models.CreateGRNLine:
     properties:
       mat_code:
@@ -782,6 +800,9 @@ definitions:
       consultant_phone:
         description: freeform, no validation
         type: string
+      customer_id:
+        description: FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
+        type: integer
       dept_code:
         description: '"แผนก" — FK -> departments.dept_code'
         type: string
@@ -1218,6 +1239,31 @@ definitions:
       zone_name:
         type: string
       zone_type:
+        type: string
+    type: object
+  models.Customer:
+    properties:
+      address:
+        type: string
+      contact:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      credit_term:
+        type: string
+      cus_id:
+        type: integer
+      customer_code:
+        type: string
+      customer_name:
+        type: string
+      is_active:
+        type: boolean
+      remarks:
+        type: string
+      updated_at:
         type: string
     type: object
   models.EditApprovedPOLine:
@@ -1707,6 +1753,13 @@ definitions:
         type: string
       created_by:
         type: integer
+      customer_id:
+        description: FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
+          going forward
+        type: integer
+      customer_name:
+        description: joined from customer.customer_name via customer_id
+        type: string
       dept_code:
         description: '"แผนก" — FK -> departments.dept_code'
         type: string
@@ -1741,7 +1794,8 @@ definitions:
       project_name:
         type: string
       project_owner_name:
-        description: free text ("เจ้าของโครงการ"), distinct from owner_id/owner_name
+        description: free text ("เจ้าของโครงการ") — legacy, kept for backward compat
+          with existing records
         type: string
       remaining_amount:
         type: number
@@ -2033,6 +2087,21 @@ definitions:
       unit_name:
         type: string
     type: object
+  models.UpdateCustomerRequest:
+    properties:
+      address:
+        type: string
+      contact:
+        type: string
+      credit_term:
+        type: string
+      customer_name:
+        type: string
+      is_active:
+        type: boolean
+      remarks:
+        type: string
+    type: object
   models.UpdateGroupRequest:
     properties:
       group_name:
@@ -2213,6 +2282,9 @@ definitions:
       consultant_phone:
         description: freeform, no validation
         type: string
+      customer_id:
+        description: FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
+        type: integer
       dept_code:
         description: '"แผนก" — FK -> departments.dept_code'
         type: string
@@ -3039,6 +3111,213 @@ paths:
       summary: Refresh token
       tags:
       - Auth
+  /customer:
+    get:
+      description: List customers with pagination and search by name/code
+      parameters:
+      - description: Search by customer_name/customer_code
+        in: query
+        name: search
+        type: string
+      - description: Filter by active flag (default true)
+        in: query
+        name: is_active
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการลูกค้า
+      tags:
+      - Customer
+    post:
+      consumes:
+      - application/json
+      description: customer_code is user-supplied and must be unique
+      parameters:
+      - description: Customer data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateCustomerRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้างลูกค้าใหม่
+      tags:
+      - Customer
+  /customer/{id}:
+    delete:
+      description: Sets is_active=false; does not hard delete since customer will
+        be referenced by projects/PR/PO later
+      parameters:
+      - description: Customer ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ลบลูกค้า (soft delete)
+      tags:
+      - Customer
+    get:
+      parameters:
+      - description: Customer ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Customer'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ข้อมูลลูกค้ารายตัว
+      tags:
+      - Customer
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Customer ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateCustomerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Customer'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แก้ไขข้อมูลลูกค้า
+      tags:
+      - Customer
+  /customer/import:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Column layout (row 1 = header, data starts row 2): customer_code*,
+        customer_name*, address, contact, credit_term, remarks. Validates every row
+        (required fields, customer_code uniqueness — case-sensitive exact match, credit_term
+        against the fixed option list excluding เงินสด) and processes in partial-success
+        mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload
+        only the failed rows after fixing them.'
+      parameters:
+      - description: Excel file (.xlsx)
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Bulk import customers จาก Excel
+      tags:
+      - Customer
+  /customer/import/template:
+    get:
+      description: 'Generates the .xlsx on the fly: sheet "Customer" with header row
+        (customer_code*, customer_name*, address, contact, credit_term, remarks),
+        one example row, and a notes row. A hidden "Lookup" sheet lists the fixed
+        credit_term options (same hardcoded list as the Supplier page''s dropdown,
+        excluding เงินสด for Customer), bound to the credit_term column as an Excel
+        dropdown. No database query is involved for this list.'
+      produces:
+      - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ดาวน์โหลด template Excel สำหรับ import ลูกค้า
+      tags:
+      - Customer
   /departments:
     get:
       produces:
@@ -4661,10 +4940,12 @@ paths:
         against the location master). dept_code ("แผนก") is validated against the
         departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G
         (validated server-side, 400 on any other value). project_owner_name is free
-        text ("เจ้าของโครงการ"). responsible_person_name ("ผู้รับผิดชอบหลัก") is required
-        free text, replacing the old owner_id dropdown — owner_id is still accepted
-        for backward compatibility but no longer required or used to drive anything.
-        consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
+        text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK
+        -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward;
+        both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก")
+        is required free text, replacing the old owner_id dropdown — owner_id is still
+        accepted for backward compatibility but no longer required or used to drive
+        anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
       parameters:
       - description: Project data
         in: body
@@ -4750,10 +5031,12 @@ paths:
         against the location master). dept_code ("แผนก") is validated against the
         departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G
         (validated server-side, 400 on any other value). project_owner_name is free
-        text ("เจ้าของโครงการ"). responsible_person_name ("ผู้รับผิดชอบหลัก") is required
-        free text, replacing the old owner_id dropdown — owner_id is still accepted
-        for backward compatibility but no longer required or used to drive anything.
-        consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
+        text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK
+        -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward;
+        both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก")
+        is required free text, replacing the old owner_id dropdown — owner_id is still
+        accepted for backward compatibility but no longer required or used to drive
+        anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
       parameters:
       - description: Project ID
         in: path
@@ -4784,6 +5067,73 @@ paths:
       security:
       - BearerAuth: []
       summary: Update project
+      tags:
+      - Master
+  /master/projects/import:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Column layout (row 1 = header, data starts row 2): project_code*,
+        project_name*, customer_code, location_code, start_date, end_date, budget_amount,
+        dept_code, job_code, consultant_name, consultant_phone, responsible_person_name,
+        credit. Applies the same validation as POST /master/projects (responsible_person_name
+        required, status defaults to ACTIVE, budget_amount >= 0). customer_code (if
+        given) is resolved against the customer table to set customer_id — an unresolvable
+        code fails that row. dept_code is pre-validated against the live departments
+        table (is_active=true). job_code accepts one or more comma-separated codes
+        from the fixed JobTypes enum (same list validated on POST /master/projects''
+        job_codes[], NOT the unrelated cost_job master table) and is written to project.job_codes[].
+        credit is pre-validated against the fixed credit_term option list (same as
+        the Supplier page''s dropdown, not DB-backed). All three give a clear per-row
+        reason on failure instead of a generic "invalid". Processes in partial-success
+        mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload
+        only the failed rows after fixing them.'
+      parameters:
+      - description: Excel file (.xlsx)
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Bulk import projects จาก Excel
+      tags:
+      - Master
+  /master/projects/import/template:
+    get:
+      description: 'Generates the .xlsx on the fly: sheet "Project" with header row
+        (project_code*, project_name*, customer_code, location_code, start_date, end_date,
+        budget_amount, dept_code, job_code, consultant_name, consultant_phone, responsible_person_name,
+        credit), one example row, and a notes row. A hidden "Lookup" sheet lists current
+        active dept_code/dept_name (departments, DB-backed), job_code/job_name (the
+        fixed JobTypes enum — NOT cost_job), and credit_term options (fixed hardcoded
+        list, same as the Supplier page''s dropdown — not DB-backed), bound as Excel
+        dropdowns on the dept_code, job_code, and credit columns.'
+      produces:
+      - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ดาวน์โหลด template Excel สำหรับ import โครงการ
       tags:
       - Master
   /master/roles:

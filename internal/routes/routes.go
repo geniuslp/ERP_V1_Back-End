@@ -110,6 +110,8 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/projects", projectH.List)
 	master.Get("/projects/:id", projectH.GetByID)
 	master.Post("/projects", projectH.Create)
+	master.Post("/projects/import", projectH.Import)
+	master.Get("/projects/import/template", projectH.ImportTemplate)
 	master.Put("/projects/:id", projectH.Update)
 	master.Delete("/projects/:id", projectH.SoftDelete)
 	master.Get("/warehouses", masterH.ListWarehouses)
@@ -359,6 +361,17 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	requisition.Get("/:id", requisitionH.Get)
 	requisition.Post("/:id/confirm", middleware.RequireRole("STOCK", "ADMIN"), requisitionH.Confirm)
 	requisition.Post("/:id/cancel", requisitionH.Cancel)
+
+	// Customer Master
+	customerH := handlers.NewCustomerHandler(db)
+	customer := api.Group("/customer", jwt)
+	customer.Get("/", customerH.List)
+	customer.Post("/", customerH.Create)
+	customer.Post("/import", customerH.Import)
+	customer.Get("/import/template", customerH.ImportTemplate)
+	customer.Get("/:id", customerH.Get)
+	customer.Put("/:id", customerH.Update)
+	customer.Delete("/:id", middleware.RequireRole("ADMIN", "SENIOR_TEAM"), customerH.Delete)
 
 	// Work Order (หนังสือสั่งจ้าง) — approve/reject goes through the generic engine
 	// (PUT /approval/WO/:id/approve|reject), not a route here.

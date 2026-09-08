@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"erp-api/internal/middleware"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/xuri/excelize/v2"
 )
 
 type ProjectHandler struct {
@@ -32,7 +34,9 @@ var validProjectStatus = map[string]bool{"ACTIVE": true, "INACTIVE": true, "CLOS
 // API-facing rename — only the SQL identifier was ever wrong, not the model shape.
 const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code,
 	p.dept_code, d.dept_name,
-	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name, p.responsible_person_name, p.job_codes,
+	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name,
+	p.customer_id, cu.customer_name,
+	p.responsible_person_name, p.job_codes,
 	p.budget_amount,
 	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 		WHERE po.project_code = p.project_code
@@ -60,19 +64,47 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 
 const projectSelectFrom = `
 	FROM project p
-	LEFT JOIN users       u ON u.id = p.owner_id
-	LEFT JOIN departments d ON d.dept_code = p.dept_code`
+	LEFT JOIN users       u  ON u.id = p.owner_id
+	LEFT JOIN departments d  ON d.dept_code = p.dept_code
+	LEFT JOIN customer    cu ON cu.cus_id = p.customer_id`
 
 func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 	return row.Scan(&p.Id, &p.ProjectCode, &p.ProjectName, &p.LocationCode,
 		&p.DeptCode, &p.DeptName,
-		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName, &p.ResponsiblePersonName, &p.JobCodes,
+		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName,
+		&p.CustomerID, &p.CustomerName,
+		&p.ResponsiblePersonName, &p.JobCodes,
 		&p.BudgetAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }
 
 // validateJobCodes is defined in job_type.go, shared with the PR/PO job_code fields.
+
+// validateProjectCore is the single source of truth for project field validation — used by
+// Create, Update, and Import so the three paths can't drift apart. Returns the normalized
+// status (defaulted to ACTIVE when blank) for the caller to use.
+func validateProjectCore(projectCode, projectName, responsiblePersonName, status string, budgetAmount float64, jobCodes []string) (string, error) {
+	if projectCode == "" || projectName == "" {
+		return "", fmt.Errorf("project_code and project_name are required")
+	}
+	if strings.TrimSpace(responsiblePersonName) == "" {
+		return "", fmt.Errorf("responsible_person_name is required")
+	}
+	if status == "" {
+		status = "ACTIVE"
+	}
+	if !validProjectStatus[status] {
+		return "", fmt.Errorf("status must be one of ACTIVE, INACTIVE, CLOSED")
+	}
+	if budgetAmount < 0 {
+		return "", fmt.Errorf("budget_amount must be >= 0")
+	}
+	if err := validateJobCodes(jobCodes); err != nil {
+		return "", err
+	}
+	return status, nil
+}
 
 // List godoc
 // @Summary      List projects
@@ -187,7 +219,7 @@ func (h *ProjectHandler) GetByID(c *fiber.Ctx) error {
 
 // Create godoc
 // @Summary      Create project
-// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"). responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
+// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward; both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -202,24 +234,11 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.ProjectCode == "" || req.ProjectName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "project_code and project_name are required")
+	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, req.BudgetAmount, req.JobCodes)
+	if verr != nil {
+		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
-	if strings.TrimSpace(req.ResponsiblePersonName) == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "responsible_person_name is required")
-	}
-	if req.Status == "" {
-		req.Status = "ACTIVE"
-	}
-	if !validProjectStatus[req.Status] {
-		return fiber.NewError(fiber.StatusBadRequest, "status must be one of ACTIVE, INACTIVE, CLOSED")
-	}
-	if req.BudgetAmount < 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "budget_amount must be >= 0")
-	}
-	if err := validateJobCodes(req.JobCodes); err != nil {
-		return err
-	}
+	req.Status = status
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -230,12 +249,12 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	var id int64
 	err := h.db.QueryRow(ctx, `
 		INSERT INTO project
-		    (project_code, project_name, location_code, dept_code, owner_id, owner_name, responsible_person_name, job_codes,
+		    (project_code, project_name, location_code, dept_code, owner_id, owner_name, customer_id, responsible_person_name, job_codes,
 		     budget_amount, consultant_name, consultant_phone, start_date, end_date,
 		     status, is_active, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true,now(),now(),$15,$15)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,now(),now(),$16,$16)
 		RETURNING id`,
-		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID, req.ProjectOwnerName, req.ResponsiblePersonName, req.JobCodes,
+		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID, req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
 		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
 		req.StartDate, req.EndDate, req.Status, claims.UserID,
 	).Scan(&id)
@@ -245,6 +264,9 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 				return fiber.NewError(fiber.StatusConflict, "project_code already exists")
 			}
 			if pgErr.Code == "23503" {
+				if pgErr.ConstraintName == "project_customer_id_fkey" {
+					return fiber.NewError(fiber.StatusBadRequest, "invalid customer_id")
+				}
 				return fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
 			}
 		}
@@ -261,7 +283,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      Update project
-// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ"). responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
+// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward; both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -281,24 +303,11 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.ProjectCode == "" || req.ProjectName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "project_code and project_name are required")
+	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, req.BudgetAmount, req.JobCodes)
+	if verr != nil {
+		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
-	if strings.TrimSpace(req.ResponsiblePersonName) == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "responsible_person_name is required")
-	}
-	if req.Status == "" {
-		req.Status = "ACTIVE"
-	}
-	if !validProjectStatus[req.Status] {
-		return fiber.NewError(fiber.StatusBadRequest, "status must be one of ACTIVE, INACTIVE, CLOSED")
-	}
-	if req.BudgetAmount < 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "budget_amount must be >= 0")
-	}
-	if err := validateJobCodes(req.JobCodes); err != nil {
-		return err
-	}
+	req.Status = status
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -321,12 +330,12 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	tag, err := h.db.Exec(ctx, `
 		UPDATE project
 		SET project_code=$1, project_name=$2, location_code=$3, dept_code=$4, owner_id=$5,
-		    owner_name=$6, responsible_person_name=$7, job_codes=$8,
-		    budget_amount=$9, consultant_name=$10, consultant_phone=$11,
-		    start_date=$12, end_date=$13, status=$14, is_active=$15, updated_at=now(), updated_by=$16
-		WHERE id=$17`,
+		    owner_name=$6, customer_id=$7, responsible_person_name=$8, job_codes=$9,
+		    budget_amount=$10, consultant_name=$11, consultant_phone=$12,
+		    start_date=$13, end_date=$14, status=$15, is_active=$16, updated_at=now(), updated_by=$17
+		WHERE id=$18`,
 		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID,
-		req.ProjectOwnerName, req.ResponsiblePersonName, req.JobCodes,
+		req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
 		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
 		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id)
 	if err != nil {
@@ -335,6 +344,9 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 				return fiber.NewError(fiber.StatusConflict, "project_code already exists")
 			}
 			if pgErr.Code == "23503" {
+				if pgErr.ConstraintName == "project_customer_id_fkey" {
+					return fiber.NewError(fiber.StatusBadRequest, "invalid customer_id")
+				}
 				return fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
 			}
 		}
@@ -401,4 +413,312 @@ func (h *ProjectHandler) SoftDelete(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "project not found")
 	}
 	return c.JSON(fiber.Map{"success": true, "message": "project deleted"})
+}
+
+// ─── Import ──────────────────────────────────────────────────────────────────
+
+// Import godoc
+// @Summary      Bulk import projects จาก Excel
+// @Description  Column layout (row 1 = header, data starts row 2): project_code*, project_name*, customer_code, location_code, start_date, end_date, budget_amount, dept_code, job_code, consultant_name, consultant_phone, responsible_person_name, credit. Applies the same validation as POST /master/projects (responsible_person_name required, status defaults to ACTIVE, budget_amount >= 0). customer_code (if given) is resolved against the customer table to set customer_id — an unresolvable code fails that row. dept_code is pre-validated against the live departments table (is_active=true). job_code accepts one or more comma-separated codes from the fixed JobTypes enum (same list validated on POST /master/projects' job_codes[], NOT the unrelated cost_job master table) and is written to project.job_codes[]. credit is pre-validated against the fixed credit_term option list (same as the Supplier page's dropdown, not DB-backed). All three give a clear per-row reason on failure instead of a generic "invalid". Processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.
+// @Tags         Master
+// @Security     BearerAuth
+// @Accept       multipart/form-data
+// @Produce      json
+// @Param        file  formData  file  true  "Excel file (.xlsx)"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Router       /master/projects/import [post]
+func (h *ProjectHandler) Import(c *fiber.Ctx) error {
+	file, err := c.FormFile("file")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "file is required")
+	}
+	f, err := file.Open()
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "cannot open file")
+	}
+	defer f.Close()
+
+	xlsx, err := excelize.OpenReader(f)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid excel file")
+	}
+	sheetRows, err := xlsx.GetRows(xlsx.GetSheetName(0))
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "cannot read sheet")
+	}
+	if len(sheetRows) < 2 {
+		return fiber.NewError(fiber.StatusBadRequest, "no data rows found")
+	}
+
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+	ctx := context.Background()
+
+	depts, err := fetchActiveDepartments(ctx, h.db)
+	if err != nil {
+		return err
+	}
+	deptSet := toSet(depts)
+	jobSet := toSet(projectJobTypeOptions())
+	creditTermSet := toStringSet(creditTermOptions)
+
+	type rowError struct {
+		Row    int    `json:"row"`
+		Reason string `json:"reason"`
+	}
+	type rowSuccess struct {
+		Row         int    `json:"row"`
+		ID          int64  `json:"id"`
+		ProjectCode string `json:"project_code"`
+	}
+	var errs []rowError
+	var oks []rowSuccess
+
+	for i, row := range sheetRows[1:] {
+		rowNo := i + 2 // account for header row
+
+		projectCode := strings.TrimSpace(cellAt(row, 0))
+
+		// An empty project_code marks the end of the data grid — the template's notes/legend
+		// text (and any trailing blank rows) live below this point and must never be read as
+		// data, so stop entirely rather than reporting them as failed rows.
+		if projectCode == "" {
+			break
+		}
+
+		projectName := strings.TrimSpace(cellAt(row, 1))
+		customerCode := strings.TrimSpace(cellAt(row, 2))
+		locationCode := nullableCell(cellAt(row, 3))
+		startDate := nullableCell(cellAt(row, 4))
+		endDate := nullableCell(cellAt(row, 5))
+		budgetStr := strings.TrimSpace(cellAt(row, 6))
+		deptCodeRaw := strings.TrimSpace(cellAt(row, 7))
+		jobCodeRaw := strings.TrimSpace(cellAt(row, 8))
+		consultantName := nullableCell(cellAt(row, 9))
+		consultantPhone := nullableCell(cellAt(row, 10))
+		responsiblePersonName := strings.TrimSpace(cellAt(row, 11))
+		creditRaw := strings.TrimSpace(cellAt(row, 12))
+
+		budgetAmount := 0.0
+		if budgetStr != "" {
+			var perr error
+			budgetAmount, perr = strconv.ParseFloat(budgetStr, 64)
+			if perr != nil {
+				errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("invalid budget_amount: %q", budgetStr)})
+				continue
+			}
+		}
+
+		if deptCodeRaw != "" && !deptSet[deptCodeRaw] {
+			errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("dept_code %q not found in departments", deptCodeRaw)})
+			continue
+		}
+		deptCode := nullableCell(deptCodeRaw)
+
+		var jobCodes []string
+		if jobCodeRaw != "" {
+			badCode := ""
+			for _, jc := range strings.Split(jobCodeRaw, ",") {
+				jc = strings.TrimSpace(jc)
+				if jc == "" {
+					continue
+				}
+				if !jobSet[jc] {
+					badCode = jc
+					break
+				}
+				jobCodes = append(jobCodes, jc)
+			}
+			if badCode != "" {
+				errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("job_code %q is not a valid option", badCode)})
+				continue
+			}
+		}
+
+		if creditRaw != "" && !creditTermSet[creditRaw] {
+			errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("credit %q is not a valid option", creditRaw)})
+			continue
+		}
+		credit := nullableCell(creditRaw)
+
+		status, verr := validateProjectCore(projectCode, projectName, responsiblePersonName, "", budgetAmount, jobCodes)
+		if verr != nil {
+			errs = append(errs, rowError{Row: rowNo, Reason: verr.Error()})
+			continue
+		}
+
+		var codeExists bool
+		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code = $1)`, projectCode).Scan(&codeExists); err != nil {
+			errs = append(errs, rowError{Row: rowNo, Reason: err.Error()})
+			continue
+		}
+		if codeExists {
+			errs = append(errs, rowError{Row: rowNo, Reason: "project_code already exists"})
+			continue
+		}
+
+		var customerID *int64
+		if customerCode != "" {
+			var cid int64
+			if err := h.db.QueryRow(ctx, `SELECT cus_id FROM customer WHERE customer_code = $1`, customerCode).Scan(&cid); err != nil {
+				errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("customer_code %q not found", customerCode)})
+				continue
+			}
+			customerID = &cid
+		}
+
+		var id int64
+		err := h.db.QueryRow(ctx, `
+			INSERT INTO project
+			    (project_code, project_name, location_code, dept_code, customer_id, responsible_person_name,
+			     job_codes, budget_amount, consultant_name, consultant_phone, start_date, end_date, credit,
+			     status, is_active, created_at, updated_at, created_by, updated_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true,now(),now(),$15,$15)
+			RETURNING id`,
+			projectCode, projectName, locationCode, deptCode, customerID, responsiblePersonName,
+			jobCodes, budgetAmount, consultantName, consultantPhone, startDate, endDate, credit,
+			status, claims.UserID,
+		).Scan(&id)
+		if err != nil {
+			if pgErr, ok := err.(*pgconn.PgError); ok {
+				if pgErr.Code == "23505" {
+					errs = append(errs, rowError{Row: rowNo, Reason: "project_code already exists"})
+					continue
+				}
+				if pgErr.Code == "23503" {
+					if pgErr.ConstraintName == "project_customer_id_fkey" {
+						errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("customer_code %q not found", customerCode)})
+						continue
+					}
+					errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("invalid dept_code %q", deptCodeRaw)})
+					continue
+				}
+			}
+			errs = append(errs, rowError{Row: rowNo, Reason: err.Error()})
+			continue
+		}
+
+		oks = append(oks, rowSuccess{Row: rowNo, ID: id, ProjectCode: projectCode})
+	}
+
+	if errs == nil {
+		errs = []rowError{}
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"imported": len(oks),
+			"failed":   len(errs),
+			"rows":     oks,
+			"errors":   errs,
+		},
+	})
+}
+
+// ImportTemplate godoc
+// @Summary      ดาวน์โหลด template Excel สำหรับ import โครงการ
+// @Description  Generates the .xlsx on the fly: sheet "Project" with header row (project_code*, project_name*, customer_code, location_code, start_date, end_date, budget_amount, dept_code, job_code, consultant_name, consultant_phone, responsible_person_name, credit), one example row, and a notes row. A hidden "Lookup" sheet lists current active dept_code/dept_name (departments, DB-backed), job_code/job_name (the fixed JobTypes enum — NOT cost_job), and credit_term options (fixed hardcoded list, same as the Supplier page's dropdown — not DB-backed), bound as Excel dropdowns on the dept_code, job_code, and credit columns.
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+// @Success      200  {file}  file
+// @Failure      500  {object}  fiber.Map
+// @Router       /master/projects/import/template [get]
+func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
+	ctx := context.Background()
+
+	depts, err := fetchActiveDepartments(ctx, h.db)
+	if err != nil {
+		return err
+	}
+	jobs := projectJobTypeOptions()
+	creditTerms := creditTermOptions
+
+	f := excelize.NewFile()
+	defer f.Close()
+
+	const sheet = "Project"
+	f.SetSheetName("Sheet1", sheet)
+
+	boldStyle, err := f.NewStyle(&excelize.Style{Font: &excelize.Font{Bold: true}})
+	if err != nil {
+		return err
+	}
+	// requiredStyle marks required columns visually (bold + a distinct fill) WITHOUT touching
+	// the header cell's text — the import parser matches header text exactly against expected
+	// field names, so appending a "*" to the string (as this template used to do) made
+	// "project_code*" fail to match "project_code" and read as an unrecognized column.
+	requiredStyle, err := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"FFF2CC"}, Pattern: 1},
+	})
+	if err != nil {
+		return err
+	}
+	headers := []string{
+		"project_code", "project_name", "customer_code", "location_code", "start_date", "end_date",
+		"budget_amount", "dept_code", "job_code", "consultant_name", "consultant_phone",
+		"responsible_person_name", "credit",
+	}
+	required := []bool{true, true, false, false, false, false, false, false, false, false, false, false, false}
+	colWidths := []float64{16, 30, 16, 24, 14, 14, 16, 12, 24, 24, 20, 24, 14}
+	for i, hdr := range headers {
+		col := colLetter(i)
+		cell := col + "1"
+		f.SetCellValue(sheet, cell, hdr)
+		style := boldStyle
+		if required[i] {
+			style = requiredStyle
+		}
+		f.SetCellStyle(sheet, cell, cell, style)
+		f.SetColWidth(sheet, col, col, colWidths[i])
+	}
+
+	example := []string{
+		"PRJ-000001", "โครงการตัวอย่าง", "CUS-000001", "123 ถนนตัวอย่าง", "2026-01-01", "2026-12-31",
+		"1000000", "IT", "MP,ME", "นายที่ปรึกษา ตัวอย่าง", "08x-xxx-xxxx", "นายผู้รับผิดชอบ ตัวอย่าง", "30 วัน",
+	}
+	for i, v := range example {
+		f.SetCellValue(sheet, colLetter(i)+"2", v)
+	}
+
+	deptRange, jobRange, creditRange, err := writeLookupSheet(f, depts, jobs, creditTerms)
+	if err != nil {
+		return err
+	}
+	if err := addDropdown(f, sheet, "H2:H1000", deptRange); err != nil {
+		return err
+	}
+	if err := addDropdown(f, sheet, "I2:I1000", jobRange); err != nil {
+		return err
+	}
+	if err := addDropdown(f, sheet, "M2:M1000", creditRange); err != nil {
+		return err
+	}
+
+	// Excel's dropdown/data-validation only lets a cell hold one value from the list — there's
+	// no built-in multi-select. job_code needs to accept several codes per project (see the
+	// example row's "MP,ME"), so the dropdown here is a reference list only, not the actual
+	// input method: type the codes directly into the cell, comma-separated. A cell comment
+	// (not a data row) carries this instruction so it never pollutes the parseable data range.
+	if err := f.AddComment(sheet, excelize.Comment{
+		Cell: "I1",
+		Text: "พิมพ์ได้หลายค่า คั่นด้วยจุลภาค เช่น MP,ME,MS (ดรอปดาวน์เป็นรายการอ้างอิงเลือกได้ทีละค่าเท่านั้น)",
+	}); err != nil {
+		return err
+	}
+
+	f.SetActiveSheet(0)
+
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		return err
+	}
+
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Set("Content-Disposition", "attachment; filename=project_import_template.xlsx")
+	return c.Send(buf.Bytes())
 }

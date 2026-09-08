@@ -896,6 +896,318 @@
                 }
             }
         },
+        "/customer": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List customers with pagination and search by name/code",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "รายการลูกค้า",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search by customer_name/customer_code",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by active flag (default true)",
+                        "name": "is_active",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "customer_code is user-supplied and must be unique",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "สร้างลูกค้าใหม่",
+                "parameters": [
+                    {
+                        "description": "Customer data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateCustomerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/customer/import": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Column layout (row 1 = header, data starts row 2): customer_code*, customer_name*, address, contact, credit_term, remarks. Validates every row (required fields, customer_code uniqueness — case-sensitive exact match, credit_term against the fixed option list excluding เงินสด) and processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "Bulk import customers จาก Excel",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "Excel file (.xlsx)",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/customer/import/template": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Generates the .xlsx on the fly: sheet \"Customer\" with header row (customer_code*, customer_name*, address, contact, credit_term, remarks), one example row, and a notes row. A hidden \"Lookup\" sheet lists the fixed credit_term options (same hardcoded list as the Supplier page's dropdown, excluding เงินสด for Customer), bound to the credit_term column as an Excel dropdown. No database query is involved for this list.",
+                "produces": [
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "ดาวน์โหลด template Excel สำหรับ import ลูกค้า",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/customer/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "ข้อมูลลูกค้ารายตัว",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Customer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Customer"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "แก้ไขข้อมูลลูกค้า",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Customer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to update",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateCustomerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Customer"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets is_active=false; does not hard delete since customer will be referenced by projects/PR/PO later",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "ลบลูกค้า (soft delete)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Customer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/departments": {
             "get": {
                 "produces": [
@@ -3411,7 +3723,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). dept_code (\"แผนก\") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"). responsible_person_name (\"ผู้รับผิดชอบหลัก\") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone (\"เบอร์ติดต่อของที่ปรึกษา\") is freeform, no validation.",
+                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). dept_code (\"แผนก\") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\") — legacy, kept for backward compat. customer_id (FK -\u003e customer.cus_id) is the new dropdown-selected \"เจ้าของโครงการ\" going forward; both fields are accepted independently. responsible_person_name (\"ผู้รับผิดชอบหลัก\") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone (\"เบอร์ติดต่อของที่ปรึกษา\") is freeform, no validation.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3448,6 +3760,80 @@
                     },
                     "409": {
                         "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/projects/import": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Column layout (row 1 = header, data starts row 2): project_code*, project_name*, customer_code, location_code, start_date, end_date, budget_amount, dept_code, job_code, consultant_name, consultant_phone, responsible_person_name, credit. Applies the same validation as POST /master/projects (responsible_person_name required, status defaults to ACTIVE, budget_amount \u003e= 0). customer_code (if given) is resolved against the customer table to set customer_id — an unresolvable code fails that row. dept_code is pre-validated against the live departments table (is_active=true). job_code accepts one or more comma-separated codes from the fixed JobTypes enum (same list validated on POST /master/projects' job_codes[], NOT the unrelated cost_job master table) and is written to project.job_codes[]. credit is pre-validated against the fixed credit_term option list (same as the Supplier page's dropdown, not DB-backed). All three give a clear per-row reason on failure instead of a generic \"invalid\". Processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Bulk import projects จาก Excel",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "Excel file (.xlsx)",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/projects/import/template": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Generates the .xlsx on the fly: sheet \"Project\" with header row (project_code*, project_name*, customer_code, location_code, start_date, end_date, budget_amount, dept_code, job_code, consultant_name, consultant_phone, responsible_person_name, credit), one example row, and a notes row. A hidden \"Lookup\" sheet lists current active dept_code/dept_name (departments, DB-backed), job_code/job_name (the fixed JobTypes enum — NOT cost_job), and credit_term options (fixed hardcoded list, same as the Supplier page's dropdown — not DB-backed), bound as Excel dropdowns on the dept_code, job_code, and credit columns.",
+                "produces": [
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "ดาวน์โหลด template Excel สำหรับ import โครงการ",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -3499,7 +3885,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). dept_code (\"แผนก\") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\"). responsible_person_name (\"ผู้รับผิดชอบหลัก\") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone (\"เบอร์ติดต่อของที่ปรึกษา\") is freeform, no validation.",
+                "description": "location_code is now a free-text project address (no longer validated/joined against the location master). dept_code (\"แผนก\") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text (\"เจ้าของโครงการ\") — legacy, kept for backward compat. customer_id (FK -\u003e customer.cus_id) is the new dropdown-selected \"เจ้าของโครงการ\" going forward; both fields are accepted independently. responsible_person_name (\"ผู้รับผิดชอบหลัก\") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone (\"เบอร์ติดต่อของที่ปรึกษา\") is freeform, no validation.",
                 "consumes": [
                     "application/json"
                 ],
@@ -11524,6 +11910,33 @@
                 }
             }
         },
+        "models.CreateCustomerRequest": {
+            "type": "object",
+            "required": [
+                "customer_code",
+                "customer_name"
+            ],
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "contact": {
+                    "type": "string"
+                },
+                "credit_term": {
+                    "type": "string"
+                },
+                "customer_code": {
+                    "type": "string"
+                },
+                "customer_name": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                }
+            }
+        },
         "models.CreateGRNLine": {
             "type": "object",
             "required": [
@@ -12164,6 +12577,10 @@
                     "description": "freeform, no validation",
                     "type": "string"
                 },
+                "customer_id": {
+                    "description": "FK -\u003e customer.cus_id — new dropdown-selected \"เจ้าของโครงการ\"",
+                    "type": "integer"
+                },
                 "dept_code": {
                     "description": "\"แผนก\" — FK -\u003e departments.dept_code",
                     "type": "string"
@@ -12789,6 +13206,44 @@
                     "type": "string"
                 },
                 "zone_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.Customer": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "contact": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "credit_term": {
+                    "type": "string"
+                },
+                "cus_id": {
+                    "type": "integer"
+                },
+                "customer_code": {
+                    "type": "string"
+                },
+                "customer_name": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "updated_at": {
                     "type": "string"
                 }
             }
@@ -13511,6 +13966,14 @@
                 "created_by": {
                     "type": "integer"
                 },
+                "customer_id": {
+                    "description": "FK -\u003e customer.cus_id — new dropdown-selected \"เจ้าของโครงการ\" going forward",
+                    "type": "integer"
+                },
+                "customer_name": {
+                    "description": "joined from customer.customer_name via customer_id",
+                    "type": "string"
+                },
                 "dept_code": {
                     "description": "\"แผนก\" — FK -\u003e departments.dept_code",
                     "type": "string"
@@ -13556,7 +14019,7 @@
                     "type": "string"
                 },
                 "project_owner_name": {
-                    "description": "free text (\"เจ้าของโครงการ\"), distinct from owner_id/owner_name",
+                    "description": "free text (\"เจ้าของโครงการ\") — legacy, kept for backward compat with existing records",
                     "type": "string"
                 },
                 "remaining_amount": {
@@ -13990,6 +14453,29 @@
                 }
             }
         },
+        "models.UpdateCustomerRequest": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "contact": {
+                    "type": "string"
+                },
+                "credit_term": {
+                    "type": "string"
+                },
+                "customer_name": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "remarks": {
+                    "type": "string"
+                }
+            }
+        },
         "models.UpdateGroupRequest": {
             "type": "object",
             "required": [
@@ -14256,6 +14742,10 @@
                 "consultant_phone": {
                     "description": "freeform, no validation",
                     "type": "string"
+                },
+                "customer_id": {
+                    "description": "FK -\u003e customer.cus_id — new dropdown-selected \"เจ้าของโครงการ\"",
+                    "type": "integer"
                 },
                 "dept_code": {
                     "description": "\"แผนก\" — FK -\u003e departments.dept_code",
