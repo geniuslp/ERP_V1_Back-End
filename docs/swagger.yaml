@@ -9214,11 +9214,12 @@ paths:
       description: 'Parses the same Excel file as /stock/items/import but does not
         write anything. Each row''s mat_code is checked against material_code, joined
         out to mat_group/subgroup/mat_name/spec_size/brand/unit (LEFT JOIN — any link
-        can be null). The file''s DESCRIPTION text is compared (whitespace-normalized,
-        case-insensitive) against "mat_name + spec_description" from the master. Per
-        row: code_found, master (object with mat_code/group_name/subgroup_name/mat_name/spec_description/brand_name/unit_name,
-        or null if code_found is false), name_matched, and a derived status ("ok"|"code_not_found"|"name_mismatch").
-        Response also includes a summary count of ok/code_not_found/name_mismatch.'
+        can be null). Per row: code_found, master (object with mat_code/group_name/subgroup_name/mat_name/spec_description/brand_name/unit_name,
+        or null if code_found is false), description_store (the raw DESCRIPTION cell),
+        and a derived status ("ok"|"code_not_found"). Response also includes a summary
+        count of ok/code_not_found. Name-matching against the file''s DESCRIPTION
+        column was removed — the real file has no item-name column to compare against
+        the master''s composed mat_name + spec_description.'
       parameters:
       - description: Excel file
         in: formData

@@ -16,24 +16,25 @@ type StockCategory struct {
 // ── StockItem ──────────────────────────────────────────────
 
 type StockItem struct {
-	ID            int64     `json:"id"`
-	MatCode       string    `json:"mat_code"`
-	ItemName      string    `json:"item_name"`
-	Description   *string   `json:"description"`
-	CategoryID    *int64    `json:"category_id"`
-	CategoryName  *string   `json:"category_name"`
-	ItemType      string    `json:"item_type"`     // RETURNABLE | CONSUMABLE
-	TrackingType  string    `json:"tracking_type"` // sku | serial
-	Unit          string    `json:"unit"`
-	Qty           float64   `json:"qty"`
-	UnitCost      float64   `json:"unit_cost"`
-	QRCode        *string   `json:"qr_code"`
-	WarehouseCode *string   `json:"warehouse_code,omitempty"`
-	LocationCode  *string   `json:"location_code,omitempty"`
-	IsActive      bool      `json:"is_active"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	ThumbnailURL  *string   `json:"thumbnail_url"`
+	ID               int64     `json:"id"`
+	MatCode          string    `json:"mat_code"`
+	ItemName         string    `json:"item_name"`
+	Description      *string   `json:"description"`
+	DescriptionStore *string   `json:"description_store"`
+	CategoryID       *int64    `json:"category_id"`
+	CategoryName     *string   `json:"category_name"`
+	ItemType         string    `json:"item_type"`     // RETURNABLE | CONSUMABLE
+	TrackingType     string    `json:"tracking_type"` // sku | serial
+	Unit             string    `json:"unit"`
+	Qty              float64   `json:"qty"`
+	UnitCost         float64   `json:"unit_cost"`
+	QRCode           *string   `json:"qr_code"`
+	WarehouseCode    *string   `json:"warehouse_code,omitempty"`
+	LocationCode     *string   `json:"location_code,omitempty"`
+	IsActive         bool      `json:"is_active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	ThumbnailURL     *string   `json:"thumbnail_url"`
 	// CostCode is joined from material_code (via mat_code — no FK between stock_item and
 	// material_code, they're two separate parallel stock systems that happen to share the
 	// same mat_code value) -> cost_subgroup -> cost_group -> cost_job -> cost_subject,

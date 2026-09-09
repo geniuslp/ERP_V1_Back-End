@@ -1391,10 +1391,16 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		return err
 	}
 	if !stockItemExists {
+		// description = mat_name + " " + spec_description, same composition formula used by
+		// the Excel import path (stockItemMaterialMaster.composedDescription in stock_item.go)
+		// — reused here inline since this handler already has both pieces from the request
+		// body without needing a master lookup. description_store stays NULL: no Excel source
+		// exists in this manual single-material-create path.
+		description := strings.TrimSpace(req.MatNameTH + " " + req.SpecDescription)
 		if _, err = tx.Exec(ctx,
-			`INSERT INTO stock_item (mat_code, item_name, unit, qty, created_at, updated_at)
-			 VALUES ($1, $2, $3, 0, NOW(), NOW())`,
-			matCode, req.MatNameTH, req.UnitName,
+			`INSERT INTO stock_item (mat_code, item_name, description, unit, qty, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, 0, NOW(), NOW())`,
+			matCode, req.MatNameTH, description, req.UnitName,
 		); err != nil {
 			return err
 		}
@@ -1635,19 +1641,34 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 	// Every material must have a matching stock_item so GRN receiving can
 	// always find one — see CLAUDE.md "GRN receiving / stock link" note.
 	// Mirrors CreateMaterial's single-item auto-create, batched for the whole
-	// bulk-import set; ON CONFLICT DO NOTHING skips mat_codes that already
-	// have a stock_item (e.g. re-imported/updated materials).
+	// bulk-import set. description = mat_name + " " + spec_description, same
+	// composition formula as CreateMaterial and stock_item.go's ImportExcel
+	// (composedDescription) — done here in SQL rather than via that Go helper
+	// since this is a set-based INSERT...SELECT across the whole batch, not a
+	// per-row Go loop with a fetched struct to call a method on.
+	// description_store is deliberately NOT set here — there is no raw Excel
+	// DESCRIPTION column in the Material import file; it stays NULL from this
+	// path, same as before.
+	// item_name/unit/qty still use DO NOTHING semantics (never clobber an
+	// existing stock_item re-imported/updated later) — description gets a
+	// narrower backfill-only UPDATE, only when it's still unset, so a second
+	// Material import run can fill in description for older rows created
+	// before this fix without overwriting anything already composed/edited.
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO stock_item (mat_code, item_name, unit, qty, created_at, updated_at)
+		INSERT INTO stock_item (mat_code, item_name, description, unit, qty, created_at, updated_at)
 		SELECT mc.mat_code,
 		       COALESCE(mn.mat_name, mc.mat_code) AS item_name,
+		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(ss.spec_description, '')), '') AS description,
 		       COALESCE(u.unit_name, '-')         AS unit,
 		       0, NOW(), NOW()
 		FROM material_code mc
-		LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
-		LEFT JOIN unit     u  ON u.id  = mc.unit_id
+		LEFT JOIN mat_name mn  ON mn.id = mc.mat_name_id
+		LEFT JOIN spec_size ss ON ss.id = mc.spec_id
+		LEFT JOIN unit     u   ON u.id  = mc.unit_id
 		WHERE mc.mat_code = ANY($1::text[])
-		ON CONFLICT (mat_code) DO NOTHING`,
+		ON CONFLICT (mat_code) DO UPDATE
+		SET description = EXCLUDED.description
+		WHERE stock_item.description IS NULL`,
 		matCodes,
 	); err != nil {
 		log.Println("❌ stock_item bulk insert:", err)

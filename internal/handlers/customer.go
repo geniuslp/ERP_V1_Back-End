@@ -85,7 +85,7 @@ func (h *CustomerHandler) List(c *fiber.Ctx) error {
 		i++
 	}
 	if search != "" {
-		where = append(where, fmt.Sprintf("(customer_name ILIKE $%d OR customer_code ILIKE $%d)", i, i))
+		where = append(where, fmt.Sprintf("(customer_name ILIKE $%d OR customer_code ILIKE $%d OR contact ILIKE $%d OR remarks ILIKE $%d)", i, i, i, i))
 		args = append(args, "%"+search+"%")
 		i++
 	}

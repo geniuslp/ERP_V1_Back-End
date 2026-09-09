@@ -135,7 +135,7 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 	args = append(args, f.PageSize, offset)
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT si.id, si.mat_code, si.item_name, si.description,
+		SELECT si.id, si.mat_code, si.item_name, si.description, si.description_store,
 		       si.category_id, sc.name AS category_name,
 		       si.item_type, si.tracking_type, si.unit, si.qty, si.unit_cost,
 		       si.qr_code, si.warehouse_code, si.location_code,
@@ -162,7 +162,7 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		var it models.StockItem
 		if err := rows.Scan(
-			&it.ID, &it.MatCode, &it.ItemName, &it.Description,
+			&it.ID, &it.MatCode, &it.ItemName, &it.Description, &it.DescriptionStore,
 			&it.CategoryID, &it.CategoryName,
 			&it.ItemType, &it.TrackingType, &it.Unit, &it.Qty, &it.UnitCost,
 			&it.QRCode, &it.WarehouseCode, &it.LocationCode, &it.IsActive, &it.CreatedAt, &it.UpdatedAt,
@@ -430,23 +430,31 @@ func (h *StockItemHandler) SoftDelete(c *fiber.Ctx) error {
 // import Excel sheet. Shared between ImportExcel and PreviewImportExcel so
 // the two stay in sync.
 type parsedStockItemRow struct {
-	RowNo    int // 1-based Excel row number
-	ItemName string
-	Qty      float64
-	Unit     string
-	MatCode  string
-	UnitCost float64
-	CostCode string // "COST CODE" column, e.g. "FS10101" — blank if not provided
+	RowNo            int    // 1-based Excel row number
+	DescriptionStore string // raw "DESCRIPTION" column text — stored as-is, never auto-generated
+	Qty              float64
+	Unit             string
+	MatCode          string
+	UnitCost         float64
+	CostCode         string // "COST CODE" column, e.g. "FS10101" — blank if not provided
 }
 
 // parseStockItemExcelRows reads the stock item import sheet and returns the
 // successfully-parsed rows plus any per-row error messages.
 //
 // Source file has a 3-row merged header (row 1-3); data starts at row 4 (index 3).
-// Columns: 0 no., 1 item, 2 description, 3 qty, 4 unit, 5 unit_code, 6 mat_code,
-// 7 cost_code_material — now parsed and resolved to material_code.cost_subgroup_id
-// by ImportExcel, reversing the earlier "unused" decision,
-// 8 cost_code_labor, 9 unit_price, 10 amount.
+// Columns, per the real template's header (confirmed 2026-09-09, screenshot-verified —
+// do not trust column semantics without checking an actual file first, same lesson as
+// CLAUDE.md's other schema-drift notes): 0 ITEM (no.), 1 JOB (unrelated, not read here),
+// 2 DESCRIPTION, 3 QTY, 4 UNIT, 5 UNIT CODE (not read here — see note below), 6 MAT CODE,
+// 7 COST CODE material — parsed and resolved to material_code.cost_subgroup_id, 8 COST
+// CODE labor, 9 unit_price, 10 amount.
+//
+// There is no item-name column in this file at all — item_name is resolved from the
+// material master by mat_code at write time (see fetchStockItemMaterialMaster), not
+// parsed from Excel. DESCRIPTION (col 2) is stored verbatim as description_store; it is
+// NOT the source of stock_item.description (that's auto-composed from the master's
+// mat_name + spec_description instead — see ImportExcel).
 func parseStockItemExcelRows(rows [][]string) ([]parsedStockItemRow, []string) {
 	var parsed []parsedStockItemRow
 	var errs []string
@@ -455,19 +463,15 @@ func parseStockItemExcelRows(rows [][]string) ([]parsedStockItemRow, []string) {
 		if rowIdx < 3 {
 			continue
 		}
-		itemName := strings.TrimSpace(getCell(row, 2))
+		descriptionStore := strings.TrimSpace(getCell(row, 2))
 		qtyStr := strings.TrimSpace(getCell(row, 3))
 		unit := strings.TrimSpace(getCell(row, 4))
 		matCode := strings.TrimSpace(getCell(row, 6))
 		costCode := strings.TrimSpace(getCell(row, 7))
 		unitCostStr := strings.TrimSpace(getCell(row, 9))
 
-		if itemName == "" && matCode == "" {
+		if descriptionStore == "" && matCode == "" {
 			continue // blank trailing row
-		}
-		if itemName == "" {
-			errs = append(errs, fmt.Sprintf("row %d: item_name is required", rowIdx+1))
-			continue
 		}
 		if matCode == "" {
 			errs = append(errs, fmt.Sprintf("row %d: mat_code is required", rowIdx+1))
@@ -494,17 +498,91 @@ func parseStockItemExcelRows(rows [][]string) ([]parsedStockItemRow, []string) {
 		}
 
 		parsed = append(parsed, parsedStockItemRow{
-			RowNo:    rowIdx + 1,
-			ItemName: itemName,
-			Qty:      qty,
-			Unit:     unit,
-			MatCode:  matCode,
-			UnitCost: unitCost,
-			CostCode: costCode,
+			RowNo:            rowIdx + 1,
+			DescriptionStore: descriptionStore,
+			Qty:              qty,
+			Unit:             unit,
+			MatCode:          matCode,
+			UnitCost:         unitCost,
+			CostCode:         costCode,
 		})
 	}
 
 	return parsed, errs
+}
+
+// stockItemMaterialMaster is the material_code master-data lookup used to derive
+// stock_item.item_name and the auto-composed stock_item.description
+// (mat_name + " " + spec_description) — shared between ImportExcel (write) and
+// PreviewImportExcel (comparison), so both stay in sync with a single query.
+type stockItemMaterialMaster struct {
+	GroupName       *string
+	MatCode         string
+	SubgroupName    *string
+	MatName         *string
+	SpecDescription *string
+	BrandName       *string
+	UnitName        *string
+}
+
+// composedDescription is the single formula for stock_item.description: mat_name + " " +
+// spec_description, trimmed. Reused everywhere a description needs deriving — the import
+// write path, PreviewImportExcel's comparison, and CreateMaterial's auto-created stock_item.
+func (mi stockItemMaterialMaster) composedDescription() string {
+	return strings.TrimSpace(deref(mi.MatName) + " " + deref(mi.SpecDescription))
+}
+
+func uniqueMatCodes(rows []parsedStockItemRow) []string {
+	matCodes := make([]string, 0, len(rows))
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if !seen[row.MatCode] {
+			seen[row.MatCode] = true
+			matCodes = append(matCodes, row.MatCode)
+		}
+	}
+	return matCodes
+}
+
+// fetchStockItemMaterialMaster batch-loads material_code master data (joined out to
+// mat_group/subgroup/mat_name/spec_size/brand/unit) for the given mat_codes, keyed by
+// mat_code. Shared by ImportExcel and PreviewImportExcel.
+func fetchStockItemMaterialMaster(ctx context.Context, db *pgxpool.Pool, matCodes []string) (map[string]stockItemMaterialMaster, error) {
+	masterByCode := map[string]stockItemMaterialMaster{}
+	if len(matCodes) == 0 {
+		return masterByCode, nil
+	}
+	dbRows, err := db.Query(ctx, `
+		SELECT mc.mat_code, mg.group_name, sg.subgroup_name, mn.mat_name,
+		       ss.spec_description, br.brand_name, u.unit_name
+		FROM material_code mc
+		LEFT JOIN mat_group mg ON mg.id = mc.group_id
+		LEFT JOIN subgroup  sg ON sg.id = mc.subgroup_id
+		LEFT JOIN mat_name   mn ON mn.id = mc.mat_name_id
+		LEFT JOIN spec_size  ss ON ss.id = mc.spec_id
+		LEFT JOIN brand      br ON br.id = mc.brand_id
+		LEFT JOIN unit       u  ON u.id  = mc.unit_id
+		WHERE mc.mat_code = ANY($1) AND mc.is_active = true`,
+		matCodes,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer dbRows.Close()
+	for dbRows.Next() {
+		var code string
+		var mi stockItemMaterialMaster
+		if err := dbRows.Scan(&code, &mi.GroupName, &mi.SubgroupName, &mi.MatName,
+			&mi.SpecDescription, &mi.BrandName, &mi.UnitName); err != nil {
+			return nil, err
+		}
+		mi.MatCode = code
+		masterByCode[code] = mi
+	}
+	if err := dbRows.Err(); err != nil {
+		return nil, err
+	}
+	return masterByCode, nil
 }
 
 // readStockItemExcelUpload extracts the first sheet's rows from the uploaded
@@ -624,6 +702,15 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 		dbRows.Close()
 	}
 
+	// item_name and the auto-composed description both come from the material master
+	// (mat_name + spec_description), not from any Excel column — see parseStockItemExcelRows'
+	// header comment. description_store, in contrast, is the raw Excel DESCRIPTION cell,
+	// stored verbatim and never auto-generated.
+	masterByCode, err := fetchStockItemMaterialMaster(ctx, h.db, matCodes)
+	if err != nil {
+		return err
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -636,16 +723,22 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 			errs = append(errs, fmt.Sprintf("row %d: mat_code %s does not exist in material_code", row.RowNo, row.MatCode))
 			continue
 		}
+		mi := masterByCode[row.MatCode] // zero value if inactive/not found despite existingCodes — item_name/description fall back to ""
+		itemName := deref(mi.MatName)
+		description := mi.composedDescription()
+		descriptionStore := nullableCell(row.DescriptionStore)
 		_, err = tx.Exec(ctx, `
-			INSERT INTO stock_item (mat_code, item_name, item_type, unit, qty, unit_cost)
-			VALUES ($1,$2,'CONSUMABLE',$3,$4,$5)
+			INSERT INTO stock_item (mat_code, item_name, description, description_store, item_type, unit, qty, unit_cost)
+			VALUES ($1,$2,$3,$4,'CONSUMABLE',$5,$6,$7)
 			ON CONFLICT (mat_code) DO UPDATE
 			SET item_name=EXCLUDED.item_name,
+			    description=EXCLUDED.description,
+			    description_store=EXCLUDED.description_store,
 			    unit=EXCLUDED.unit,
 			    qty=EXCLUDED.qty,
 			    unit_cost=EXCLUDED.unit_cost,
 			    updated_at=NOW()`,
-			row.MatCode, row.ItemName, row.Unit, row.Qty, row.UnitCost,
+			row.MatCode, itemName, description, descriptionStore, row.Unit, row.Qty, row.UnitCost,
 		)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("row %d: %s", row.RowNo, err.Error()))
@@ -684,7 +777,7 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 
 // PreviewImportExcel godoc
 // @Summary      Preview Stock Item import (ตรวจสอบ mat_code + รายละเอียดสินค้าเต็มรูปแบบ กับ material_code master ก่อนบันทึกจริง)
-// @Description  Parses the same Excel file as /stock/items/import but does not write anything. Each row's mat_code is checked against material_code, joined out to mat_group/subgroup/mat_name/spec_size/brand/unit (LEFT JOIN — any link can be null). The file's DESCRIPTION text is compared (whitespace-normalized, case-insensitive) against "mat_name + spec_description" from the master. Per row: code_found, master (object with mat_code/group_name/subgroup_name/mat_name/spec_description/brand_name/unit_name, or null if code_found is false), name_matched, and a derived status ("ok"|"code_not_found"|"name_mismatch"). Response also includes a summary count of ok/code_not_found/name_mismatch.
+// @Description  Parses the same Excel file as /stock/items/import but does not write anything. Each row's mat_code is checked against material_code, joined out to mat_group/subgroup/mat_name/spec_size/brand/unit (LEFT JOIN — any link can be null). Per row: code_found, master (object with mat_code/group_name/subgroup_name/mat_name/spec_description/brand_name/unit_name, or null if code_found is false), description_store (the raw DESCRIPTION cell), and a derived status ("ok"|"code_not_found"). Response also includes a summary count of ok/code_not_found. Name-matching against the file's DESCRIPTION column was removed — the real file has no item-name column to compare against the master's composed mat_name + spec_description.
 // @Tags         Stock
 // @Security     BearerAuth
 // @Accept       multipart/form-data
@@ -702,66 +795,22 @@ func (h *StockItemHandler) PreviewImportExcel(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
-	matCodes := make([]string, 0, len(parsedRows))
-	seen := map[string]bool{}
-	for _, row := range parsedRows {
-		if !seen[row.MatCode] {
-			seen[row.MatCode] = true
-			matCodes = append(matCodes, row.MatCode)
-		}
+	matCodes := uniqueMatCodes(parsedRows)
+	masterByCode, err := fetchStockItemMaterialMaster(ctx, h.db, matCodes)
+	if err != nil {
+		return err
 	}
 
-	type masterInfo struct {
-		GroupName       *string
-		MatCode         string
-		SubgroupName    *string
-		MatName         *string
-		SpecDescription *string
-		BrandName       *string
-		UnitName        *string
-	}
-
-	masterByCode := map[string]masterInfo{}
-	if len(matCodes) > 0 {
-		dbRows, qerr := h.db.Query(ctx, `
-			SELECT mc.mat_code, mg.group_name, sg.subgroup_name, mn.mat_name,
-			       ss.spec_description, br.brand_name, u.unit_name
-			FROM material_code mc
-			LEFT JOIN mat_group mg ON mg.id = mc.group_id
-			LEFT JOIN subgroup  sg ON sg.id = mc.subgroup_id
-			LEFT JOIN mat_name   mn ON mn.id = mc.mat_name_id
-			LEFT JOIN spec_size  ss ON ss.id = mc.spec_id
-			LEFT JOIN brand      br ON br.id = mc.brand_id
-			LEFT JOIN unit       u  ON u.id  = mc.unit_id
-			WHERE mc.mat_code = ANY($1) AND mc.is_active = true`,
-			matCodes,
-		)
-		if qerr != nil {
-			return qerr
-		}
-		defer dbRows.Close()
-		for dbRows.Next() {
-			var code string
-			var mi masterInfo
-			if err := dbRows.Scan(&code, &mi.GroupName, &mi.SubgroupName, &mi.MatName,
-				&mi.SpecDescription, &mi.BrandName, &mi.UnitName); err != nil {
-				return err
-			}
-			mi.MatCode = code
-			masterByCode[code] = mi
-		}
-		if err := dbRows.Err(); err != nil {
-			return err
-		}
-	}
-
+	// Name-matching was dropped: there is no item-name column in the real file to compare
+	// against the master's composed mat_name + spec_description (see conversation notes
+	// "PART E") — every row with a resolvable mat_code is "ok", the only other outcome is
+	// "code_not_found".
 	previewRows := make([]fiber.Map, 0, len(parsedRows))
-	okCount, notFoundCount, mismatchCount := 0, 0, 0
+	okCount, notFoundCount := 0, 0
 	for _, row := range parsedRows {
 		mi, codeFound := masterByCode[row.MatCode]
 
 		var masterOut any
-		nameMatched := false
 		status := "code_not_found"
 		if codeFound {
 			masterOut = fiber.Map{
@@ -773,35 +822,26 @@ func (h *StockItemHandler) PreviewImportExcel(c *fiber.Ctx) error {
 				"brand_name":       mi.BrandName,
 				"unit_name":        mi.UnitName,
 			}
-			masterDescription := strings.TrimSpace(deref(mi.MatName) + " " + deref(mi.SpecDescription))
-			nameMatched = normalizeItemName(row.ItemName) == normalizeItemName(masterDescription)
-			if nameMatched {
-				status = "ok"
-			} else {
-				status = "name_mismatch"
-			}
+			status = "ok"
 		}
 
 		switch status {
 		case "ok":
 			okCount++
-		case "name_mismatch":
-			mismatchCount++
 		case "code_not_found":
 			notFoundCount++
 		}
 
 		previewRows = append(previewRows, fiber.Map{
-			"row_no":       row.RowNo,
-			"mat_code":     row.MatCode,
-			"file_name":    row.ItemName,
-			"qty":          row.Qty,
-			"unit":         row.Unit,
-			"unit_cost":    row.UnitCost,
-			"code_found":   codeFound,
-			"master":       masterOut,
-			"name_matched": nameMatched,
-			"status":       status,
+			"row_no":            row.RowNo,
+			"mat_code":          row.MatCode,
+			"description_store": row.DescriptionStore,
+			"qty":               row.Qty,
+			"unit":              row.Unit,
+			"unit_cost":         row.UnitCost,
+			"code_found":        codeFound,
+			"master":            masterOut,
+			"status":            status,
 		})
 	}
 
@@ -811,7 +851,6 @@ func (h *StockItemHandler) PreviewImportExcel(c *fiber.Ctx) error {
 			"total":          len(parsedRows),
 			"ok":             okCount,
 			"code_not_found": notFoundCount,
-			"name_mismatch":  mismatchCount,
 		},
 		"errors": errs,
 	}})
