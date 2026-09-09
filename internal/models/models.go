@@ -1278,6 +1278,7 @@ type CreateCustomerRequest struct {
 }
 
 type UpdateCustomerRequest struct {
+	CustomerCode *string `json:"customer_code,omitempty" validate:"omitempty,max=20"`
 	CustomerName *string `json:"customer_name,omitempty"`
 	Address      *string `json:"address,omitempty"`
 	Contact      *string `json:"contact,omitempty"`

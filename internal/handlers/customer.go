@@ -237,21 +237,39 @@ func (h *CustomerHandler) Update(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
+	if req.CustomerCode != nil {
+		code := strings.TrimSpace(*req.CustomerCode)
+		if code == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "customer_code cannot be empty")
+		}
+		req.CustomerCode = &code
+
+		var conflictID int64
+		err := h.db.QueryRow(ctx, `SELECT cus_id FROM customer WHERE customer_code = $1 AND cus_id != $2`, code, id).Scan(&conflictID)
+		if err == nil {
+			return fiber.NewError(fiber.StatusConflict, "customer_code already exists")
+		}
+	}
+
 	var cu models.Customer
 	err = scanCustomer(&cu, h.db.QueryRow(ctx, `
 		UPDATE customer SET
-			customer_name = COALESCE($1, customer_name),
-			address       = COALESCE($2, address),
-			contact       = COALESCE($3, contact),
-			credit_term   = COALESCE($4, credit_term),
-			remarks       = COALESCE($5, remarks),
-			is_active     = COALESCE($6, is_active),
+			customer_code = COALESCE($1, customer_code),
+			customer_name = COALESCE($2, customer_name),
+			address       = COALESCE($3, address),
+			contact       = COALESCE($4, contact),
+			credit_term   = COALESCE($5, credit_term),
+			remarks       = COALESCE($6, remarks),
+			is_active     = COALESCE($7, is_active),
 			updated_at    = NOW()
-		WHERE cus_id = $7
+		WHERE cus_id = $8
 		RETURNING `+customerCols,
-		req.CustomerName, req.Address, req.Contact, req.CreditTerm, req.Remarks, req.IsActive, id,
+		req.CustomerCode, req.CustomerName, req.Address, req.Contact, req.CreditTerm, req.Remarks, req.IsActive, id,
 	))
 	if err != nil {
+		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+			return fiber.NewError(fiber.StatusConflict, "customer_code already exists")
+		}
 		return fiber.NewError(fiber.StatusNotFound, "customer not found")
 	}
 

@@ -189,11 +189,9 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	po.Post("/:id/attachments", attachH.AddPO)
 	po.Get("/:id/attachments", attachH.ListPO)
 	po.Delete("/:id/attachments/:attach_id", attachH.DeletePO)
-	// TODO: RegisterPOApprovalRoutes registers GET "/" and GET "/:id" again on the same
-	// group — poH.List/poH.Get above (lines 149-150) win since Fiber matches the first
-	// registered route, so POApprovalHandler.List/GetDetail are currently unreachable dead
-	// code. Needs a separate task to resolve (same bug class as the PR module's shadowed
-	// route, see CLAUDE.md).
+	// RegisterPOApprovalRoutes only adds PUT approve/reject/cancel here now — its GET "/" and
+	// GET "/:id" (POApprovalHandler.List/GetDetail) were removed as unreachable dead code,
+	// permanently shadowed by poH.List/poH.Get above. See internal/routes/po.go.
 	RegisterPOApprovalRoutes(po, db)
 
 	// Memo

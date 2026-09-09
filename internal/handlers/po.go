@@ -149,19 +149,29 @@ func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poL
 
 // ListPO godoc
 // @Summary      List purchase orders
+// @Description  status accepts one or more comma-separated values (e.g. status=PENDING_APPROVAL,PENDING_REAPPROVAL) — matched via IN, not exact equality, so multiple statuses can be requested together (needed by the PO Approval page). page_size and limit are aliases for the same page-size parameter — page_size wins if both are sent.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
-// @Param        status    query  string  false  "status filter"
+// @Param        status    query  string  false  "status filter — comma-separated for multiple, e.g. PENDING_APPROVAL,PENDING_REAPPROVAL"
 // @Param        supplier  query  string  false  "supplier_id filter"
 // @Param        my        query  bool    false  "when true, only POs created by the current user"
 // @Param        page      query  int     false  "page"  default(1)
-// @Param        page_size query  int     false  "page_size"  default(20)
+// @Param        page_size query  int     false  "page_size (alias: limit)"  default(20)
+// @Param        limit     query  int     false  "alias for page_size — used if page_size is not sent"
 // @Success      200  {object}  models.PaginatedResponse
 // @Router       /po [get]
 func (h *POHandler) List(c *fiber.Ctx) error {
 	page := max(c.QueryInt("page", 1), 1)
-	size := min(c.QueryInt("page_size", 20), 100)
+	// page_size and limit are aliases for the same thing — the frontend has historically sent
+	// `limit` (matching the now-removed POApprovalHandler.List's contract) while this handler
+	// only ever read `page_size`, so `limit` was silently ignored and always fell back to the
+	// default 20. page_size wins if a caller sends both.
+	rawSize := c.QueryInt("page_size", 0)
+	if rawSize == 0 {
+		rawSize = c.QueryInt("limit", 20)
+	}
+	size := min(rawSize, 100)
 	offset := (page - 1) * size
 
 	var conditions []string
@@ -175,8 +185,19 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		conditions = append(conditions, fmt.Sprintf("po.created_by = $%d", len(args)))
 	}
 	if v := strings.TrimSpace(c.Query("status")); v != "" {
-		args = append(args, v)
-		conditions = append(conditions, fmt.Sprintf("po.status = $%d", len(args)))
+		var statuses []string
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				statuses = append(statuses, s)
+			}
+		}
+		if len(statuses) == 1 {
+			args = append(args, statuses[0])
+			conditions = append(conditions, fmt.Sprintf("po.status = $%d", len(args)))
+		} else if len(statuses) > 1 {
+			args = append(args, statuses)
+			conditions = append(conditions, fmt.Sprintf("po.status = ANY($%d)", len(args)))
+		}
 	}
 
 	var where string
@@ -802,6 +823,17 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	// warehouse_code is required — GoodsReceiptHandler.Receive hard-requires it to resolve
+	// stock_inventory's location, so a PO created without one is a receiving dead-end
+	// discovered only later. Fails clearly here rather than silently persisting NULL (which
+	// previously happened whenever it was omitted from the request, or inherited via pr_id
+	// from a PR that itself had no warehouse_code set).
+	if warehouseCode == nil || strings.TrimSpace(*warehouseCode) == "" {
+		if req.PRID != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "warehouse_code is required — the linked PR has no warehouse_code set; set warehouse_code on the PR, or provide it directly on this PO")
+		}
+		return fiber.NewError(fiber.StatusBadRequest, "warehouse_code is required")
+	}
 
 	// job_code: explicit request value wins; otherwise fall back to the source PR's job_code.
 	// Never silently overwrite a user-supplied value with the PR's.
@@ -1338,7 +1370,7 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE purchase_order SET
-		    supplier_id=$1, pr_id=$2, rfq_id=$3, location_text=$4, warehouse_code=$5, project_code=$6, requested_by=$7, approver_id=$8, ref=$9,
+		    supplier_id=$1, pr_id=$2, rfq_id=$3, location_text=$4, warehouse_code=COALESCE($5, warehouse_code), project_code=$6, requested_by=$7, approver_id=$8, ref=$9,
 		    currency=$10, expected_date=$11, payment_terms=$12, remarks=$13,
 		    total_amount=$14, vat_amount=$15, net_amount=$16, status=$17,
 		    use_discount=$18, discount_type=$19, discount_amount=$20, use_vat=$21, use_wht=$22, wht_amount=$23,

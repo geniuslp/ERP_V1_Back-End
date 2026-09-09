@@ -32,7 +32,7 @@ var JobTypes = []JobTypeInfo{
 	{"009", "FB", "Stock FAC-BO"},
 	{"010", "DE", "Dead Stock"},
 	{"011", "RE", "Return Project"},
-	{"012", "G", "General Code"},
+	{"012", "OH", "General Code"},
 }
 
 // validJobCodes is the lookup used by ValidateJobCode/validateJobCodes. Built once from

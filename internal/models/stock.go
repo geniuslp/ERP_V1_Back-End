@@ -34,6 +34,13 @@ type StockItem struct {
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	ThumbnailURL  *string   `json:"thumbnail_url"`
+	// CostCode is joined from material_code (via mat_code — no FK between stock_item and
+	// material_code, they're two separate parallel stock systems that happen to share the
+	// same mat_code value) -> cost_subgroup -> cost_group -> cost_job -> cost_subject,
+	// same subject_code+job_code+group_code+subgroup_code concatenation used everywhere
+	// else in this codebase. Null when the item has no matching material_code row, or that
+	// row has no cost_subgroup_id set.
+	CostCode *string `json:"cost_code,omitempty"`
 }
 
 // ── StockItemImage ─────────────────────────────────────────

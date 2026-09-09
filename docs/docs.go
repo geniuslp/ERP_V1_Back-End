@@ -9849,6 +9849,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "cost_code is joined from material_code (matched by mat_code — stock_item and material_code are separate parallel stock systems with no FK between them, only a shared mat_code value) -\u003e cost_subgroup -\u003e cost_group -\u003e cost_job -\u003e cost_subject, using the same subject_code+job_code+group_code+subgroup_code concatenation as every other cost-code query in this codebase. LEFT JOIN throughout, so an item with no matching material_code row (or one with no cost_subgroup_id set) still appears in the list, just with cost_code=null.",
                 "produces": [
                     "application/json"
                 ],
@@ -14470,6 +14471,10 @@ const docTemplate = `{
                 },
                 "credit_term": {
                     "type": "string"
+                },
+                "customer_code": {
+                    "type": "string",
+                    "maxLength": 20
                 },
                 "customer_name": {
                     "type": "string"

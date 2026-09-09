@@ -22,6 +22,7 @@
 | [cost_job](#cost_job) | Cost | งานต้นทุน |
 | [cost_subgroup](#cost_subgroup) | Cost | กลุ่มย่อยต้นทุน |
 | [cost_subject](#cost_subject) | Cost | หัวข้อต้นทุน |
+| [customer](#customer) | Master | ลูกค้า |
 | [departments](#departments) | Org | แผนก |
 | [dept_menu_permissions](#dept_menu_permissions) | Permission | สิทธิ์เมนูตามแผนก |
 | [erp_audit_log](#erp_audit_log) | Audit | audit log ทั้งระบบ |
@@ -39,8 +40,12 @@
 | [memo_status_log](#memo_status_log) | Memo | log สถานะ memo |
 | [menus](#menus) | System | เมนูระบบ |
 | [modules](#modules) | System | โมดูลระบบ |
+| [payment_log](#payment_log) | Payment | ประวัติการจ่ายเงินของ PO/WO |
 | [permission_audit_logs](#permission_audit_logs) | Permission | audit log สิทธิ์ |
 | [permissions](#permissions) | Permission | permission key |
+| [petty_cash_requisition](#petty_cash_requisition) | PettyCash | ใบเบิกเงินสดย่อย |
+| [petty_cash_requisition_line](#petty_cash_requisition_line) | PettyCash | รายการใน petty_cash_requisition |
+| [petty_cash_status_log](#petty_cash_status_log) | PettyCash | log สถานะ petty_cash_requisition |
 | [po_attachment](#po_attachment) | PO | ไฟล์แนบ PO |
 | [po_edit_log](#po_edit_log) | PO | log การแก้ไข PO |
 | [po_status_log](#po_status_log) | PO | log สถานะ PO |
@@ -64,11 +69,12 @@
 | [stock_count_line](#stock_count_line) | Stock | รายการนับสต็อก |
 | [stock_inventory](#stock_inventory) | Stock | inventory ต่อ location (stock_item based) |
 | [stock_item](#stock_item) | Stock | รายการวัสดุในคลัง (qty จริง) |
+| [stock_item_image](#stock_item_image) | Stock | รูปภาพของ stock_item |
 | [stock_reservation](#stock_reservation) | Stock | การจองวัสดุ |
 | [stock_transaction](#stock_transaction) | Stock | transaction stock_item |
-| [stock_transfer](#stock_transfer) | Stock | ใบย้ายคลัง (WH_TO_WH / WH_TO_PROJECT / PROJECT_TO_WH) |
-| [stock_transfer_line](#stock_transfer_line) | Stock | รายการใน stock_transfer |
-| [stock_transfer_status_log](#stock_transfer_status_log) | Stock | log สถานะ stock_transfer |
+| [stock_transfer](#stock_transfer) | Stock | 🔴 ใบย้ายคลัง — **ไม่พบใน live DB ที่ตรวจสอบล่าสุด (2026-09-09)**, ดูหมายเหตุ |
+| [stock_transfer_line](#stock_transfer_line) | Stock | 🔴 ไม่พบใน live DB ที่ตรวจสอบล่าสุด (2026-09-09) |
+| [stock_transfer_status_log](#stock_transfer_status_log) | Stock | 🔴 ไม่พบใน live DB ที่ตรวจสอบล่าสุด (2026-09-09) |
 | [requisition](#requisition) | Stock | ใบเบิกของ (คลัง → โครงการ) |
 | [requisition_line](#requisition_line) | Stock | รายการใน requisition |
 | [requisition_status_log](#requisition_status_log) | Stock | log สถานะ requisition |
@@ -82,6 +88,7 @@
 | [users](#users) | Org | ผู้ใช้งาน |
 | [warehouse](#warehouse) | Master | คลังสินค้า |
 | [work_order](#work_order) | WO | หนังสือสั่งจ้าง (subcontractor hiring) |
+| [work_order_cost_code](#work_order_cost_code) | WO | 🔴 deprecated — multi-select cost_code แบบเก่า ก่อนเปลี่ยนเป็น work_order_line |
 | [work_order_line](#work_order_line) | WO | รายการต่อบรรทัด (cost_code แทน item) |
 | [work_order_status_log](#work_order_status_log) | WO | log สถานะ work_order |
 | [work_order_attachment](#work_order_attachment) | WO | ไฟล์แนบ work_order |
@@ -93,11 +100,11 @@
 - `stock_item.qty` — qty จริงของวัสดุในคลัง ใช้ตัดเมื่อ borrow/requisition อนุมัติ
 - `inventory.qty_on_hand` — ใช้กับ PR/PO flow (mat_code based) คนละตัวกับ stock_item
 - `material_code.mat_code` ≠ `stock_item.mat_code` — ใช้ค่าเดียวกันแต่คนละตาราง ไม่มี FK ข้าม
-- 🔴 **`stock_item.mat_code` ไม่ใช่ unique เดี่ยวๆ อีกต่อไป** (2026-08-16) — เปลี่ยนจาก
-  `UNIQUE(mat_code)` เป็น `UNIQUE(mat_code, warehouse_code)` เพื่อให้ mat_code เดียวกันมีแถวคนละ
-  warehouse ได้ (จำเป็นสำหรับ `stock_transfer` แบบ WH_TO_WH) — โค้ดที่เคย `SELECT ... WHERE
-  mat_code=$1` แบบไม่ระบุ warehouse_code ต้องเช็คว่าอาจได้มากกว่า 1 แถวถ้ามีหลาย warehouse ในอนาคต
-  (ปัจจุบันมี warehouse เดียว `WH01` ในข้อมูลจริง จึงยังไม่เจอปัญหานี้)
+- 🔴 **`stock_item.mat_code` เป็น `UNIQUE(mat_code)` เดี่ยวๆ (ยืนยันจาก live DB, 2026-09-09)** —
+  หมายเหตุก่อนหน้านี้ที่อ้างว่าเปลี่ยนเป็น `UNIQUE(mat_code, warehouse_code)` (2026-08-16) เป็นข้อมูล
+  ที่ล้าสมัย/ไม่เคย apply จริงกับ instance ที่ตรวจสอบ — constraint จริงคือ `stock_item_code_uq
+  UNIQUE (mat_code)` คอลัมน์เดียว ดังนั้น 1 mat_code = 1 แถวเท่านั้นทั่วทั้งระบบ (สอดคล้องกับ
+  CLAUDE.md session note 2026-08-27 "corrected")
 - `borrow_type` — `'BORROW'` = ขอยืม/เบิก, `'RETURN'` = คืน
 - `borrow_line.mat_type` — `'RETURNABLE'` = ต้องคืน, `'CONSUMABLE'` = ไม่ต้องคืน
 - `grn` มี `quality_status`, `confirmed_by`, `delivery_note` — ใช้ schema นี้ ไม่ใช่ inventory table
@@ -324,6 +331,24 @@ id, job_id, group_code, group_name, is_active, created_at, updated_at, created_b
 -- cost_subgroup (FK → cost_group)
 id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at, created_by, updated_by
 ```
+
+---
+
+### customer
+```
+cus_id        integer      NOT NULL  PK  (nextval customer_cus_id_seq)
+customer_code varchar(20)  NOT NULL  UNIQUE
+customer_name varchar(255) NOT NULL
+address       text         nullable
+contact       text         nullable
+credit_term   varchar(50)  nullable
+remarks       text         nullable
+is_active     boolean      NOT NULL  DEFAULT true
+created_at    timestamptz  NOT NULL  DEFAULT now()
+created_by    bigint       nullable
+updated_at    timestamptz  NOT NULL  DEFAULT now()
+```
+⚠️ PK คือ `cus_id` (ไม่ใช่ `id` เหมือน table อื่นส่วนใหญ่) — ระวังเวลาเขียน SQL join/handler ใหม่
 
 ---
 
@@ -580,6 +605,85 @@ role_id, permission_id, created_at, created_by
 
 -- user_permissions
 user_id, permission_id, is_allow, created_at, updated_at, created_by, updated_by
+```
+
+---
+
+### payment_log
+```
+id           bigint        NOT NULL  PK
+doc_type     varchar(30)   NOT NULL  — CHECK IN ('PO','WO')
+doc_id       bigint        NOT NULL
+doc_no       varchar(30)   NOT NULL
+amount_paid  numeric(18,2) NOT NULL  — CHECK <> 0 (ติดลบได้ = reverse)
+paid_date    date          NOT NULL  DEFAULT CURRENT_DATE
+paid_by      bigint        NOT NULL  — FK → users.id
+remark       text          nullable
+reverses_id  bigint        nullable  — FK → payment_log.id (self-ref, ใช้ mark ว่า row นี้ reverse row ไหน)
+created_at   timestamp     NOT NULL  DEFAULT now()
+created_by   bigint        NOT NULL  — FK → users.id
+```
+
+---
+
+### petty_cash_requisition
+```
+id              bigint        NOT NULL  PK
+pc_no           varchar(30)   NOT NULL  UNIQUE
+pc_date         date          NOT NULL  DEFAULT CURRENT_DATE
+requested_by    bigint        NOT NULL  — FK → users.id
+purpose         text          nullable
+currency        varchar(10)   NOT NULL  DEFAULT 'THB'
+total_amount    numeric(18,4) NOT NULL  DEFAULT 0
+use_discount    boolean       NOT NULL  DEFAULT false
+discount_type   varchar(10)   NOT NULL  DEFAULT 'pct'  — CHECK ('pct'|'amt')
+discount_amount numeric(18,4) NOT NULL  DEFAULT 0
+use_vat         boolean       NOT NULL  DEFAULT false
+vat_amount      numeric(18,4) NOT NULL  DEFAULT 0
+use_wht         boolean       NOT NULL  DEFAULT false
+wht_amount      numeric(18,4) NOT NULL  DEFAULT 0
+net_amount      numeric(18,4) NOT NULL  DEFAULT 0
+status          varchar(20)   NOT NULL  DEFAULT 'DRAFT'
+                — CHECK: DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|CANCELLED
+approver_id     bigint        nullable  — FK → users.id
+remarks         text          nullable
+created_at      timestamp     NOT NULL  DEFAULT now()
+updated_at      timestamp     NOT NULL  DEFAULT now()
+created_by      bigint        NOT NULL
+updated_by      bigint        nullable
+```
+
+### petty_cash_requisition_line
+```
+id               bigint        NOT NULL  PK
+pc_id            bigint        NOT NULL  — FK → petty_cash_requisition.id
+line_no          integer       NOT NULL
+mat_code         varchar(20)   NOT NULL  — FK → material_code.mat_code
+cost_subgroup_id bigint        nullable  — FK → cost_subgroup.id
+description      text          nullable
+qty              numeric(18,4) NOT NULL
+unit_price       numeric(18,4) NOT NULL
+amount           numeric(18,4) nullable
+discount         numeric(18,4) NOT NULL  DEFAULT 0
+disc_type        varchar(10)   NOT NULL  DEFAULT 'pct'  — CHECK ('pct'|'amt')
+line_discount    numeric(18,4) NOT NULL  DEFAULT 0
+line_vat         numeric(18,4) NOT NULL  DEFAULT 0
+line_wht         numeric(18,4) NOT NULL  DEFAULT 0
+line_net         numeric(18,4) NOT NULL  DEFAULT 0
+wht_rate         numeric(5,2)  nullable
+remarks          text          nullable
+project_code     varchar(20)   NOT NULL  — FK → project.project_code
+```
+
+### petty_cash_status_log
+```
+id          bigint      NOT NULL  PK
+pc_id       bigint      NOT NULL  — FK → petty_cash_requisition.id
+from_status varchar(30) nullable
+to_status   varchar(30) NOT NULL
+changed_by  bigint      NOT NULL  — FK → users.id
+changed_at  timestamp   NOT NULL  DEFAULT now()
+remarks     text        nullable
 ```
 
 ---
@@ -855,6 +959,20 @@ updated_by     bigint        nullable
 
 ---
 
+### stock_item_image
+```
+id         bigint      NOT NULL  PK  (nextval stock_item_image_id_seq)
+item_id    bigint      NOT NULL  — FK → stock_item.id
+file_path  text        NOT NULL
+file_name  varchar(255)nullable
+is_primary boolean     NOT NULL  DEFAULT false
+sort_order integer     NOT NULL  DEFAULT 0
+created_at timestamp   NOT NULL  DEFAULT now()
+created_by bigint      nullable
+```
+
+---
+
 ### stock_reservation
 ```
 id              bigint        NOT NULL  PK
@@ -898,6 +1016,13 @@ created_by    bigint        NOT NULL
 ---
 
 ### stock_transfer
+> 🔴 **ตรวจสอบ live DB (2026-09-09): ไม่พบ table `stock_transfer` / `stock_transfer_line` /
+> `stock_transfer_status_log` ใน `information_schema.tables` ของ instance ที่เชื่อมต่ออยู่** แม้ว่า
+> CLAUDE.md session note (2026-08-16) จะบรรยายฟีเจอร์นี้ว่า "มีตารางจริงแล้ว" และ handler
+> `internal/handlers/stock_transfer.go` ในโค้ดก็ยังอ้างถึงตารางเหล่านี้อยู่ — **ยังไม่ยืนยันสาเหตุ**
+> (อาจเป็น dev DB คนละตัวกับที่ session นั้น apply migration, หรือ table ถูก DROP ภายหลัง) ก่อนแก้/รัน
+> โค้ดที่พึ่งพา 3 table นี้ ต้องเช็ค `information_schema.tables` ของ instance ที่จะ deploy จริงก่อน
+> เสมอ — schema ด้านล่างคงไว้ตามที่เคยบันทึกไว้เป็น reference เผื่อยังใช้ได้กับ instance อื่น
 ใบย้ายคลัง (ย้ายคลัง). `transfer_type` กำหนดว่า field ไหนของ from_*/to_* ต้องมีค่า:
 `WH_TO_WH` → from_warehouse_code + to_warehouse_code, `WH_TO_PROJECT` → from_warehouse_code +
 to_project_code, `PROJECT_TO_WH` → from_project_code + to_warehouse_code.
@@ -1201,6 +1326,21 @@ remarks, created_at, updated_at, created_by, updated_by  — เหมือน�
 >
 > 🔴 `work_order.cost_code` (คอลัมน์เดิม) ก็ deprecated เช่นกัน แทนที่ด้วยตาราง
 > `work_order_line` ทั้งหมด
+
+---
+
+### work_order_cost_code
+> 🔴 **deprecated** (ดู Important Notes ด้านบน) — multi-select cost_code แบบแรกก่อนเปลี่ยนเป็น
+> `work_order_line` เต็มรูปแบบ ยังอยู่ใน DB จริง แต่โค้ดปัจจุบันไม่เขียน/อ่านตารางนี้แล้ว
+```
+id         bigint      NOT NULL  PK
+wo_id      bigint      NOT NULL  — FK → work_order.id
+cost_code  varchar(50) NOT NULL
+remarks    varchar(255)nullable
+created_at timestamp   NOT NULL  DEFAULT now()
+created_by bigint      NOT NULL
+-- UNIQUE (wo_id, cost_code)
+```
 
 ---
 

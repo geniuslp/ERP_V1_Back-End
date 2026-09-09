@@ -2095,6 +2095,9 @@ definitions:
         type: string
       credit_term:
         type: string
+      customer_code:
+        maxLength: 20
+        type: string
       customer_name:
         type: string
       is_active:
@@ -8957,6 +8960,13 @@ paths:
       - Stock
   /stock/items:
     get:
+      description: cost_code is joined from material_code (matched by mat_code — stock_item
+        and material_code are separate parallel stock systems with no FK between them,
+        only a shared mat_code value) -> cost_subgroup -> cost_group -> cost_job ->
+        cost_subject, using the same subject_code+job_code+group_code+subgroup_code
+        concatenation as every other cost-code query in this codebase. LEFT JOIN throughout,
+        so an item with no matching material_code row (or one with no cost_subgroup_id
+        set) still appears in the list, just with cost_code=null.
       parameters:
       - description: Search
         in: query

@@ -65,6 +65,7 @@ func (h *StockItemHandler) ListCategories(c *fiber.Ctx) error {
 
 // List godoc
 // @Summary      รายการ Stock Item
+// @Description  cost_code is joined from material_code (matched by mat_code — stock_item and material_code are separate parallel stock systems with no FK between them, only a shared mat_code value) -> cost_subgroup -> cost_group -> cost_job -> cost_subject, using the same subject_code+job_code+group_code+subgroup_code concatenation as every other cost-code query in this codebase. LEFT JOIN throughout, so an item with no matching material_code row (or one with no cost_subgroup_id set) still appears in the list, just with cost_code=null.
 // @Tags         Stock
 // @Security     BearerAuth
 // @Produce      json
@@ -140,9 +141,15 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 		       si.qr_code, si.warehouse_code, si.location_code,
 		       si.is_active, si.created_at, si.updated_at,
 		       (SELECT file_path FROM stock_item_image
-		        WHERE item_id = si.id AND is_primary = true LIMIT 1) AS thumbnail_url
+		        WHERE item_id = si.id AND is_primary = true LIMIT 1) AS thumbnail_url,
+		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code
 		FROM stock_item si
 		LEFT JOIN stock_category sc ON sc.id = si.category_id
+		LEFT JOIN material_code mc  ON mc.mat_code = si.mat_code
+		LEFT JOIN cost_subgroup csg ON csg.id = mc.cost_subgroup_id
+		LEFT JOIN cost_group    cg  ON cg.id  = csg.group_id
+		LEFT JOIN cost_job      cj  ON cj.id  = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
 		WHERE %s
 		ORDER BY si.mat_code
 		LIMIT $%d OFFSET $%d`, whereClause, i, i+1), args...)
@@ -159,7 +166,7 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 			&it.CategoryID, &it.CategoryName,
 			&it.ItemType, &it.TrackingType, &it.Unit, &it.Qty, &it.UnitCost,
 			&it.QRCode, &it.WarehouseCode, &it.LocationCode, &it.IsActive, &it.CreatedAt, &it.UpdatedAt,
-			&it.ThumbnailURL,
+			&it.ThumbnailURL, &it.CostCode,
 		); err != nil {
 			return err
 		}
