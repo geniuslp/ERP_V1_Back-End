@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"erp-api/internal/middleware"
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -245,14 +247,22 @@ func (h *SupplierHandler) DeleteSupplier(c *fiber.Ctx) error {
 // @Failure      400   {object}  fiber.Map
 // @Router       /master/suppliers/bulk [post]
 func (h *SupplierHandler) BulkCreateSupplier(c *fiber.Ctx) error {
+	// Field mapping — sales_person/sales_person_phone/office_phone are separate DB columns
+	// from the DB's own literal contact_name/contact_phone (those are left untouched by
+	// this import path). Wire keys match DB column names directly (confirmed against the
+	// live frontend payload — a prior version of these tags assumed the Excel header names
+	// were the wire keys, which was wrong and left these three fields always nil).
 	type Item struct {
-		SupplierName string  `json:"supplier_name"`
-		TaxID        *string `json:"tax_id"`
-		Address      *string `json:"address"`
-		ContactName  *string `json:"contact_name"`
-		ContactPhone *string `json:"contact_phone"`
-		ContactEmail *string `json:"contact_email"`
-		PaymentTerms *string `json:"payment_terms"`
+		SupplierName     string  `json:"supplier_name"`
+		TaxID            *string `json:"tax_id"`
+		Address          *string `json:"address"`
+		SalesPerson      *string `json:"sales_person"`
+		SalesPersonPhone *string `json:"sales_person_phone"`
+		OfficePhone      *string `json:"office_phone"`
+		ContactEmail     *string `json:"contact_email"`
+		PaymentTerms     *string `json:"payment_terms"`
+		Currency         *string `json:"currency"`
+		Remarks          *string `json:"remarks"`
 	}
 	var body struct {
 		Items []Item `json:"items"`
@@ -282,13 +292,15 @@ func (h *SupplierHandler) BulkCreateSupplier(c *fiber.Ctx) error {
 				return err
 			}
 		}
-		if item.ContactName != nil {
-			if err := maxLen(i, "contact_name", *item.ContactName, 200); err != nil {
+		// sales_person (DB) has no length limit — matches BulkInsertSupplier's SalesPerson,
+		// which is likewise unchecked (see that handler's own validation loop below).
+		if item.SalesPersonPhone != nil {
+			if err := maxLen(i, "sales_person_phone", *item.SalesPersonPhone, 50); err != nil {
 				return err
 			}
 		}
-		if item.ContactPhone != nil {
-			if err := maxLen(i, "contact_phone", *item.ContactPhone, 50); err != nil {
+		if item.OfficePhone != nil {
+			if err := maxLen(i, "office_phone", *item.OfficePhone, 50); err != nil {
 				return err
 			}
 		}
@@ -299,6 +311,11 @@ func (h *SupplierHandler) BulkCreateSupplier(c *fiber.Ctx) error {
 		}
 		if item.PaymentTerms != nil {
 			if err := maxLen(i, "payment_terms", *item.PaymentTerms, 100); err != nil {
+				return err
+			}
+		}
+		if item.Currency != nil {
+			if err := maxLen(i, "currency", *item.Currency, 10); err != nil {
 				return err
 			}
 		}
@@ -314,34 +331,89 @@ func (h *SupplierHandler) BulkCreateSupplier(c *fiber.Ctx) error {
 	defer tx.Rollback(ctx)
 
 	results := make([]models.BulkInsertSupplierResultLine, 0, len(body.Items))
+	var importedCount, duplicateCount int
 	for i, item := range body.Items {
+		// DB CHECK constraint supplier_currency_check only allows 'BH'/'US' — same default
+		// as BulkInsertSupplier below, kept in sync so both endpoints behave identically.
+		currency := "BH"
+		if item.Currency != nil && *item.Currency != "" {
+			currency = *item.Currency
+		}
+
+		hasTaxID := item.TaxID != nil && strings.TrimSpace(*item.TaxID) != ""
+
+		if hasTaxID {
+			var existingID int64
+			err := tx.QueryRow(ctx, `SELECT id FROM supplier WHERE tax_id = $1`, *item.TaxID).Scan(&existingID)
+			if err != nil && err != pgx.ErrNoRows {
+				return err
+			}
+			if err == nil {
+				// Existing supplier with this tax_id — UPDATE only the fields this
+				// import payload carries. is_active and every other column are left
+				// untouched, per spec.
+				var updated models.BulkInsertSupplierResultLine
+				if err := tx.QueryRow(ctx, `
+					UPDATE supplier SET
+					    supplier_name=$1, address=$2, sales_person=$3, sales_person_phone=$4,
+					    office_phone=$5, contact_email=$6, payment_terms=$7, currency=$8,
+					    remarks=$9, updated_by=$10, updated_at=NOW()
+					WHERE id=$11
+					RETURNING id, supplier_name`,
+					item.SupplierName, item.Address, item.SalesPerson, item.SalesPersonPhone,
+					item.OfficePhone, item.ContactEmail, item.PaymentTerms, currency,
+					item.Remarks, claims.UserID, existingID,
+				).Scan(&updated.SupplierID, &updated.SupplierName); err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("item[%d]: %s", i, err.Error()))
+				}
+				updated.Status = "updated"
+				results = append(results, updated)
+				duplicateCount++
+				continue
+			}
+		}
+
+		// No tax_id (can't dedup — always inserted, flagged distinctly below) or
+		// tax_id not found among existing suppliers — insert as a new row.
 		var inserted models.BulkInsertSupplierResultLine
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO supplier
 				(supplier_name, tax_id, address,
-				 contact_name, contact_phone, contact_email, payment_terms,
+				 sales_person, sales_person_phone, office_phone, contact_email,
+				 payment_terms, currency, remarks,
 				 created_by, updated_by)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
 			RETURNING id, supplier_name`,
 			item.SupplierName, item.TaxID, item.Address,
-			item.ContactName, item.ContactPhone, item.ContactEmail, item.PaymentTerms,
+			item.SalesPerson, item.SalesPersonPhone, item.OfficePhone, item.ContactEmail,
+			item.PaymentTerms, currency, item.Remarks,
 			claims.UserID,
 		).Scan(&inserted.SupplierID, &inserted.SupplierName); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("item[%d]: %s", i, err.Error()))
 		}
+		if hasTaxID {
+			inserted.Status = "created"
+		} else {
+			inserted.Status = "created_no_tax_id"
+		}
 		results = append(results, inserted)
+		importedCount++
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
+	// Flat (not nested under "data") to match SupplierPage.tsx's exact accessors:
+	// `res.data.imported`, `res.data.duplicates`, `res.data.suppliers` — that page
+	// reads straight off the axios body, not body.data. See handler comment on
+	// BulkInsertSupplier below for the second call site's expectations.
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success": true,
-		"data": models.BulkInsertSupplierResponse{
-			Count:     len(results),
-			Suppliers: results,
-		},
+		"success":    true,
+		"count":      len(results),
+		"imported":   importedCount,
+		"duplicates": duplicateCount,
+		"suppliers":  results,
 	})
 }
 
@@ -430,6 +502,7 @@ func (h *SupplierHandler) BulkInsertSupplier(c *fiber.Ctx) error {
 	defer tx.Rollback(ctx)
 
 	results := make([]models.BulkInsertSupplierResultLine, 0, len(req.Suppliers))
+	var importedCount, duplicateCount int
 	for i, s := range req.Suppliers {
 		// DB CHECK constraint supplier_currency_check only allows 'BH'/'US' — despite
 		// database.md documenting a 'THB' default, that value would violate the live
@@ -439,32 +512,78 @@ func (h *SupplierHandler) BulkInsertSupplier(c *fiber.Ctx) error {
 			currency = *s.Currency
 		}
 
+		hasTaxID := s.TaxID != nil && strings.TrimSpace(*s.TaxID) != ""
+
+		if hasTaxID {
+			var existingID int64
+			err := tx.QueryRow(ctx, `SELECT id FROM supplier WHERE tax_id = $1`, *s.TaxID).Scan(&existingID)
+			if err != nil && err != pgx.ErrNoRows {
+				return err
+			}
+			if err == nil {
+				// Existing supplier with this tax_id — UPDATE only the fields this
+				// import payload carries (its wider field set vs BulkCreateSupplier's,
+				// since this endpoint's own payload includes them). is_active is left
+				// untouched, per spec.
+				var updated models.BulkInsertSupplierResultLine
+				if err := tx.QueryRow(ctx, `
+					UPDATE supplier SET
+					    supplier_name=$1, address=$2, contact_name=$3, contact_phone=$4,
+					    contact_email=$5, office_phone=$6, fax=$7, payment_terms=$8,
+					    currency=$9, sales_person=$10, sales_person_phone=$11, remarks=$12,
+					    updated_by=$13, updated_at=NOW()
+					WHERE id=$14
+					RETURNING id, supplier_name`,
+					s.SupplierName, s.Address, s.ContactName, s.ContactPhone,
+					s.ContactEmail, s.OfficePhone, s.Fax, s.PaymentTerms,
+					currency, s.SalesPerson, s.SalesPersonPhone, s.Remarks,
+					claims.UserID, existingID,
+				).Scan(&updated.SupplierID, &updated.SupplierName); err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("suppliers[%d]: %s", i, err.Error()))
+				}
+				updated.Status = "updated"
+				results = append(results, updated)
+				duplicateCount++
+				continue
+			}
+		}
+
 		var inserted models.BulkInsertSupplierResultLine
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO supplier
 				(supplier_name, tax_id, address,
 				 contact_name, contact_phone, contact_email, office_phone, fax,
-				 payment_terms, currency, sales_person, sales_person_phone, is_active, created_by, updated_by)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,$13,$13)
+				 payment_terms, currency, sales_person, sales_person_phone, remarks,
+				 is_active, created_by, updated_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14,$14)
 			RETURNING id, supplier_name`,
 			s.SupplierName, s.TaxID, s.Address,
 			s.ContactName, s.ContactPhone, s.ContactEmail, s.OfficePhone, s.Fax,
-			s.PaymentTerms, currency, s.SalesPerson, s.SalesPersonPhone, claims.UserID,
+			s.PaymentTerms, currency, s.SalesPerson, s.SalesPersonPhone, s.Remarks, claims.UserID,
 		).Scan(&inserted.SupplierID, &inserted.SupplierName); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("suppliers[%d]: %s", i, err.Error()))
 		}
+		if hasTaxID {
+			inserted.Status = "created"
+		} else {
+			inserted.Status = "created_no_tax_id"
+		}
 		results = append(results, inserted)
+		importedCount++
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
+	// Same flat shape as BulkCreateSupplier above. handleBulkSubmit (the /supplier/bulk
+	// caller in SupplierPage.tsx) reads `res.data?.data ?? res.data` so it tolerates either
+	// nesting, plus `body.count`/`body.suppliers` — both covered here too.
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success": true,
-		"data": models.BulkInsertSupplierResponse{
-			Count:     len(results),
-			Suppliers: results,
-		},
+		"success":    true,
+		"count":      len(results),
+		"imported":   importedCount,
+		"duplicates": duplicateCount,
+		"suppliers":  results,
 	})
 }

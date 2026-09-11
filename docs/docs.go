@@ -6081,7 +6081,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department",
+                "description": "รองรับ delivery_location (สถานที่ส่งของ), site_delivery_date (กำหนดส่งของหน้างาน), responsible_factory (โรงงานที่รับผิดชอบ) เป็น field เสริมคู่กับ department",
                 "consumes": [
                     "application/json"
                 ],
@@ -6151,7 +6151,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department",
+                "description": "รองรับ delivery_location (สถานที่ส่งของ), site_delivery_date (กำหนดส่งของหน้างาน), responsible_factory (โรงงานที่รับผิดชอบ) เป็น field เสริมคู่กับ department",
                 "consumes": [
                     "application/json"
                 ],
@@ -11831,6 +11831,9 @@ const docTemplate = `{
                 "payment_terms": {
                     "type": "string"
                 },
+                "remarks": {
+                    "type": "string"
+                },
                 "sales_person": {
                     "type": "string"
                 },
@@ -12231,6 +12234,12 @@ const docTemplate = `{
                 },
                 "requested_by": {
                     "type": "integer"
+                },
+                "responsible_factory": {
+                    "type": "string"
+                },
+                "site_delivery_date": {
+                    "type": "string"
                 },
                 "status": {
                     "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",
@@ -13678,6 +13687,12 @@ const docTemplate = `{
                     "description": "populated via JOIN (ไม่ได้เก็บใน table)",
                     "type": "string"
                 },
+                "responsible_factory": {
+                    "type": "string"
+                },
+                "site_delivery_date": {
+                    "type": "string"
+                },
                 "status": {
                     "type": "string"
                 },
@@ -14585,6 +14600,12 @@ const docTemplate = `{
                 },
                 "requested_by": {
                     "type": "integer"
+                },
+                "responsible_factory": {
+                    "type": "string"
+                },
+                "site_delivery_date": {
+                    "type": "string"
                 },
                 "status": {
                     "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",

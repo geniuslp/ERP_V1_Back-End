@@ -34,9 +34,11 @@ func (h *MemoHandler) generateMemoNo(ctx context.Context) (string, error) {
 
 func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, error) {
 	var m models.Memo
+	var siteDeliveryDate *time.Time
 	err := h.db.QueryRow(ctx, `
 		SELECT m.id, m.memo_no, m.title, m.project_code,
-		       m.requested_by, m.approver_id, m.department, m.delivery_location, m.note, m.status,
+		       m.requested_by, m.approver_id, m.department, m.delivery_location,
+		       m.site_delivery_date, m.responsible_factory, m.note, m.status,
 		       m.created_at, m.updated_at,
 		       u.full_name   AS requested_by_name,
 		       au.full_name  AS approver_name,
@@ -48,12 +50,17 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 		WHERE m.id = $1`, id,
 	).Scan(
 		&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
-		&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation, &m.Note, &m.Status,
+		&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation,
+		&siteDeliveryDate, &m.ResponsibleFactory, &m.Note, &m.Status,
 		&m.CreatedAt, &m.UpdatedAt,
 		&m.RequestedByName, &m.ApproverName, &m.ProjectName,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if siteDeliveryDate != nil {
+		s := siteDeliveryDate.Format("2006-01-02")
+		m.SiteDeliveryDate = &s
 	}
 
 	rows, err := h.db.Query(ctx, `
@@ -198,7 +205,8 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 
 	dataSQL := `
 		SELECT m.id, m.memo_no, m.title, m.project_code,
-		       m.requested_by, m.approver_id, m.department, m.delivery_location, m.note, m.status,
+		       m.requested_by, m.approver_id, m.department, m.delivery_location,
+		       m.site_delivery_date, m.responsible_factory, m.note, m.status,
 		       m.created_at, m.updated_at,
 		       u.full_name   AS requested_by_name,
 		       au.full_name  AS approver_name,
@@ -222,13 +230,19 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 	items := []models.Memo{}
 	for rows.Next() {
 		var m models.Memo
+		var siteDeliveryDate *time.Time
 		if err := rows.Scan(
 			&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
-			&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation, &m.Note, &m.Status,
+			&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation,
+			&siteDeliveryDate, &m.ResponsibleFactory, &m.Note, &m.Status,
 			&m.CreatedAt, &m.UpdatedAt,
 			&m.RequestedByName, &m.ApproverName, &m.ProjectName,
 		); err != nil {
 			return err
+		}
+		if siteDeliveryDate != nil {
+			s := siteDeliveryDate.Format("2006-01-02")
+			m.SiteDeliveryDate = &s
 		}
 		items = append(items, m)
 	}
@@ -267,7 +281,7 @@ func (h *MemoHandler) GetByID(c *fiber.Ctx) error {
 
 // Create godoc
 // @Summary      สร้าง Memo ใหม่
-// @Description  รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department
+// @Description  รองรับ delivery_location (สถานที่ส่งของ), site_delivery_date (กำหนดส่งของหน้างาน), responsible_factory (โรงงานที่รับผิดชอบ) เป็น field เสริมคู่กับ department
 // @Tags         Memo
 // @Security     BearerAuth
 // @Accept       json
@@ -347,11 +361,13 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	err = tx.QueryRow(ctx, `
 		INSERT INTO public.memo
 		    (memo_no, title, project_code, requested_by, approver_id,
-		     department, delivery_location, note, status, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+		     department, delivery_location, site_delivery_date, responsible_factory,
+		     note, status, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
 		RETURNING id`,
 		memoNo, req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
-		req.Department, req.DeliveryLocation, req.Note, status, claims.UserID,
+		req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
+		req.Note, status, claims.UserID,
 	).Scan(&memoID)
 	if err != nil {
 		return err
@@ -418,7 +434,7 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      แก้ไข Memo
-// @Description  รองรับ delivery_location (สถานที่ส่งของ) เป็น field เสริมคู่กับ department
+// @Description  รองรับ delivery_location (สถานที่ส่งของ), site_delivery_date (กำหนดส่งของหน้างาน), responsible_factory (โรงงานที่รับผิดชอบ) เป็น field เสริมคู่กับ department
 // @Tags         Memo
 // @Security     BearerAuth
 // @Accept       json
@@ -474,19 +490,23 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 		result, err = tx.Exec(ctx, `
 			UPDATE public.memo
 			SET title=$1, project_code=$2, requested_by=$3,
-			    department=$4, delivery_location=$5, note=$6, updated_by=$7, updated_at=NOW()
-			WHERE id=$8`,
+			    department=$4, delivery_location=$5, site_delivery_date=$6, responsible_factory=$7,
+			    note=$8, updated_by=$9, updated_at=NOW()
+			WHERE id=$10`,
 			req.Title, req.ProjectCode, req.RequestedBy,
-			req.Department, req.DeliveryLocation, req.Note, claims.UserID, id,
+			req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
+			req.Note, claims.UserID, id,
 		)
 	} else {
 		result, err = tx.Exec(ctx, `
 			UPDATE public.memo
 			SET title=$1, project_code=$2, requested_by=$3, approver_id=$4,
-			    department=$5, delivery_location=$6, note=$7, updated_by=$8, updated_at=NOW()
-			WHERE id=$9`,
+			    department=$5, delivery_location=$6, site_delivery_date=$7, responsible_factory=$8,
+			    note=$9, updated_by=$10, updated_at=NOW()
+			WHERE id=$11`,
 			req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
-			req.Department, req.DeliveryLocation, req.Note, claims.UserID, id,
+			req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
+			req.Note, claims.UserID, id,
 		)
 	}
 	if err != nil {

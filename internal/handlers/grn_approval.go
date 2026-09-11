@@ -2,13 +2,16 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"erp-api/internal/middleware"
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -55,38 +58,78 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
+	// grn_no is generated from an unlocked MAX(id)+1 read, so concurrent/double-click submits
+	// can race and collide on the grn_no unique constraint — retry with a freshly generated
+	// number on a duplicate-key error instead of 500ing.
+	const maxAttempts = 3
+	var grnID int64
+	var grnNo string
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		grnID, grnNo, err = h.createGRNTx(context.Background(), claims.UserID, req, supplierID)
+		if err == nil {
+			break
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "grn_no") {
+			if attempt == maxAttempts {
+				return fiber.NewError(fiber.StatusConflict, "failed to generate unique GRN number, please try again")
+			}
+			continue
+		}
+		return err
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"success": true,
+		"data":    fiber.Map{"grn_id": grnID, "grn_no": grnNo},
+	})
+}
+
+// createGRNTx runs one attempt of the GRN header+lines insert inside its own transaction,
+// generating a fresh grn_no on each call. Returns the pgconn duplicate-key error unwrapped so
+// the caller can decide whether to retry.
+func (h *GRNHandler) createGRNTx(ctx context.Context, userID int64, req models.CreateGRNRequest, supplierID *int64) (int64, string, error) {
 	now := time.Now()
 	var seq int64
-	h.db.QueryRow(context.Background(), `SELECT COALESCE(MAX(id),0)+1 FROM grn`).Scan(&seq)
+	if err := h.db.QueryRow(ctx, `SELECT COALESCE(MAX(id),0)+1 FROM grn`).Scan(&seq); err != nil {
+		return 0, "", err
+	}
 	grnNo := fmt.Sprintf("GRN-%s-%06d", now.Format("2006"), seq)
 
-	tx, _ := h.db.Begin(context.Background())
-	defer tx.Rollback(context.Background())
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return 0, "", err
+	}
+	defer tx.Rollback(ctx)
 
 	var grnID int64
-	err := tx.QueryRow(context.Background(), `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, status, quality_status, received_by, remarks)
 		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,'DRAFT','PENDING',$6,$7)
 		RETURNING id`,
-		grnNo, req.POID, req.WarehouseCode, supplierID, req.DeliveryNote, claims.UserID, req.Remarks,
+		grnNo, req.POID, req.WarehouseCode, supplierID, req.DeliveryNote, userID, req.Remarks,
 	).Scan(&grnID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to create GRN")
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return 0, "", pgErr
+		}
+		return 0, "", fiber.NewError(fiber.StatusInternalServerError, "failed to create GRN")
 	}
 
 	for i, line := range req.Lines {
-		tx.Exec(context.Background(), `
+		tx.Exec(ctx, `
 			INSERT INTO grn_line (grn_id, line_no, po_line_id, mat_code, zone_id, qty_received, qty_accepted, qty_rejected, quality_remarks)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 			grnID, i+1, line.POLineID, line.MatCode, line.ZoneID,
 			line.QtyReceived, line.QtyAccepted, line.QtyRejected, line.QualityRemarks)
 	}
 
-	tx.Commit(context.Background())
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success": true,
-		"data":    fiber.Map{"grn_id": grnID, "grn_no": grnNo},
-	})
+	if err := tx.Commit(ctx); err != nil {
+		return 0, "", err
+	}
+	return grnID, grnNo, nil
 }
 
 // ConfirmGRN godoc

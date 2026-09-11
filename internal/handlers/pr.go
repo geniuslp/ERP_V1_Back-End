@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -92,17 +93,31 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 	size := min(c.QueryInt("page_size", 20), 100)
 	offset := (page - 1) * size
 
+	// v_pr_full (migrations/010_pr_memo_view.sql) is NOT applied on this live DB — it also
+	// joins on pr.location_code, a column that no longer exists on purchase_request (the
+	// table only has location_text now), so even re-running that migration as-is would fail.
+	// Queries directly against purchase_request + joins instead, per CLAUDE.md's standing
+	// "no VIEW in the DB — join directly" rule. location_type is dropped (it only existed
+	// via the location-master join this view depended on, and nothing in the frontend reads
+	// it — grepped clean). memo_id/memo_no added here (was previously only on GET /pr/:id
+	// equivalents; PR list never carried it before this fix).
 	var total int64
-	err := h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM v_pr_full`).Scan(&total)
+	err := h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM purchase_request`).Scan(&total)
 	if err != nil {
 		log.Printf("❌ count error: %v", err)
 		return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
 	}
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT pr_id, pr_no, pr_date, required_date, pr_status, priority,
-		       requested_by_name, location_name, location_type, warehouse_name, line_count, remarks, created_at
-		FROM v_pr_full ORDER BY created_at DESC LIMIT $1 OFFSET $2`, size, offset)
+		SELECT pr.id, pr.pr_no, pr.pr_date, pr.required_date, pr.status, pr.priority,
+		       u.full_name, pr.location_text, w.warehouse_name,
+		       (SELECT COUNT(*) FROM purchase_request_line prl WHERE prl.pr_id = pr.id),
+		       pr.remarks, pr.created_at, pr.memo_id, m.memo_no
+		FROM purchase_request pr
+		LEFT JOIN users u ON u.id = pr.requested_by
+		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
+		LEFT JOIN memo m ON m.id = pr.memo_id
+		ORDER BY pr.created_at DESC LIMIT $1 OFFSET $2`, size, offset)
 	if err != nil {
 		log.Printf("❌ query error: %v", err)
 		return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
@@ -116,13 +131,14 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 		RequiredDate  *time.Time `json:"required_date,omitempty"`
 		Status        string     `json:"status"`
 		Priority      string     `json:"priority"`
-		RequestedBy   string     `json:"requested_by"`
-		LocationName  string     `json:"location_name"`
-		LocationType  string     `json:"location_type"`
+		RequestedBy   *string    `json:"requested_by,omitempty"`
+		LocationName  *string    `json:"location_name,omitempty"`
 		WarehouseName *string    `json:"warehouse_name,omitempty"`
 		LineCount     int        `json:"line_count"`
 		Remarks       *string    `json:"remarks,omitempty"`
 		CreatedAt     time.Time  `json:"created_at"`
+		MemoID        *int64     `json:"memo_id,omitempty"`
+		MemoNo        *string    `json:"memo_no,omitempty"`
 	}
 
 	var items []PRRow
@@ -130,8 +146,8 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 		var r PRRow
 		if err := rows.Scan(
 			&r.PRID, &r.PRNo, &r.PRDate, &r.RequiredDate, &r.Status, &r.Priority,
-			&r.RequestedBy, &r.LocationName, &r.LocationType, &r.WarehouseName,
-			&r.LineCount, &r.Remarks, &r.CreatedAt,
+			&r.RequestedBy, &r.LocationName, &r.WarehouseName,
+			&r.LineCount, &r.Remarks, &r.CreatedAt, &r.MemoID, &r.MemoNo,
 		); err != nil {
 			log.Printf("❌ scan error: %v", err)
 			return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
@@ -209,6 +225,29 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
 	}
 
+	// order_type='stock' no longer accepts warehouse_code directly from the client — it's
+	// derived server-side from the selected project's project.warehouse_code (populated only
+	// for the 4 internal warehouse-projects, 2026-WH-001..004). Any warehouse_code the client
+	// sent is overridden below.
+	if req.OrderType == "stock" {
+		if req.ProjectCode == nil || strings.TrimSpace(*req.ProjectCode) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "project_code is required when order_type is 'stock'")
+		}
+		var stockWarehouseCode *string
+		if err := h.db.QueryRow(context.Background(),
+			`SELECT warehouse_code FROM project WHERE project_code=$1`, *req.ProjectCode,
+		).Scan(&stockWarehouseCode); err != nil {
+			if err == pgx.ErrNoRows {
+				return fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+			}
+			return err
+		}
+		if stockWarehouseCode == nil || strings.TrimSpace(*stockWarehouseCode) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+		}
+		req.WarehouseCode = stockWarehouseCode
+	}
+
 	if req.PRType == "" {
 		req.PRType = "PO_WO"
 	}
@@ -247,25 +286,69 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
-	tx, err := h.db.Begin(context.Background())
-	if err != nil {
+	// pr_no is client-suggested (from GET /pr/next-number) but that read is unlocked and can
+	// race under concurrent/double-click submits, so the insert itself is retried on a unique
+	// violation: first attempt uses the client's number, later attempts regenerate a fresh one
+	// server-side inside the transaction so two racing requests can't collide twice in a row.
+	const maxAttempts = 3
+	prNo := req.PRNo
+	var prID int64
+	var err error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		prID, err = h.createPRTx(context.Background(), prNo, req)
+		if err == nil {
+			break
+		}
+
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "purchase_request_pr_no_key" {
+			if attempt == maxAttempts {
+				return fiber.NewError(fiber.StatusConflict, "failed to generate unique PR number, please try again")
+			}
+			nextNo, genErr := h.nextPRNumberLocked(context.Background())
+			if genErr != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "failed to generate PR number: "+genErr.Error())
+			}
+			prNo = nextNo
+			continue
+		}
 		return err
 	}
-	defer tx.Rollback(context.Background())
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"success": true,
+		"data":    fiber.Map{"id": prID, "pr_no": prNo},
+	})
+}
+
+// createPRTx runs one attempt of the PR header+lines+attachments insert inside its own
+// transaction, using prNo as the pr_no. Returns the pgconn duplicate-key error unwrapped so the
+// caller can decide whether to retry with a freshly generated number.
+func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.CreatePRRequest) (int64, error) {
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
 
 	// 1. Insert PR header
 	var prID int64
-	err = tx.QueryRow(context.Background(), `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO purchase_request
 		    (pr_no, pr_date, requested_by, location_text, warehouse_code, required_date,
 		     project_code, dept_code, status, order_type, pr_type, job_code, remarks, memo_id, created_at, updated_at, created_by, updated_by)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now(),$15,$15)
 		RETURNING id`,
-		req.PRNo, req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
+		prNo, req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
 		req.RequiredDate, req.ProjectCode, req.DeptCode, req.Status, req.OrderType, req.PRType, req.JobCode, req.Remarks, req.MemoID, req.CreatedBy,
 	).Scan(&prID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return 0, pgErr
+		}
+		return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
 	}
 
 	// 2. Insert lines
@@ -274,12 +357,12 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		if line.DeductStock != nil {
 			deductStock = *line.DeductStock
 		}
-		if _, err := tx.Exec(context.Background(), `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock)
 			VALUES ($1,$2,$3,$4,'OPEN',$5,$6)`,
 			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock,
 		); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
+			return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
 		}
 	}
 
@@ -287,25 +370,47 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	// file is actually on disk before creating a row that references it (see fileurl.go).
 	for _, att := range req.Attachments {
 		if _, err := os.Stat(toRelativeDiskPath(att.FilePath)); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
+			return 0, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
 		}
-		if _, err := tx.Exec(context.Background(), `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO pr_attachment (pr_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at)
 			VALUES ($1,$2,$3,$4,$5,$6,now())`,
 			prID, att.FileName, att.FilePath, att.FileSize, att.FileType, req.CreatedBy,
 		); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "failed to insert attachment: "+err.Error())
+			return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to insert attachment: "+err.Error())
 		}
 	}
 
-	if err := tx.Commit(context.Background()); err != nil {
-		return err
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
 	}
+	return prID, nil
+}
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success": true,
-		"data":    fiber.Map{"id": prID, "pr_no": req.PRNo},
-	})
+// nextPRNumberLocked regenerates the next PR number (same PR<YYYYMM>-<seq> format as
+// GET /pr/next-number) for use as a retry value after a unique-constraint collision.
+func (h *PRHandler) nextPRNumberLocked(ctx context.Context) (string, error) {
+	now := time.Now()
+	prefix := fmt.Sprintf("PR%04d%02d", now.Year(), int(now.Month()))
+	pattern := prefix + "-%"
+
+	var lastNo string
+	err := h.db.QueryRow(ctx, `
+		SELECT pr_no FROM purchase_request
+		WHERE pr_no LIKE $1
+		  AND status NOT IN ('CANCELLED')
+		ORDER BY pr_no DESC
+		LIMIT 1`, pattern).Scan(&lastNo)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Sprintf("%s-0001", prefix), nil
+		}
+		return "", err
+	}
+	parts := strings.Split(lastNo, "-")
+	seq, _ := strconv.Atoi(parts[len(parts)-1])
+	return fmt.Sprintf("%s-%04d", prefix, seq+1), nil
 }
 
 // SubmitPR godoc
@@ -810,6 +915,27 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
 	}
 
+	// Same server-side derivation as Create: for order_type='stock', warehouse_code comes
+	// from the selected project's project.warehouse_code, never directly from the client.
+	if orderType == "stock" {
+		if req.ProjectCode == nil || strings.TrimSpace(*req.ProjectCode) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "project_code is required when order_type is 'stock'")
+		}
+		var stockWarehouseCode *string
+		if err := h.db.QueryRow(ctx,
+			`SELECT warehouse_code FROM project WHERE project_code=$1`, *req.ProjectCode,
+		).Scan(&stockWarehouseCode); err != nil {
+			if err == pgx.ErrNoRows {
+				return fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+			}
+			return err
+		}
+		if stockWarehouseCode == nil || strings.TrimSpace(*stockWarehouseCode) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+		}
+		req.WarehouseCode = stockWarehouseCode
+	}
+
 	prType := req.PRType
 	if prType == "" {
 		prType = currentPRType
@@ -832,15 +958,22 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `
+	// "AND status='DRAFT'" is enforced in the WHERE clause itself, not just via the pre-check
+	// above — closes the race where another request moves the PR out of DRAFT between the
+	// SELECT and this UPDATE. RowsAffected==0 means that happened (or the id vanished).
+	tag, err := tx.Exec(ctx, `
 		UPDATE purchase_request SET
 		    pr_date=$1, requested_by=$2, location_text=$3, warehouse_code=$4,
 		    required_date=$5, project_code=$6, dept_code=$7, order_type=$8, pr_type=$9, job_code=$10, remarks=$11, updated_at=NOW(), updated_by=$12
-		WHERE id=$13`,
+		WHERE id=$13 AND status='DRAFT'`,
 		req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
 		req.RequiredDate, req.ProjectCode, req.DeptCode, orderType, prType, jobCode, req.Remarks, claims.UserID, prID,
-	); err != nil {
+	)
+	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update PR: "+err.Error())
+	}
+	if tag.RowsAffected() == 0 {
+		return fiber.NewError(fiber.StatusConflict, "PR not found or not editable")
 	}
 
 	// No active PO can reference any of this PR's lines at this point (guaranteed by the
@@ -884,8 +1017,7 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"success": true,
-		"message": "PR updated",
-		"data":    fiber.Map{"pr_id": prID, "status": "DRAFT"},
+		"data":    fiber.Map{"id": prID, "no": prNo},
 	})
 }
 

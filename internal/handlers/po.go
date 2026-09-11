@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -634,10 +635,14 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 // resolvePOAutoFields determines project_code, requested_by and warehouse_code for a PO
 // being created or updated. When prID is set, all three are always taken server-side from
 // the referenced PR (which must be COMPLETED, and every pr_line_id in lines must belong to
-// it) — client-supplied values are ignored on that path. When prID is nil, the client-supplied
-// values are used as-is after validating project_code/warehouse_code against their tables.
+// it) — client-supplied values are ignored on that path. When prID is nil (no-PR flow) and
+// orderType is 'stock', project_code is required and warehouse_code is derived server-side
+// from that project's project.warehouse_code (populated only for the 4 internal
+// warehouse-projects, 2026-WH-001..004) — any client-supplied warehouse_code is ignored.
+// Otherwise (prID nil, orderType 'cost'), the client-supplied values are used as-is after
+// validating project_code/warehouse_code against their tables.
 func (h *POHandler) resolvePOAutoFields(
-	ctx context.Context, prID *int64, reqProjectCode *string, reqRequestedBy *int64,
+	ctx context.Context, prID *int64, orderType string, reqProjectCode *string, reqRequestedBy *int64,
 	reqWarehouseCode *string, lines []models.CreatePOLine,
 ) (projectCode *string, requestedBy *int64, warehouseCode *string, prJobCode *string, prLineCostSubgroup map[int64]*int64, err error) {
 	if prID != nil {
@@ -669,6 +674,27 @@ func (h *POHandler) resolvePOAutoFields(
 			}
 		}
 		return projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, nil
+	}
+
+	if orderType == "stock" {
+		// warehouse_code is derived, not chosen — never trust reqWarehouseCode here.
+		if reqProjectCode == nil || strings.TrimSpace(*reqProjectCode) == "" {
+			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "project_code is required when order_type is 'stock'")
+		}
+		var stockWarehouseCode *string
+		if err := h.db.QueryRow(ctx,
+			`SELECT warehouse_code FROM project WHERE project_code=$1`, *reqProjectCode,
+		).Scan(&stockWarehouseCode); err != nil {
+			if err == pgx.ErrNoRows {
+				return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+			}
+			return nil, nil, nil, nil, nil, err
+		}
+		if stockWarehouseCode == nil || strings.TrimSpace(*stockWarehouseCode) == "" {
+			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+		}
+		requestedBy = reqRequestedBy
+		return reqProjectCode, requestedBy, stockWarehouseCode, nil, nil, nil
 	}
 
 	if reqProjectCode != nil && strings.TrimSpace(*reqProjectCode) != "" {
@@ -819,7 +845,7 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "approver not found")
 	}
 
-	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, err := h.resolvePOAutoFields(ctx, req.PRID, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
+	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, err := h.resolvePOAutoFields(ctx, req.PRID, req.OrderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
 		return err
 	}
@@ -852,15 +878,55 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
+	// po_no generation (nextPONumber) reads MAX via an unlocked LIKE/ORDER BY query, so
+	// concurrent/double-click submits can race and collide on the po_no unique constraint.
+	// Retry a few times: first attempt lets nextPONumber pick, later attempts just re-run it
+	// inside a fresh transaction so a losing request gets the next free number instead of 500ing.
+	const maxAttempts = 3
+	var poID int64
+	var poNo string
+	var approvalID *int64
+	var totalAmount, vatAmount, netAmount float64
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		poID, poNo, approvalID, totalAmount, vatAmount, netAmount, err = h.createPOTx(ctx, claims.UserID, req, status, warehouseCode, projectCode, jobCode, requestedBy, prLineCostSubgroup)
+		if err == nil {
+			break
+		}
+
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "po_no") {
+			if attempt == maxAttempts {
+				return fiber.NewError(fiber.StatusConflict, "failed to generate unique PO number, please try again")
+			}
+			continue
+		}
+		return err
+	}
+
+	data := fiber.Map{
+		"po_id": poID, "po_no": poNo, "status": status,
+		"total_amount": totalAmount, "vat_amount": vatAmount, "net_amount": netAmount,
+	}
+	if approvalID != nil {
+		data["approval_request_id"] = *approvalID
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": data})
+}
+
+// createPOTx runs one attempt of the PO header+lines+status-log+approval-request+attachments
+// insert inside its own transaction, generating a fresh po_no on each call. Returns the pgconn
+// duplicate-key error unwrapped so the caller can decide whether to retry.
+func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.CreatePORequest, status string, warehouseCode, projectCode, jobCode *string, requestedBy *int64, prLineCostSubgroup map[int64]*int64) (poID int64, poNo string, approvalID *int64, totalAmount, vatAmount, netAmount float64, err error) {
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		return err
+		return 0, "", nil, 0, 0, 0, err
 	}
 	defer tx.Rollback(ctx)
 
-	poNo, err := nextPONumber(ctx, tx)
+	poNo, err = nextPONumber(ctx, tx)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to generate PO number: "+err.Error())
+		return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to generate PO number: "+err.Error())
 	}
 
 	useDiscount := req.UseDiscount != nil && *req.UseDiscount
@@ -879,7 +945,7 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		discType                                      string
 	}
 	calcs := make([]lineCalc, len(req.Lines))
-	var totalAmount, discountAmount, whtAmount float64
+	var discountAmount, whtAmount float64
 	for i, l := range req.Lines {
 		lc := lineCalc{base: l.QtyOrdered * l.UnitPrice}
 		lc.discType = l.DiscType
@@ -907,15 +973,14 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		discountAmount += lc.discAmt
 		whtAmount += lc.whtAmt
 	}
-	vatAmount := totalAmount - discountAmount
+	vatAmount = totalAmount - discountAmount
 	if useVAT {
 		vatAmount *= 0.07
 	} else {
 		vatAmount = 0
 	}
-	netAmount := totalAmount - discountAmount + vatAmount - whtAmount
+	netAmount = totalAmount - discountAmount + vatAmount - whtAmount
 
-	var poID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO purchase_order
 		  (po_no, po_date, supplier_id, pr_id, rfq_id, location_text, warehouse_code, project_code, requested_by, approver_id, ref, currency,
@@ -927,23 +992,29 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		poNo, req.SupplierID, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref, req.Currency,
 		totalAmount, vatAmount, netAmount, req.ExpectedDate,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
-		status, req.OrderType, *jobCode, req.PaymentTerms, req.Remarks, req.ReceiverName, req.ReceiverPhone, claims.UserID,
+		status, req.OrderType, *jobCode, req.PaymentTerms, req.Remarks, req.ReceiverName, req.ReceiverPhone, userID,
 	).Scan(&poID)
 	if err != nil {
-		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
-			detail := "invalid supplier_id, pr_id, rfq_id, warehouse_code or project_code"
-			if pgErr.ConstraintName != "" {
-				detail += " (constraint: " + pgErr.ConstraintName + ")"
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			if pgErr.Code == "23505" {
+				return 0, "", nil, 0, 0, 0, pgErr
 			}
-			return fiber.NewError(fiber.StatusBadRequest, detail)
+			if pgErr.Code == "23503" {
+				detail := "invalid supplier_id, pr_id, rfq_id, warehouse_code or project_code"
+				if pgErr.ConstraintName != "" {
+					detail += " (constraint: " + pgErr.ConstraintName + ")"
+				}
+				return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusBadRequest, detail)
+			}
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to create PO: "+err.Error())
+		return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to create PO: "+err.Error())
 	}
 
 	for i, line := range req.Lines {
 		desc, err := normalizeDescription(line.Description)
 		if err != nil {
-			return err
+			return 0, "", nil, 0, 0, 0, err
 		}
 		lc := calcs[i]
 		costSubgroupID := resolveLineCostSubgroupID(line.CostSubgroupID, line.PRLineID, prLineCostSubgroup)
@@ -958,9 +1029,9 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 			desc, line.Remarks, costSubgroupID,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
+				return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code or pr_line_id", i))
 			}
-			return fiber.NewError(fiber.StatusInternalServerError, "line insert error: "+err.Error())
+			return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "line insert error: "+err.Error())
 		}
 	}
 
@@ -972,34 +1043,33 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 			}
 		}
 		if err := reconcilePRLineQty(ctx, tx, nil, newRefs); err != nil {
-			return err
+			return 0, "", nil, 0, 0, 0, err
 		}
 	}
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO po_status_log (po_id, from_status, to_status, changed_by, remarks)
-		VALUES ($1,NULL,$2,$3,'PO created')`, poID, status, claims.UserID,
+		VALUES ($1,NULL,$2,$3,'PO created')`, poID, status, userID,
 	); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "status log error: "+err.Error())
+		return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "status log error: "+err.Error())
 	}
 
 	// Submitting straight to PENDING_APPROVAL opens the step-1 approval request.
-	var approvalID *int64
 	if status == "PENDING_APPROVAL" {
 		var hasConfig bool
 		if err := tx.QueryRow(ctx, `
 			SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PO' AND step_no=1 AND is_active=true)`,
 		).Scan(&hasConfig); err != nil {
-			return err
+			return 0, "", nil, 0, 0, 0, err
 		}
 		if hasConfig {
 			var id int64
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
 				VALUES ('PO',$1,$2,1,$3,$4,'PENDING',$5)
-				RETURNING id`, poID, poNo, claims.UserID, req.ApproverID, totalAmount,
+				RETURNING id`, poID, poNo, userID, req.ApproverID, totalAmount,
 			).Scan(&id); err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, "approval request error: "+err.Error())
+				return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "approval request error: "+err.Error())
 			}
 			approvalID = &id
 		}
@@ -1013,7 +1083,7 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 			SELECT $1, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at, id
 			FROM pr_attachment WHERE pr_id = $2`, poID, *req.PRID,
 		); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "failed to copy PR attachments: "+err.Error())
+			return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to copy PR attachments: "+err.Error())
 		}
 	}
 
@@ -1023,23 +1093,16 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	})
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
-		VALUES ('purchase_order',$1,'INSERT',$2,$3)`, poID, claims.UserID, auditData,
+		VALUES ('purchase_order',$1,'INSERT',$2,$3)`, poID, userID, auditData,
 	); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "audit log error: "+err.Error())
+		return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "audit log error: "+err.Error())
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return err
+		return 0, "", nil, 0, 0, 0, err
 	}
 
-	data := fiber.Map{
-		"po_id": poID, "po_no": poNo, "status": status,
-		"total_amount": totalAmount, "vat_amount": vatAmount, "net_amount": netAmount,
-	}
-	if approvalID != nil {
-		data["approval_request_id"] = *approvalID
-	}
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": data})
+	return poID, poNo, approvalID, totalAmount, vatAmount, netAmount, nil
 }
 
 // GetAvailablePRs godoc
@@ -1282,7 +1345,7 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_id is required when order_type is 'cost'")
 	}
 
-	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, err := h.resolvePOAutoFields(ctx, req.PRID, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
+	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, err := h.resolvePOAutoFields(ctx, req.PRID, orderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
 		return err
 	}
@@ -1746,7 +1809,41 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		}
 	}
 
-	if req.ProjectCode != nil && strings.TrimSpace(*req.ProjectCode) != "" {
+	// order_type is never editable via this endpoint (not on EditApprovedPORequest, not in
+	// the UPDATE below) — it's fixed at PO-create time, so the existing row is the only
+	// source of truth for it here.
+	var currentStatus, currentStatusReceive, orderType string
+	var createdAt time.Time
+	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, order_type, created_at FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus, &currentStatusReceive, &orderType, &createdAt); err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "PO not found")
+	}
+
+	// Same server-side derivation as Create/Update: for order_type='stock', warehouse_code
+	// is derived from project.warehouse_code, never trusted directly from the client. Not
+	// routed through resolvePOAutoFields — that function's other job is deciding between the
+	// pr_id-linked vs no-PR paths, and pr_id isn't a field this endpoint reads or edits at
+	// all (order_type/pr_id are both fixed post-creation here), so calling it would mean
+	// passing an irrelevant prID and discarding return values (prJobCode/prLineCostSubgroup)
+	// this flow already computes its own way above. Duplicating just the derivation itself
+	// is the cleaner fit for this handler's existing structure.
+	if orderType == "stock" {
+		if req.ProjectCode == nil || strings.TrimSpace(*req.ProjectCode) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "project_code is required when order_type is 'stock'")
+		}
+		var stockWarehouseCode *string
+		if err := h.db.QueryRow(ctx,
+			`SELECT warehouse_code FROM project WHERE project_code=$1`, *req.ProjectCode,
+		).Scan(&stockWarehouseCode); err != nil {
+			if err == pgx.ErrNoRows {
+				return fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+			}
+			return err
+		}
+		if stockWarehouseCode == nil || strings.TrimSpace(*stockWarehouseCode) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+		}
+		req.WarehouseCode = stockWarehouseCode
+	} else if req.ProjectCode != nil && strings.TrimSpace(*req.ProjectCode) != "" {
 		var exists bool
 		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, *req.ProjectCode).Scan(&exists); err != nil {
 			return err
@@ -1756,11 +1853,6 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		}
 	}
 
-	var currentStatus, currentStatusReceive string
-	var createdAt time.Time
-	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, created_at FROM purchase_order WHERE id=$1`, poID).Scan(&currentStatus, &currentStatusReceive, &createdAt); err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "PO not found")
-	}
 	if currentStatus != "APPROVED" && currentStatus != "PENDING_REAPPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PO must be APPROVED or PENDING_REAPPROVAL to use this endpoint (current status: %s)", currentStatus))
 	}
@@ -2505,8 +2597,8 @@ type poPrintItem struct {
 	// per-line discount on the printed Total. Renamed/added to match.
 	Disc     float64 `json:"disc"`
 	DiscType string  `json:"discType"`
-	VatPct       float64 `json:"vatPct"`
-	WhtPct       float64 `json:"whtPct"`
+	VatPct   float64 `json:"vatPct"`
+	WhtPct   float64 `json:"whtPct"`
 }
 
 // poPrintData is the full response shape consumed by the PurchaseOrderPrint component.
@@ -2516,13 +2608,13 @@ type poPrintData struct {
 	// (COUNT of po_edit_log rows). 0 = original. poNo itself never changes; the print
 	// component composes a suffix like "#R2" from this when > 0 — required correct here
 	// since this is the literal printed/legal PO document.
-	RevisionRound    int             `json:"revisionRound"`
-	PODate           string          `json:"poDate"`
-	PRNo             string          `json:"prNo"`
-	DeliveryDate     string          `json:"deliveryDate"`
+	RevisionRound int    `json:"revisionRound"`
+	PODate        string `json:"poDate"`
+	PRNo          string `json:"prNo"`
+	DeliveryDate  string `json:"deliveryDate"`
 	// Project is the raw project_code — kept for any existing consumer, but
 	// the print view now shows ProjectName instead (see PurchaseOrderPrint.tsx).
-	Project     string `json:"project"`
+	Project string `json:"project"`
 	// ProjectName resolved via LEFT JOIN project pj ON pj.project_code =
 	// po.project_code — empty string when the PO has no project_code or it
 	// doesn't match any project row.
@@ -2530,23 +2622,23 @@ type poPrintData struct {
 	DeliveryPlace string  `json:"deliveryPlace"`
 	Job           string  `json:"job"`
 	QuotationNo   string  `json:"quotationNo"`
-	Tel              *string         `json:"tel"`
+	Tel           *string `json:"tel"`
 	// ReceiverName/ReceiverPhone — purchase_order.receiver_name/receiver_phone,
 	// both nullable free text (same fields GetDetail already exposes).
-	ReceiverName     *string         `json:"receiverName"`
-	ReceiverPhone    *string         `json:"receiverPhone"`
-	Supplier         poPrintSupplier `json:"supplier"`
-	Items            []poPrintItem   `json:"items"`
-	ExtraDiscAmt     float64         `json:"extraDiscAmt"`
-	ShippingAmt      float64         `json:"shippingAmt"`
-	VatAmt           float64         `json:"vatAmt"`
-	WhtAmt           float64         `json:"whtAmt"`
-	TotalAmt         float64         `json:"totalAmt"`
-	NetAmt           float64         `json:"netAmt"`
-	Remark           *string         `json:"remark"`
-	UseDiscount      bool            `json:"useDiscount"`
-	UseVat           bool            `json:"useVat"`
-	UseWht           bool            `json:"useWht"`
+	ReceiverName  *string         `json:"receiverName"`
+	ReceiverPhone *string         `json:"receiverPhone"`
+	Supplier      poPrintSupplier `json:"supplier"`
+	Items         []poPrintItem   `json:"items"`
+	ExtraDiscAmt  float64         `json:"extraDiscAmt"`
+	ShippingAmt   float64         `json:"shippingAmt"`
+	VatAmt        float64         `json:"vatAmt"`
+	WhtAmt        float64         `json:"whtAmt"`
+	TotalAmt      float64         `json:"totalAmt"`
+	NetAmt        float64         `json:"netAmt"`
+	Remark        *string         `json:"remark"`
+	UseDiscount   bool            `json:"useDiscount"`
+	UseVat        bool            `json:"useVat"`
+	UseWht        bool            `json:"useWht"`
 }
 
 // PrintData godoc
@@ -2688,16 +2780,16 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 	}
 
 	data := poPrintData{
-		PONo:             poNo,
-		RevisionRound:    revisionRound,
-		PODate:           poDate.Format("02/01/2006"),
-		PRNo:             derefString(prNo),
-		DeliveryDate:     formatPrintDate(expectedDate),
-		Project:          derefString(projectCode),
-		ProjectName:      derefString(projectName),
-		DeliveryPlace:    derefString(locationText),
-		ReceiverName:     receiverName,
-		ReceiverPhone:    receiverPhone,
+		PONo:          poNo,
+		RevisionRound: revisionRound,
+		PODate:        poDate.Format("02/01/2006"),
+		PRNo:          derefString(prNo),
+		DeliveryDate:  formatPrintDate(expectedDate),
+		Project:       derefString(projectCode),
+		ProjectName:   derefString(projectName),
+		DeliveryPlace: derefString(locationText),
+		ReceiverName:  receiverName,
+		ReceiverPhone: receiverPhone,
 		// Job used to be a literal "***" placeholder — po.job_code has existed
 		// since this session's earlier PR/PO "ประเภท Job" work; this handler
 		// just never got updated.
@@ -2706,7 +2798,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		// the actual quotation/reference number column and always existed;
 		// this handler simply never selected it.
 		QuotationNo: derefString(poRef),
-		Tel:              supplierContactPhone,
+		Tel:         supplierContactPhone,
 		Supplier: poPrintSupplier{
 			Name:          derefString(supplierName),
 			Address1:      supplierAddress,

@@ -128,7 +128,7 @@ type CreateProjectReq struct {
 	DeptCode              *string  `json:"dept_code,omitempty"`     // "แผนก" — FK -> departments.dept_code
 	OwnerID               *int64   `json:"owner_id,omitempty"`      // deprecated, kept for backward compat — not required, not used to drive validation
 	ProjectOwnerName      *string  `json:"project_owner_name,omitempty"`
-	CustomerID            *int64   `json:"customer_id,omitempty"` // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
+	CustomerID            *int64   `json:"customer_id,omitempty"`                       // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
 	BudgetAmount          float64  `json:"budget_amount"`
@@ -146,7 +146,7 @@ type UpdateProjectReq struct {
 	DeptCode              *string  `json:"dept_code,omitempty"`     // "แผนก" — FK -> departments.dept_code
 	OwnerID               *int64   `json:"owner_id,omitempty"`      // deprecated, kept for backward compat
 	ProjectOwnerName      *string  `json:"project_owner_name,omitempty"`
-	CustomerID            *int64   `json:"customer_id,omitempty"` // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
+	CustomerID            *int64   `json:"customer_id,omitempty"`                       // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
 	BudgetAmount          float64  `json:"budget_amount"`
@@ -485,20 +485,29 @@ type BulkInsertSupplierLine struct {
 	Currency         *string `json:"currency,omitempty"`
 	SalesPerson      *string `json:"sales_person,omitempty"`
 	SalesPersonPhone *string `json:"sales_person_phone,omitempty"`
+	Remarks          *string `json:"remarks,omitempty"`
 }
 
 type BulkInsertSupplierRequest struct {
 	Suppliers []BulkInsertSupplierLine `json:"suppliers"`
 }
 
+// SupplierID is tagged "id" (not "supplier_id") to match SupplierPage.tsx's
+// exact accessor (`s.id`) — see BulkCreateSupplier/BulkInsertSupplier.
 type BulkInsertSupplierResultLine struct {
-	SupplierID   int64  `json:"supplier_id"`
+	SupplierID   int64  `json:"id"`
 	SupplierName string `json:"supplier_name"`
+	// Status: "created" (new tax_id or no tax_id given), "created_no_tax_id"
+	// (inserted without a tax_id to dedup on — flagged distinctly per spec),
+	// or "updated" (existing row with a matching tax_id was updated instead).
+	Status string `json:"status"`
 }
 
 type BulkInsertSupplierResponse struct {
-	Count     int                            `json:"count"`
-	Suppliers []BulkInsertSupplierResultLine `json:"suppliers"`
+	Count      int                            `json:"count"`
+	Imported   int                            `json:"imported"`
+	Duplicates int                            `json:"duplicates"`
+	Suppliers  []BulkInsertSupplierResultLine `json:"suppliers"`
 }
 
 type SubgroupFull struct {
@@ -876,8 +885,8 @@ type CreatePRRequest struct {
 	ProjectCode   *string                `json:"project_code,omitempty"`
 	DeptCode      *string                `json:"dept_code,omitempty" db:"dept_code"`
 	MemoID        *int64                 `json:"memo_id,omitempty"`
-	OrderType     string                 `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
-	PRType        string                 `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY" — defaults to "PO_WO"
+	OrderType     string                 `json:"order_type,omitempty"`         // "stock" | "cost" — defaults to "stock"
+	PRType        string                 `json:"pr_type,omitempty"`            // "PO_WO" | "PO_ONLY" | "WO_ONLY" — defaults to "PO_WO"
 	JobCode       string                 `json:"job_code" validate:"required"` // required — one of the 12 fixed job type codes, see handlers.JobTypes
 	Status        string                 `json:"status"`
 	Remarks       *string                `json:"remarks,omitempty"`
@@ -909,7 +918,7 @@ type UpdatePRRequest struct {
 	DeptCode      *string        `json:"dept_code,omitempty" db:"dept_code"`
 	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost"
 	PRType        string         `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY"
-	JobCode       string         `json:"job_code,omitempty"` // required overall — omit to keep the PR's current value, see PRHandler.Update
+	JobCode       string         `json:"job_code,omitempty"`   // required overall — omit to keep the PR's current value, see PRHandler.Update
 	Remarks       *string        `json:"remarks,omitempty"`
 	Lines         []UpdatePRLine `json:"lines" validate:"required,min=1"`
 }
@@ -991,29 +1000,29 @@ type POAttachments struct {
 }
 
 type POLine struct {
-	LineID            int64    `json:"line_id" db:"line_id"`
-	POID              int64    `json:"po_id" db:"po_id"`
-	LineNo            int      `json:"line_no" db:"line_no"`
-	MatCode           string   `json:"mat_code" db:"mat_code"`
-	PRLineID          *int64   `json:"pr_line_id,omitempty" db:"pr_line_id"`
-	QtyOrdered        float64  `json:"qty_ordered" db:"qty_ordered"`
-	QtyReceived       float64  `json:"qty_received" db:"qty_received"`
-	UnitPrice         float64  `json:"unit_price" db:"unit_price"`
-	DiscType          string   `json:"disc_type" db:"disc_type"`
-	Discount          float64  `json:"discount" db:"discount"`
-	LineDiscount      float64  `json:"line_discount" db:"line_discount"`
-	LineVAT           float64  `json:"line_vat" db:"line_vat"`
-	LineWHT           float64  `json:"line_wht" db:"line_wht"`
-	LineNet           float64  `json:"line_net" db:"line_net"`
-	WhtRate           *float64 `json:"wht_rate,omitempty" db:"wht_rate"`
-	Amount            float64  `json:"amount" db:"amount"`
-	Description       *string  `json:"description,omitempty" db:"description"`
-	Remarks           *string  `json:"remarks,omitempty" db:"remarks"`
-	Status            string   `json:"status" db:"status"`
+	LineID       int64    `json:"line_id" db:"line_id"`
+	POID         int64    `json:"po_id" db:"po_id"`
+	LineNo       int      `json:"line_no" db:"line_no"`
+	MatCode      string   `json:"mat_code" db:"mat_code"`
+	PRLineID     *int64   `json:"pr_line_id,omitempty" db:"pr_line_id"`
+	QtyOrdered   float64  `json:"qty_ordered" db:"qty_ordered"`
+	QtyReceived  float64  `json:"qty_received" db:"qty_received"`
+	UnitPrice    float64  `json:"unit_price" db:"unit_price"`
+	DiscType     string   `json:"disc_type" db:"disc_type"`
+	Discount     float64  `json:"discount" db:"discount"`
+	LineDiscount float64  `json:"line_discount" db:"line_discount"`
+	LineVAT      float64  `json:"line_vat" db:"line_vat"`
+	LineWHT      float64  `json:"line_wht" db:"line_wht"`
+	LineNet      float64  `json:"line_net" db:"line_net"`
+	WhtRate      *float64 `json:"wht_rate,omitempty" db:"wht_rate"`
+	Amount       float64  `json:"amount" db:"amount"`
+	Description  *string  `json:"description,omitempty" db:"description"`
+	Remarks      *string  `json:"remarks,omitempty" db:"remarks"`
+	Status       string   `json:"status" db:"status"`
 	// CostSubgroupID: explicit value wins; auto-filled from the source PR line's
 	// cost_subgroup_id when pr_line_id is set and no explicit value is sent — same
 	// precedence pattern as PurchaseOrder.JobCode's auto-fill from PR.
-	CostSubgroupID    *int64   `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
+	CostSubgroupID *int64 `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
 	// CostCode/CostSubgroupName — resolved via cost_subgroup -> cost_group ->
 	// cost_job -> cost_subject, same join/convention as pr_approval.go's
 	// PRLineItem.CostCode and PrintData's poPrintItem.Code. Nil when
@@ -1028,47 +1037,47 @@ type POLine struct {
 }
 
 type CreatePORequest struct {
-	SupplierID    int64          `json:"supplier_id" validate:"required"`
-	PRID          *int64         `json:"pr_id,omitempty"`
-	RFQID         *int64         `json:"rfq_id,omitempty"`
-	LocationText  string         `json:"location_text" validate:"required"`
-	WarehouseCode *string        `json:"warehouse_code,omitempty"`
-	ProjectCode   *string        `json:"project_code,omitempty"`
-	RequestedBy   *int64         `json:"requested_by,omitempty"`
-	ApproverID    *int64         `json:"approver_id,omitempty"`
-	Ref           *string        `json:"ref,omitempty"`
-	Currency      string         `json:"currency"`
-	ExpectedDate  *string        `json:"expected_date,omitempty"`
-	PaymentTerms  *string        `json:"payment_terms,omitempty"`
-	Remarks       *string        `json:"remarks,omitempty"`
-	ReceiverName  *string        `json:"receiver_name,omitempty"`
-	ReceiverPhone *string        `json:"receiver_phone,omitempty"`
-	Status        string         `json:"status" validate:"omitempty,oneof=DRAFT PENDING_APPROVAL"`
-	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
+	SupplierID    int64   `json:"supplier_id" validate:"required"`
+	PRID          *int64  `json:"pr_id,omitempty"`
+	RFQID         *int64  `json:"rfq_id,omitempty"`
+	LocationText  string  `json:"location_text" validate:"required"`
+	WarehouseCode *string `json:"warehouse_code,omitempty"`
+	ProjectCode   *string `json:"project_code,omitempty"`
+	RequestedBy   *int64  `json:"requested_by,omitempty"`
+	ApproverID    *int64  `json:"approver_id,omitempty"`
+	Ref           *string `json:"ref,omitempty"`
+	Currency      string  `json:"currency"`
+	ExpectedDate  *string `json:"expected_date,omitempty"`
+	PaymentTerms  *string `json:"payment_terms,omitempty"`
+	Remarks       *string `json:"remarks,omitempty"`
+	ReceiverName  *string `json:"receiver_name,omitempty"`
+	ReceiverPhone *string `json:"receiver_phone,omitempty"`
+	Status        string  `json:"status" validate:"omitempty,oneof=DRAFT PENDING_APPROVAL"`
+	OrderType     string  `json:"order_type,omitempty"` // "stock" | "cost" — defaults to "stock"
 	// JobCode: optional here — if omitted, auto-filled from the source PR's job_code when
 	// pr_id is set (never silently overwrites an explicit value). Required overall; if
 	// omitted with no pr_id (or the PR has no usable value), Create/Update returns 400.
-	JobCode       *string        `json:"job_code,omitempty"`
-	UseDiscount   *bool          `json:"use_discount,omitempty"`
-	DiscountType  *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
-	UseVAT        *bool          `json:"use_vat,omitempty"`
-	UseWHT        *bool          `json:"use_wht,omitempty"`
-	Lines         []CreatePOLine `json:"lines" validate:"required,min=1,dive"`
+	JobCode      *string        `json:"job_code,omitempty"`
+	UseDiscount  *bool          `json:"use_discount,omitempty"`
+	DiscountType *string        `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
+	UseVAT       *bool          `json:"use_vat,omitempty"`
+	UseWHT       *bool          `json:"use_wht,omitempty"`
+	Lines        []CreatePOLine `json:"lines" validate:"required,min=1,dive"`
 }
 
 type CreatePOLine struct {
-	MatCode     string   `json:"mat_code" validate:"required"`
-	PRLineID    *int64   `json:"pr_line_id,omitempty"`
+	MatCode  string `json:"mat_code" validate:"required"`
+	PRLineID *int64 `json:"pr_line_id,omitempty"`
 	// CostSubgroupID: explicit value wins; if omitted and pr_line_id is set, auto-filled
 	// from that PR line's cost_subgroup_id. Never silently overwrites an explicit value.
-	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
-	QtyOrdered  float64  `json:"qty_ordered" validate:"required,gt=0"`
-	UnitPrice   float64  `json:"unit_price" validate:"required,gte=0"`
-	DiscType    string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
-	Discount    float64  `json:"discount,omitempty"`
-	WhtRate     *float64 `json:"wht_rate,omitempty"`
-	Description *string  `json:"description,omitempty"`
-	Remarks     *string  `json:"remarks,omitempty"`
+	CostSubgroupID *int64   `json:"cost_subgroup_id,omitempty"`
+	QtyOrdered     float64  `json:"qty_ordered" validate:"required,gt=0"`
+	UnitPrice      float64  `json:"unit_price" validate:"required,gte=0"`
+	DiscType       string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
+	Discount       float64  `json:"discount,omitempty"`
+	WhtRate        *float64 `json:"wht_rate,omitempty"`
+	Description    *string  `json:"description,omitempty"`
+	Remarks        *string  `json:"remarks,omitempty"`
 }
 
 type AddPOLinesRequest struct {
@@ -1085,19 +1094,19 @@ type UpdatePOLineRequest struct {
 // existing purchase_order_line.id" so EditApprovedPO can diff per-line instead of replacing the
 // whole line set (see EditApprovedPO's per-line rules re: qty_received).
 type EditApprovedPOLine struct {
-	ID          *int64   `json:"id,omitempty"`
-	MatCode     string   `json:"mat_code" validate:"required"`
-	PRLineID    *int64   `json:"pr_line_id,omitempty"`
+	ID       *int64 `json:"id,omitempty"`
+	MatCode  string `json:"mat_code" validate:"required"`
+	PRLineID *int64 `json:"pr_line_id,omitempty"`
 	// CostSubgroupID: same precedence as CreatePOLine — explicit value wins, else
 	// auto-filled from the referenced pr_line_id's cost_subgroup_id, else nil.
-	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
-	QtyOrdered  float64  `json:"qty_ordered" validate:"required,gt=0"`
-	UnitPrice   float64  `json:"unit_price" validate:"required,gte=0"`
-	DiscType    string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
-	Discount    float64  `json:"discount,omitempty"`
-	WhtRate     *float64 `json:"wht_rate,omitempty"`
-	Description *string  `json:"description,omitempty"`
-	Remarks     *string  `json:"remarks,omitempty"`
+	CostSubgroupID *int64   `json:"cost_subgroup_id,omitempty"`
+	QtyOrdered     float64  `json:"qty_ordered" validate:"required,gt=0"`
+	UnitPrice      float64  `json:"unit_price" validate:"required,gte=0"`
+	DiscType       string   `json:"disc_type" validate:"omitempty,oneof=pct amt"`
+	Discount       float64  `json:"discount,omitempty"`
+	WhtRate        *float64 `json:"wht_rate,omitempty"`
+	Description    *string  `json:"description,omitempty"`
+	Remarks        *string  `json:"remarks,omitempty"`
 }
 
 // EditApprovedPORequest is the body for PUT /po/{id}/edit-approved — editing a PO that is
@@ -1300,20 +1309,22 @@ type PaginatedResponse struct {
 // ─── Memo ──────────────────────────────────────────────────────────────────
 
 type Memo struct {
-	ID               int64     `json:"id"`
-	MemoNo           string    `json:"memo_no"`
-	Title            string    `json:"title"`
-	ProjectCode      *string   `json:"project_code"`
-	RequestedBy      int64     `json:"requested_by"`
-	ApproverID       *int64    `json:"approver_id"`
-	Department       *string   `json:"department"`
-	DeliveryLocation *string   `json:"delivery_location,omitempty" db:"delivery_location"`
-	Note             *string   `json:"note"`
-	Status           string    `json:"status"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	CreatedBy        *int64    `json:"created_by"`
-	UpdatedBy        *int64    `json:"updated_by"`
+	ID                 int64     `json:"id"`
+	MemoNo             string    `json:"memo_no"`
+	Title              string    `json:"title"`
+	ProjectCode        *string   `json:"project_code"`
+	RequestedBy        int64     `json:"requested_by"`
+	ApproverID         *int64    `json:"approver_id"`
+	Department         *string   `json:"department"`
+	DeliveryLocation   *string   `json:"delivery_location,omitempty" db:"delivery_location"`
+	SiteDeliveryDate   *string   `json:"site_delivery_date,omitempty" db:"site_delivery_date"`
+	ResponsibleFactory *string   `json:"responsible_factory,omitempty" db:"responsible_factory"`
+	Note               *string   `json:"note"`
+	Status             string    `json:"status"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	CreatedBy          *int64    `json:"created_by"`
+	UpdatedBy          *int64    `json:"updated_by"`
 
 	// populated via JOIN (ไม่ได้เก็บใน table)
 	RequestedByName string           `json:"requested_by_name,omitempty"`
@@ -1352,16 +1363,18 @@ type MemoLine struct {
 }
 
 type CreateMemoRequest struct {
-	Title            string            `json:"title"`
-	ProjectCode      *string           `json:"project_code"`
-	RequestedBy      int64             `json:"requested_by"`
-	ApproverID       *int64            `json:"approver_id"`
-	Department       *string           `json:"department"`
-	DeliveryLocation *string           `json:"delivery_location,omitempty"`
-	Note             *string           `json:"note"`
-	Status           string            `json:"status,omitempty"` // "DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT
-	Lines            []MemoLineRequest `json:"lines"`
-	Attachments      []AttachmentRef   `json:"attachments"`
+	Title              string            `json:"title"`
+	ProjectCode        *string           `json:"project_code"`
+	RequestedBy        int64             `json:"requested_by"`
+	ApproverID         *int64            `json:"approver_id"`
+	Department         *string           `json:"department"`
+	DeliveryLocation   *string           `json:"delivery_location,omitempty"`
+	SiteDeliveryDate   *string           `json:"site_delivery_date,omitempty"`
+	ResponsibleFactory *string           `json:"responsible_factory,omitempty"`
+	Note               *string           `json:"note"`
+	Status             string            `json:"status,omitempty"` // "DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT
+	Lines              []MemoLineRequest `json:"lines"`
+	Attachments        []AttachmentRef   `json:"attachments"`
 }
 
 type CancelMemoRequest struct {
