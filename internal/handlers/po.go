@@ -644,19 +644,19 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 func (h *POHandler) resolvePOAutoFields(
 	ctx context.Context, prID *int64, orderType string, reqProjectCode *string, reqRequestedBy *int64,
 	reqWarehouseCode *string, lines []models.CreatePOLine,
-) (projectCode *string, requestedBy *int64, warehouseCode *string, prJobCode *string, prLineCostSubgroup map[int64]*int64, err error) {
+) (projectCode *string, requestedBy *int64, warehouseCode *string, prJobCode *string, prLineCostSubgroup map[int64]*int64, effectiveOrderType string, err error) {
 	if prID != nil {
-		var prStatus string
-		if err := h.db.QueryRow(ctx, `SELECT status, project_code, requested_by, warehouse_code, job_code FROM purchase_request WHERE id=$1`, *prID).Scan(&prStatus, &projectCode, &requestedBy, &warehouseCode, &prJobCode); err != nil {
-			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "PR not found")
+		var prStatus, prOrderType string
+		if err := h.db.QueryRow(ctx, `SELECT status, project_code, requested_by, warehouse_code, job_code, order_type FROM purchase_request WHERE id=$1`, *prID).Scan(&prStatus, &projectCode, &requestedBy, &warehouseCode, &prJobCode, &prOrderType); err != nil {
+			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "PR not found")
 		}
 		if prStatus != "COMPLETED" {
-			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "PR must be COMPLETED before creating a PO")
+			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "PR must be COMPLETED before creating a PO")
 		}
 
 		rows, err := h.db.Query(ctx, `SELECT id, cost_subgroup_id FROM purchase_request_line WHERE pr_id=$1`, *prID)
 		if err != nil {
-			return nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, "", err
 		}
 		prLineCostSubgroup = map[int64]*int64{}
 		for rows.Next() {
@@ -669,56 +669,56 @@ func (h *POHandler) resolvePOAutoFields(
 		for i, l := range lines {
 			if l.PRLineID != nil {
 				if _, ok := prLineCostSubgroup[*l.PRLineID]; !ok {
-					return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: pr_line_id does not belong to pr_id %d", i, *prID))
+					return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: pr_line_id does not belong to pr_id %d", i, *prID))
 				}
 			}
 		}
-		return projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, nil
+		return projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, prOrderType, nil
 	}
 
 	if orderType == "stock" {
 		// warehouse_code is derived, not chosen — never trust reqWarehouseCode here.
 		if reqProjectCode == nil || strings.TrimSpace(*reqProjectCode) == "" {
-			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "project_code is required when order_type is 'stock'")
+			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "project_code is required when order_type is 'stock'")
 		}
 		var stockWarehouseCode *string
 		if err := h.db.QueryRow(ctx,
 			`SELECT warehouse_code FROM project WHERE project_code=$1`, *reqProjectCode,
 		).Scan(&stockWarehouseCode); err != nil {
 			if err == pgx.ErrNoRows {
-				return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+				return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
 			}
-			return nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, "", err
 		}
 		if stockWarehouseCode == nil || strings.TrimSpace(*stockWarehouseCode) == "" {
-			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
+			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ไม่ใช่โครงการคลังสินค้า กรุณาเลือกโครงการคลังที่ถูกต้อง")
 		}
 		requestedBy = reqRequestedBy
-		return reqProjectCode, requestedBy, stockWarehouseCode, nil, nil, nil
+		return reqProjectCode, requestedBy, stockWarehouseCode, nil, nil, orderType, nil
 	}
 
 	if reqProjectCode != nil && strings.TrimSpace(*reqProjectCode) != "" {
 		var exists bool
 		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, *reqProjectCode).Scan(&exists); err != nil {
-			return nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, "", err
 		}
 		if !exists {
-			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "invalid project_code")
+			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "invalid project_code")
 		}
 		projectCode = reqProjectCode
 	}
 	if reqWarehouseCode != nil && strings.TrimSpace(*reqWarehouseCode) != "" {
 		var exists bool
 		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM warehouse WHERE warehouse_code=$1)`, *reqWarehouseCode).Scan(&exists); err != nil {
-			return nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, "", err
 		}
 		if !exists {
-			return nil, nil, nil, nil, nil, fiber.NewError(fiber.StatusBadRequest, "invalid warehouse_code")
+			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "invalid warehouse_code")
 		}
 		warehouseCode = reqWarehouseCode
 	}
 	requestedBy = reqRequestedBy
-	return projectCode, requestedBy, warehouseCode, nil, nil, nil
+	return projectCode, requestedBy, warehouseCode, nil, nil, orderType, nil
 }
 
 // resolveLineCostSubgroupID applies the same precedence pattern as PurchaseOrder.JobCode's
@@ -845,16 +845,16 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "approver not found")
 	}
 
-	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, err := h.resolvePOAutoFields(ctx, req.PRID, req.OrderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
+	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, effectiveOrderType, err := h.resolvePOAutoFields(ctx, req.PRID, req.OrderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
 		return err
 	}
-	// warehouse_code is required — GoodsReceiptHandler.Receive hard-requires it to resolve
-	// stock_inventory's location, so a PO created without one is a receiving dead-end
-	// discovered only later. Fails clearly here rather than silently persisting NULL (which
-	// previously happened whenever it was omitted from the request, or inherited via pr_id
-	// from a PR that itself had no warehouse_code set).
-	if warehouseCode == nil || strings.TrimSpace(*warehouseCode) == "" {
+	// warehouse_code is required only when the effective order type is 'stock' —
+	// GoodsReceiptHandler.Receive hard-requires it to resolve stock_inventory's location for
+	// warehouse-bound purchases, so a stock PO created without one is a receiving dead-end
+	// discovered only later. 'cost' (direct project purchases) never touch warehouse stock, so
+	// no warehouse_code is expected there — a cost-type linked PR legitimately has none.
+	if effectiveOrderType == "stock" && (warehouseCode == nil || strings.TrimSpace(*warehouseCode) == "") {
 		if req.PRID != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "warehouse_code is required — the linked PR has no warehouse_code set; set warehouse_code on the PR, or provide it directly on this PO")
 		}
@@ -1345,7 +1345,7 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_id is required when order_type is 'cost'")
 	}
 
-	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, err := h.resolvePOAutoFields(ctx, req.PRID, orderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
+	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, _, err := h.resolvePOAutoFields(ctx, req.PRID, orderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
 		return err
 	}
