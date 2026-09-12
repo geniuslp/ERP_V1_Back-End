@@ -8452,6 +8452,40 @@ const docTemplate = `{
                 }
             }
         },
+        "/project-overview/search": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Searches projects (project_code/project_name) and approved PO line items (mat_code/cost_code) in one call. Returns a unified array, each row tagged with \"type\": \"project\" or \"po_line\". Requires q to be at least 2 characters — shorter queries return an empty result without hitting the DB. Each match type is capped at 20 rows, most-recently-created first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Project Overview"
+                ],
+                "summary": "Cross-entity search for the Project Overview page",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search term (min 2 chars)",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/requisition": {
             "get": {
                 "security": [

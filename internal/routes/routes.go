@@ -23,6 +23,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	masterH := handlers.NewMasterHandler(db)
 	locationH := handlers.NewLocationHandler(db)
 	projectH := handlers.NewProjectHandler(db)
+	projectOverviewH := handlers.NewProjectOverviewHandler(db)
 	inventoryH := handlers.NewInventoryHandler(db)
 	prH := handlers.NewPRHandler(db)
 	poH := handlers.NewPOHandler(db)
@@ -129,6 +130,11 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	supplier := api.Group("/supplier")
 	supplier.Use(jwt)
 	supplier.Post("/bulk", supplierH.BulkInsertSupplier)
+
+	// Project Overview (cross-entity search: projects + approved PO line items)
+	projectOverview := api.Group("/project-overview")
+	projectOverview.Use(jwt)
+	projectOverview.Get("/search", projectOverviewH.Search)
 
 	// Inventory
 	inv := api.Group("/inventory")

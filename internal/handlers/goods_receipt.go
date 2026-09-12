@@ -198,12 +198,12 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	var lineErrors []string
 	for i, line := range req.Lines {
-		var qtyOrdered, qtyReceivedBefore float64
+		var qtyOrdered, qtyReceivedBefore, poUnitPrice float64
 		var poLinePOID int64
 		if err := tx.QueryRow(ctx, `
-			SELECT po_id, qty_ordered, qty_received FROM purchase_order_line WHERE id=$1 AND mat_code=$2`,
+			SELECT po_id, qty_ordered, qty_received, unit_price FROM purchase_order_line WHERE id=$1 AND mat_code=$2`,
 			line.POLineID, line.MatCode,
-		).Scan(&poLinePOID, &qtyOrdered, &qtyReceivedBefore); err != nil {
+		).Scan(&poLinePOID, &qtyOrdered, &qtyReceivedBefore, &poUnitPrice); err != nil {
 			lineErrors = append(lineErrors, fmt.Sprintf("po_line_id %d: PO line not found for mat_code %s", line.POLineID, line.MatCode))
 			continue
 		}
@@ -258,6 +258,18 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 			RETURNING qty`, itemID,
 		).Scan(&qtyAfter); err != nil {
 			return err
+		}
+
+		// Last Cost strategy: unit_cost is always overwritten to this receipt's PO line
+		// unit_price, never averaged with the item's prior unit_cost. unit_price is the
+		// plain per-unit price ("ราคา/หน่วย" on the PO Create screen), read before any
+		// discount/VAT/WHT is applied — those are computed separately per PO line and are
+		// not folded into this cost.
+		if _, err := tx.Exec(ctx, `
+			UPDATE stock_item SET unit_cost = $1, updated_at = NOW() WHERE id = $2`,
+			poUnitPrice, itemID,
+		); err != nil {
+			return fmt.Errorf("update unit_cost for mat_code %s: %w", line.MatCode, err)
 		}
 
 		if _, err := tx.Exec(ctx, `

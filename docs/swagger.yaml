@@ -8084,6 +8084,31 @@ paths:
       summary: Get next PR number
       tags:
       - Purchase Request
+  /project-overview/search:
+    get:
+      description: 'Searches projects (project_code/project_name) and approved PO
+        line items (mat_code/cost_code) in one call. Returns a unified array, each
+        row tagged with "type": "project" or "po_line". Requires q to be at least
+        2 characters — shorter queries return an empty result without hitting the
+        DB. Each match type is capped at 20 rows, most-recently-created first.'
+      parameters:
+      - description: Search term (min 2 chars)
+        in: query
+        name: q
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cross-entity search for the Project Overview page
+      tags:
+      - Project Overview
   /requisition:
     get:
       parameters:
