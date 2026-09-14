@@ -1630,6 +1630,10 @@ type PayableDoc struct {
 	Status         string  `json:"status"`
 	PaidAmount     float64 `json:"paid_amount"`
 	RemainingToPay float64 `json:"remaining_to_pay"`
+	// ReceivingStatus is only populated for doc_type='PO' (nil for WO and any other
+	// doc type) — a live-computed aggregate over purchase_order_line vs grn_line, see
+	// FinanceHandler.ListPayableDocs. One of FULLY_RECEIVED/PARTIALLY_RECEIVED/NOT_RECEIVED.
+	ReceivingStatus *string `json:"receiving_status,omitempty"`
 }
 
 type PayableDocFilter struct {

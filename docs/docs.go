@@ -1316,7 +1316,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only APPROVED documents are returned — a doc that hasn't been approved\nisn't payable yet, so status is fixed and not caller-settable.",
+                "description": "Only APPROVED documents are returned — a doc that hasn't been approved\nisn't payable yet, so status is fixed and not caller-settable.\nFor doc_type=PO, a document additionally requires at least one\nconfirmed/posted GRN receipt against it to appear — partial receipt is\nsufficient, it doesn't need to be fully received. This does not apply to WO.\nEach PO row also carries receiving_status: FULLY_RECEIVED, PARTIALLY_RECEIVED,\nor NOT_RECEIVED (present in practice only as a defensive default — every PO in\nthis list already passed the GRN-exists filter above). It is null for WO. This\nis computed live from purchase_order_line vs grn_line on every request, not\nread from purchase_order.status_receive — that column is known to go stale\nbecause the legacy POST /grn/:id/confirm endpoint updates\npurchase_order_line.qty_received without ever writing status_receive, while\nPOST /grn/receive keeps it in sync. The live aggregate avoids that drift.",
                 "produces": [
                     "application/json"
                 ],

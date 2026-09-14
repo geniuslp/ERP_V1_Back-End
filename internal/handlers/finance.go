@@ -44,6 +44,17 @@ func docTable(docType string) (table, noCol string, ok bool) {
 // @Produce      json
 // @Description  Only APPROVED documents are returned — a doc that hasn't been approved
 // @Description  isn't payable yet, so status is fixed and not caller-settable.
+// @Description  For doc_type=PO, a document additionally requires at least one
+// @Description  confirmed/posted GRN receipt against it to appear — partial receipt is
+// @Description  sufficient, it doesn't need to be fully received. This does not apply to WO.
+// @Description  Each PO row also carries receiving_status: FULLY_RECEIVED, PARTIALLY_RECEIVED,
+// @Description  or NOT_RECEIVED (present in practice only as a defensive default — every PO in
+// @Description  this list already passed the GRN-exists filter above). It is null for WO. This
+// @Description  is computed live from purchase_order_line vs grn_line on every request, not
+// @Description  read from purchase_order.status_receive — that column is known to go stale
+// @Description  because the legacy POST /grn/:id/confirm endpoint updates
+// @Description  purchase_order_line.qty_received without ever writing status_receive, while
+// @Description  POST /grn/receive keeps it in sync. The live aggregate avoids that drift.
 // @Param        doc_type      query  string  true   "PO or WO"
 // @Param        project_code  query  string  false  "filter project_code"
 // @Param        search        query  string  false  "search doc_no"
@@ -78,6 +89,12 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	buildFilters := func(startIdx int) (clause string, args []any) {
 		// Only APPROVED docs are payable — fixed, not a caller-controlled filter.
 		where := []string{"d.status = 'APPROVED'"}
+		// PO additionally requires at least one confirmed/posted GRN receipt — partial
+		// receipt is sufficient, doesn't need to be fully received. WO has no GRN
+		// concept, so this is scoped to doc_type == 'PO' only.
+		if f.DocType == "PO" {
+			where = append(where, "EXISTS (SELECT 1 FROM grn g WHERE g.po_id = d.id AND g.status IN ('CONFIRMED', 'POSTED'))")
+		}
 		i := startIdx
 		if f.ProjectCode != "" {
 			where = append(where, fmt.Sprintf("d.project_code = $%d", i))
@@ -106,14 +123,43 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	offset := (f.Page - 1) * f.PageSize
 	listArgs = append(listArgs, f.PageSize, offset)
 
+	// receiving_status is only meaningful for PO (WO has no GRN concept) — computed live
+	// from purchase_order_line vs grn_line rather than read from purchase_order.status_receive,
+	// which is known to drift: the legacy POST /grn/:id/confirm endpoint (grn_approval.go)
+	// updates purchase_order_line.qty_received but never writes status_receive, while
+	// POST /grn/receive (goods_receipt.go) does — so status_receive can silently go stale.
+	// Mirrors the po_conversion_status aggregate pattern in pr_approval.go's GetDetail, and
+	// only counts grn_line rows whose parent grn.status is CONFIRMED/POSTED, consistent with
+	// the GRN-exists filter above.
+	receivingStatusSelect := "NULL::text"
+	if f.DocType == "PO" {
+		receivingStatusSelect = `(
+			SELECT CASE
+			    WHEN COALESCE(BOOL_AND(COALESCE(gl_sum.qty_accepted, 0) >= pol.qty_ordered), false) THEN 'FULLY_RECEIVED'
+			    WHEN COALESCE(BOOL_OR(COALESCE(gl_sum.qty_accepted, 0) > 0), false) THEN 'PARTIALLY_RECEIVED'
+			    ELSE 'NOT_RECEIVED'
+			END
+			FROM purchase_order_line pol
+			LEFT JOIN (
+			    SELECT gl.po_line_id, SUM(gl.qty_accepted) AS qty_accepted
+			    FROM grn_line gl
+			    JOIN grn g ON g.id = gl.grn_id
+			    WHERE g.status IN ('CONFIRMED', 'POSTED')
+			    GROUP BY gl.po_line_id
+			) gl_sum ON gl_sum.po_line_id = pol.id
+			WHERE pol.po_id = d.id
+		)`
+	}
+
 	listSQL := fmt.Sprintf(`
 		SELECT d.id, d.%s, $1 AS doc_type, d.project_code, d.net_amount, d.status,
 		       COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
-		                 WHERE pl.doc_type = $1 AND pl.doc_id = d.id), 0) AS paid_amount
+		                 WHERE pl.doc_type = $1 AND pl.doc_id = d.id), 0) AS paid_amount,
+		       %s AS receiving_status
 		FROM %s d
 		WHERE %s
 		ORDER BY d.id DESC
-		LIMIT $%d OFFSET $%d`, noCol, table, listClause, nextIdx, nextIdx+1)
+		LIMIT $%d OFFSET $%d`, noCol, receivingStatusSelect, table, listClause, nextIdx, nextIdx+1)
 
 	rows, err := h.db.Query(ctx, listSQL, listArgs...)
 	if err != nil {
@@ -124,7 +170,7 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	items := []models.PayableDoc{}
 	for rows.Next() {
 		var p models.PayableDoc
-		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.NetAmount, &p.Status, &p.PaidAmount); err != nil {
+		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus); err != nil {
 			return err
 		}
 		p.RemainingToPay = p.NetAmount - p.PaidAmount
