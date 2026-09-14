@@ -358,9 +358,9 @@ func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.Crea
 			deductStock = *line.DeductStock
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock)
-			VALUES ($1,$2,$3,$4,'OPEN',$5,$6)`,
-			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock,
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks)
+			VALUES ($1,$2,$3,$4,'OPEN',$5,$6,$7)`,
+			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock, line.Remarks,
 		); err != nil {
 			return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
 		}
@@ -992,9 +992,9 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 			deductStock = *line.DeductStock
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock)
-			VALUES ($1,$2,$3,$4,'OPEN',$5,$6)`,
-			prID, lineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock,
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks)
+			VALUES ($1,$2,$3,$4,'OPEN',$5,$6,$7)`,
+			prID, lineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock, line.Remarks,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code", i))

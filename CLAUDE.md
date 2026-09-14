@@ -9,6 +9,17 @@ Go Fiber v2 REST API สำหรับระบบ ERP ครอบคลุม
 
 ---
 
+## ⚙️ Working rules — Claude Code prompting
+
+เวลาทำงานกับ Claude Code ในโปรเจกต์นี้ (ไม่ว่าจะเป็นฝั่งนี้หรือฝั่ง frontend):
+
+1. **Prompt ที่ส่งให้ Claude Code ต้องเขียนเป็นภาษาอังกฤษเสมอ** (context/comment ในเอกสารนี้เขียนไทยได้ตามเดิม แต่ตัว prompt/instruction ที่สั่งงานจริงต้องแปลเป็นอังกฤษก่อนส่ง)
+2. **ต้องแยก prompt ออกเป็นสามส่วนตาม layer เสมอ**: `Frontend`, `Backend`, `SQL` — ห้ามรวมเป็น prompt เดียวแบบผสมทุก layer แม้ว่างานนั้นจะกระทบหลาย layer พร้อมกัน (เช่น เพิ่ม field ใหม่ที่ต้องมี migration + handler + UI ก็ให้แยกเป็น 3 prompt ตามลำดับ SQL → Backend → Frontend)
+3. **ลำดับการส่งงานที่กระทบหลาย layer: SQL ก่อน → Backend → Frontend ทีหลังสุด** (ให้ backend อ้างอิง schema ที่ apply แล้วจริง และ frontend อ้างอิง API ที่ backend ทำเสร็จแล้ว)
+4. กฎนี้ถือเป็น default ของโปรเจกต์ — ไม่ต้องพิมพ์บอกซ้ำทุกรอบ
+
+---
+
 ## Tech stack
 | Layer | Library | Version |
 |---|---|---|

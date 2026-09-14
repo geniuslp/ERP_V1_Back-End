@@ -680,6 +680,8 @@ definitions:
         type: string
       qty_requested:
         type: number
+      remarks:
+        type: string
     required:
     - mat_code
     - qty_requested
@@ -2217,6 +2219,8 @@ definitions:
         type: string
       qty_requested:
         type: number
+      remarks:
+        type: string
     required:
     - mat_code
     - qty_requested
@@ -7726,6 +7730,21 @@ paths:
         have at least one line not fully referenced by existing PO(s) — for the "select
         PR to create PO from" picker only. Omit it for any other PR listing (PR status/
         history pages), which must keep showing every PR regardless of reference status.
+        Each item also carries po_conversion_status, computed from purchase_request_line
+        qty_requested vs qty_ordered (aggregated across all lines, not the same as "status"):
+        FULLY_CONVERTED (every line qty_ordered >= qty_requested), PARTIALLY_CONVERTED
+        (at least one line qty_ordered > 0 but not all lines fully ordered), NOT_CONVERTED
+        (every line qty_ordered = 0 or NULL).
+        Each item also carries job_name (resolved from job_code via cost_subject+cost_job,
+        same join as GET /pr/{id}) and project_name (resolved from project_code via the
+        project table) — both null when the PR has no job_code/project_code or the code
+        doesn't resolve to a live master row.
+        Each item also carries memo_no (resolved from memo_id via the memo table),
+        dept_name (resolved from dept_code via the departments table), required_date
+        ("วันที่ส่งสินค้า" — when the requester needs the goods by, distinct from pr_date)
+        and created_at ("วันที่เปิดเอกสาร" — the DB row insert timestamp). dept_name,
+        memo_no, and required_date are null when the PR has no dept_code/memo_id/
+        required_date or the code doesn't resolve to a live row.
       parameters:
       - description: status filter
         in: query
@@ -7789,6 +7808,16 @@ paths:
       - Purchase Request
   /pr/{id}:
     get:
+      description: |-
+        po_conversion_status is computed from purchase_request_line qty_requested vs
+        qty_ordered aggregated across all lines: FULLY_CONVERTED, PARTIALLY_CONVERTED,
+        or NOT_CONVERTED (same 3 values as GET /pr's list-level field).
+        project_name is resolved from project_code via the project table (null if the
+        PR has no project_code or it doesn't match a live project row), same as job_name.
+        dept_name is resolved from dept_code via the departments table, and memo_no is
+        resolved from memo_id via the memo table — both null when the PR has no
+        dept_code/memo_id or the code doesn't resolve to a live row. Also carries
+        required_date and created_at.
       parameters:
       - description: PR ID
         in: path

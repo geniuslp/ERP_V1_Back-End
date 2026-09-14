@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -907,15 +908,27 @@ func (h *StockItemHandler) Lookup(c *fiber.Ctx) error {
 
 	var itemName string
 	var qtyOnHand float64
+	// COUNT(inv.id) = 0 means the LEFT JOIN found no stock_inventory rows for this item at
+	// all — trust stock_item.qty as authoritative in that case (per CLAUDE.md, stock_item.qty
+	// is supposed to be a rollup of stock_inventory, but drift between the two is a known,
+	// undetected issue since nothing enforces it — see mat_code=PA0200401300007, item_id=77).
+	// When stock_inventory DOES have rows, keep summing those as the real per-location
+	// breakdown, since that's the more granular source once it actually exists.
 	err := h.db.QueryRow(ctx, `
-		SELECT si.item_name, COALESCE(SUM(inv.qty_on_hand), 0) AS qty_on_hand
+		SELECT si.item_name,
+		       CASE WHEN COUNT(inv.id) = 0 THEN si.qty
+		            ELSE COALESCE(SUM(inv.qty_on_hand), 0)
+		       END AS qty_on_hand
 		FROM stock_item si
 		LEFT JOIN stock_inventory inv ON inv.item_id = si.id
 		WHERE si.mat_code = $1
-		GROUP BY si.item_name`, matCode,
+		GROUP BY si.item_name, si.qty`, matCode,
 	).Scan(&itemName, &qtyOnHand)
 	if err != nil {
-		return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"mat_code": matCode, "found": false}})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"mat_code": matCode, "found": false}})
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, "stock lookup failed: "+err.Error())
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{

@@ -1,5 +1,11 @@
 # ERP API — Skill Guide for Claude Code
 
+## ⚙️ Working rules — Claude Code prompting
+- **Prompt ที่สั่งงาน Claude Code ต้องเขียนเป็นภาษาอังกฤษเสมอ**
+- **ต้องแยก prompt เป็น 3 ส่วนตาม layer เสมอ**: `Frontend` / `Backend` / `SQL` — ห้ามรวมเป็น prompt เดียว
+- งานที่กระทบหลาย layer: ส่งตามลำดับ **SQL → Backend → Frontend**
+- (รายละเอียดเพิ่มเติมดูหัวข้อ "Working rules — Claude Code prompting" ใน `CLAUDE.md`)
+
 ## Adding a new feature — checklist
 เวลาจะเพิ่ม feature ใหม่ให้ทำตามลำดับนี้เสมอ
 

@@ -900,6 +900,7 @@ type CreatePRLine struct {
 	MatCode        string  `json:"mat_code" validate:"required"`
 	QtyRequested   float64 `json:"qty_requested" validate:"required,gt=0"`
 	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
+	Remarks        *string `json:"remarks,omitempty"`
 	// DeductStock: whether Submit should reserve this line against stock_item.qty.
 	// Omit (nil) to keep today's default behavior (true).
 	DeductStock *bool `json:"deduct_stock,omitempty"`
@@ -933,6 +934,7 @@ type UpdatePRLine struct {
 	MatCode        string  `json:"mat_code" validate:"required"`
 	QtyRequested   float64 `json:"qty_requested" validate:"required,gt=0"`
 	CostSubgroupID *int64  `json:"cost_subgroup_id,omitempty"`
+	Remarks        *string `json:"remarks,omitempty"`
 	// DeductStock: whether Submit should reserve this line against stock_item.qty.
 	// Omit (nil) to keep today's default behavior (true).
 	DeductStock *bool `json:"deduct_stock,omitempty"`

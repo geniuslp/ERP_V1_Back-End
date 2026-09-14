@@ -7939,7 +7939,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "available_for_po=true additionally restricts to status=COMPLETED PRs that still\nhave at least one line not fully referenced by existing PO(s) — for the \"select\nPR to create PO from\" picker only. Omit it for any other PR listing (PR status/\nhistory pages), which must keep showing every PR regardless of reference status.",
+                "description": "available_for_po=true additionally restricts to status=COMPLETED PRs that still\nhave at least one line not fully referenced by existing PO(s) — for the \"select\nPR to create PO from\" picker only. Omit it for any other PR listing (PR status/\nhistory pages), which must keep showing every PR regardless of reference status.\nEach item also carries po_conversion_status, computed from purchase_request_line\nqty_requested vs qty_ordered (aggregated across all lines, not the same as \"status\"):\nFULLY_CONVERTED (every line qty_ordered \u003e= qty_requested), PARTIALLY_CONVERTED\n(at least one line qty_ordered \u003e 0 but not all lines fully ordered), NOT_CONVERTED\n(every line qty_ordered = 0 or NULL).\nEach item also carries job_name (resolved from job_code via cost_subject+cost_job,\nsame join as GET /pr/{id}) and project_name (resolved from project_code via the\nproject table) — both null when the PR has no job_code/project_code or the code\ndoesn't resolve to a live master row.\nEach item also carries memo_no (resolved from memo_id via the memo table),\ndept_name (resolved from dept_code via the departments table), required_date\n(\"วันที่ส่งสินค้า\" — when the requester needs the goods by, distinct from pr_date)\nand created_at (\"วันที่เปิดเอกสาร\" — the DB row insert timestamp). dept_name,\nmemo_no, and required_date are null when the PR has no dept_code/memo_id/\nrequired_date or the code doesn't resolve to a live row.",
                 "produces": [
                     "application/json"
                 ],
@@ -8060,6 +8060,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "po_conversion_status is computed from purchase_request_line qty_requested vs\nqty_ordered aggregated across all lines: FULLY_CONVERTED, PARTIALLY_CONVERTED,\nor NOT_CONVERTED (same 3 values as GET /pr's list-level field).\nproject_name is resolved from project_code via the project table (null if the\nPR has no project_code or it doesn't match a live project row), same as job_name.\ndept_name is resolved from dept_code via the departments table, and memo_no is\nresolved from memo_id via the memo table — both null when the PR has no\ndept_code/memo_id or the code doesn't resolve to a live row. Also carries\nrequired_date and created_at.",
                 "produces": [
                     "application/json"
                 ],
@@ -12445,6 +12446,9 @@ const docTemplate = `{
                 },
                 "qty_requested": {
                     "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
                 }
             }
         },
@@ -14690,6 +14694,9 @@ const docTemplate = `{
                 },
                 "qty_requested": {
                     "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
                 }
             }
         },
