@@ -1147,6 +1147,7 @@ type GRN struct {
 	WarehouseCode string    `json:"warehouse_code" db:"warehouse_code"`
 	SupplierID    *int64    `json:"supplier_id,omitempty" db:"supplier_id"`
 	DeliveryNote  *string   `json:"delivery_note,omitempty" db:"delivery_note"`
+	DeliveryDate  *string   `json:"delivery_date,omitempty" db:"delivery_date"`
 	Status        string    `json:"status" db:"status"`
 	QualityStatus string    `json:"quality_status" db:"quality_status"`
 	ReceivedBy    int64     `json:"received_by" db:"received_by"`
@@ -1172,8 +1173,15 @@ type CreateGRNRequest struct {
 	POID          int64           `json:"po_id" validate:"required"`
 	WarehouseCode string          `json:"warehouse_code" validate:"required"`
 	DeliveryNote  *string         `json:"delivery_note,omitempty"`
+	DeliveryDate  *string         `json:"delivery_date,omitempty" validate:"omitempty,datetime=2006-01-02"`
 	Remarks       *string         `json:"remarks,omitempty"`
 	Lines         []CreateGRNLine `json:"lines" validate:"required,min=1,dive"`
+}
+
+// ConfirmGRNRequest is the optional body for POST /grn/{id}/confirm — currently only carries
+// delivery_date since the endpoint otherwise takes no fields from the client.
+type ConfirmGRNRequest struct {
+	DeliveryDate *string `json:"delivery_date,omitempty" validate:"omitempty,datetime=2006-01-02"`
 }
 
 type CreateGRNLine struct {

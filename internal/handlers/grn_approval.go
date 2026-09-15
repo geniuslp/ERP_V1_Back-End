@@ -42,6 +42,11 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
+	if req.DeliveryDate != nil {
+		if _, err := time.Parse("2006-01-02", *req.DeliveryDate); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "delivery_date must be a valid date (YYYY-MM-DD)")
+		}
+	}
 
 	// Get supplier from PO
 	var supplierID *int64
@@ -105,10 +110,10 @@ func (h *GRNHandler) createGRNTx(ctx context.Context, userID int64, req models.C
 
 	var grnID int64
 	err = tx.QueryRow(ctx, `
-		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, status, quality_status, received_by, remarks)
-		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,'DRAFT','PENDING',$6,$7)
+		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, delivery_date, status, quality_status, received_by, remarks)
+		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,'DRAFT','PENDING',$7,$8)
 		RETURNING id`,
-		grnNo, req.POID, req.WarehouseCode, supplierID, req.DeliveryNote, userID, req.Remarks,
+		grnNo, req.POID, req.WarehouseCode, supplierID, req.DeliveryNote, req.DeliveryDate, userID, req.Remarks,
 	).Scan(&grnID)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -137,13 +142,27 @@ func (h *GRNHandler) createGRNTx(ctx context.Context, userID int64, req models.C
 // @Description  Confirms GRN and updates purchase_order_line.qty_received. Does not touch inventory/inventory_transaction — that table pair is unused (see CLAUDE.md); stock movement happens via POST /grn/receive instead.
 // @Tags         GRN
 // @Security     BearerAuth
+// @Accept       json
 // @Produce      json
-// @Param        id  path  int  true  "GRN ID"
+// @Param        id    path  int                     true  "GRN ID"
+// @Param        body  body  models.ConfirmGRNRequest false "Optional delivery_date"
 // @Success      200  {object}  fiber.Map
 // @Router       /grn/{id}/confirm [post]
 func (h *GRNHandler) Confirm(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
 	id := c.Params("id")
+
+	var req models.ConfirmGRNRequest
+	if len(c.Body()) > 0 {
+		if err := c.BodyParser(&req); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+	}
+	if req.DeliveryDate != nil {
+		if _, err := time.Parse("2006-01-02", *req.DeliveryDate); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "delivery_date must be a valid date (YYYY-MM-DD)")
+		}
+	}
 
 	var status, warehouseCode string
 	var grnNo string
@@ -157,9 +176,15 @@ func (h *GRNHandler) Confirm(c *fiber.Ctx) error {
 	tx, _ := h.db.Begin(context.Background())
 	defer tx.Rollback(context.Background())
 
-	tx.Exec(context.Background(), `
-		UPDATE grn SET status='CONFIRMED', confirmed_by=$1, confirmed_at=NOW() WHERE id=$2`,
-		claims.UserID, id)
+	if req.DeliveryDate != nil {
+		tx.Exec(context.Background(), `
+			UPDATE grn SET status='CONFIRMED', confirmed_by=$1, confirmed_at=NOW(), delivery_date=$2 WHERE id=$3`,
+			claims.UserID, req.DeliveryDate, id)
+	} else {
+		tx.Exec(context.Background(), `
+			UPDATE grn SET status='CONFIRMED', confirmed_by=$1, confirmed_at=NOW() WHERE id=$2`,
+			claims.UserID, id)
+	}
 
 	// NOTE: does NOT touch inventory/inventory_transaction — see CLAUDE.md
 	// "Session learnings (2026-07-27) #3": that legacy table pair is decided
@@ -210,7 +235,7 @@ func (h *GRNHandler) List(c *fiber.Ctx) error {
 	rows, err := h.db.Query(context.Background(), `
 		SELECT g.id, g.grn_no, g.grn_date, g.po_id, po.po_no, g.warehouse_code,
 		       g.supplier_id, s.supplier_name, g.status, g.quality_status,
-		       u.full_name AS received_by, g.created_at
+		       u.full_name AS received_by, g.created_at, g.delivery_date
 		FROM grn g
 		JOIN purchase_order po ON po.id = g.po_id
 		LEFT JOIN supplier s ON s.id = g.supplier_id
@@ -222,24 +247,25 @@ func (h *GRNHandler) List(c *fiber.Ctx) error {
 	defer rows.Close()
 
 	type GRNRow struct {
-		GRNID         int64     `json:"grn_id"`
-		GRNNo         string    `json:"grn_no"`
-		GRNDate       time.Time `json:"grn_date"`
-		POID          int64     `json:"po_id"`
-		PONo          string    `json:"po_no"`
-		WarehouseCode string    `json:"warehouse_code"`
-		SupplierID    *int64    `json:"supplier_id,omitempty"`
-		SupplierName  *string   `json:"supplier_name,omitempty"`
-		Status        string    `json:"status"`
-		QualityStatus string    `json:"quality_status"`
-		ReceivedBy    string    `json:"received_by"`
-		CreatedAt     time.Time `json:"created_at"`
+		GRNID         int64      `json:"grn_id"`
+		GRNNo         string     `json:"grn_no"`
+		GRNDate       time.Time  `json:"grn_date"`
+		POID          int64      `json:"po_id"`
+		PONo          string     `json:"po_no"`
+		WarehouseCode string     `json:"warehouse_code"`
+		SupplierID    *int64     `json:"supplier_id,omitempty"`
+		SupplierName  *string    `json:"supplier_name,omitempty"`
+		Status        string     `json:"status"`
+		QualityStatus string     `json:"quality_status"`
+		ReceivedBy    string     `json:"received_by"`
+		CreatedAt     time.Time  `json:"created_at"`
+		DeliveryDate  *time.Time `json:"delivery_date,omitempty"`
 	}
 	var items []GRNRow
 	for rows.Next() {
 		var r GRNRow
 		rows.Scan(&r.GRNID, &r.GRNNo, &r.GRNDate, &r.POID, &r.PONo, &r.WarehouseCode,
-			&r.SupplierID, &r.SupplierName, &r.Status, &r.QualityStatus, &r.ReceivedBy, &r.CreatedAt)
+			&r.SupplierID, &r.SupplierName, &r.Status, &r.QualityStatus, &r.ReceivedBy, &r.CreatedAt, &r.DeliveryDate)
 		items = append(items, r)
 	}
 

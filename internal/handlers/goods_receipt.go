@@ -103,6 +103,7 @@ type receiveGRNRequest struct {
 	POID         int64            `json:"po_id" validate:"required"`
 	InvoiceNo    string           `json:"invoice_no" validate:"required"`
 	DeliveryNote *string          `json:"delivery_note,omitempty"`
+	DeliveryDate *string          `json:"delivery_date,omitempty" validate:"omitempty,datetime=2006-01-02"`
 	Lines        []receiveGRNLine `json:"lines" validate:"required,min=1,dive"`
 }
 
@@ -125,7 +126,7 @@ func generateGRNNo(ctx context.Context, db *pgxpool.Pool) (string, error) {
 
 // Receive godoc
 // @Summary      Create Goods Receipt (single full receive) against an APPROVED PO
-// @Description  Writes grn/grn_line, upserts stock_inventory.qty_on_hand per item+location, rolls up stock_item.qty as the sum, logs stock_transaction (IN), updates purchase_order_line/purchase_order status
+// @Description  Writes grn/grn_line (including optional delivery_date, distinct from purchase_order.expected_date), upserts stock_inventory.qty_on_hand per item+location, rolls up stock_item.qty as the sum, logs stock_transaction (IN), updates purchase_order_line/purchase_order status
 // @Tags         GoodsReceipt
 // @Security     BearerAuth
 // @Accept       json
@@ -145,6 +146,11 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 	}
 	if req.POID == 0 || strings.TrimSpace(req.InvoiceNo) == "" || len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "po_id, invoice_no, lines are required")
+	}
+	if req.DeliveryDate != nil {
+		if _, err := time.Parse("2006-01-02", *req.DeliveryDate); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "delivery_date must be a valid date (YYYY-MM-DD)")
+		}
 	}
 	for _, l := range req.Lines {
 		if l.POLineID == 0 || l.MatCode == "" || l.AddQty <= 0 {
@@ -187,10 +193,10 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	var grnID int64
 	err = tx.QueryRow(ctx, `
-		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, invoice_no, status, quality_status, received_by)
-		VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, 'CONFIRMED', 'PENDING', $7)
+		INSERT INTO grn (grn_no, grn_date, po_id, warehouse_code, supplier_id, delivery_note, delivery_date, invoice_no, status, quality_status, received_by)
+		VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, 'CONFIRMED', 'PENDING', $8)
 		RETURNING id`,
-		grnNo, req.POID, warehouseCode, *supplierID, req.DeliveryNote, req.InvoiceNo, claims.UserID,
+		grnNo, req.POID, warehouseCode, *supplierID, req.DeliveryNote, req.DeliveryDate, req.InvoiceNo, claims.UserID,
 	).Scan(&grnID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create GRN: "+err.Error())
@@ -229,13 +235,20 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 			locationCode = *poLocationCode
 		}
 
+		// qty_before must come from stock_item.qty (the authoritative "current stock" the
+		// receive page's "จำนวนสุทธิ" reads), locked FOR UPDATE — not from
+		// SUM(stock_inventory.qty_on_hand). stock_inventory can have zero rows for an item
+		// whose stock was last written by a different flow (Requisition/Transfer write
+		// stock_item.qty directly without touching stock_inventory — see CLAUDE.md "Session
+		// learnings 2026-08-16 #3"), which previously made qty_before silently read as 0.
 		var qtyBefore float64
 		if err := tx.QueryRow(ctx, `
-			SELECT COALESCE(SUM(qty_on_hand), 0) FROM stock_inventory WHERE item_id = $1`,
+			SELECT qty FROM stock_item WHERE id = $1 FOR UPDATE`,
 			itemID,
 		).Scan(&qtyBefore); err != nil {
 			return err
 		}
+		qtyAfter := qtyBefore + line.AddQty
 
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO stock_inventory (item_id, location_code, warehouse_code, qty_on_hand, updated_at)
@@ -249,15 +262,11 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 			return fmt.Errorf("upsert stock_inventory for mat_code %s: %w", line.MatCode, err)
 		}
 
-		var qtyAfter float64
-		if err := tx.QueryRow(ctx, `
-			UPDATE stock_item SET qty = (
-				SELECT COALESCE(SUM(qty_on_hand), 0) FROM stock_inventory WHERE item_id = $1
-			), updated_at = NOW()
-			WHERE id = $1
-			RETURNING qty`, itemID,
-		).Scan(&qtyAfter); err != nil {
-			return err
+		if _, err := tx.Exec(ctx, `
+			UPDATE stock_item SET qty = $1, updated_at = NOW() WHERE id = $2`,
+			qtyAfter, itemID,
+		); err != nil {
+			return fmt.Errorf("update qty for mat_code %s: %w", line.MatCode, err)
 		}
 
 		// Last Cost strategy: unit_cost is always overwritten to this receipt's PO line
@@ -462,7 +471,8 @@ func (h *GoodsReceiptHandler) History(c *fiber.Ctx) error {
 		    g.score_quality, g.score_quantity, g.score_ontime, g.score_notes,
 		    COALESCE(u.full_name, '') AS received_by_name,
 		    COALESCE(gl.line_count, 0) AS line_count,
-		    COALESCE(gl.total_qty_received, 0) AS total_qty_received
+		    COALESCE(gl.total_qty_received, 0) AS total_qty_received,
+		    g.delivery_date::text
 		FROM grn g
 		LEFT JOIN purchase_order po ON po.id = g.po_id
 		LEFT JOIN users u ON u.id = g.received_by
@@ -495,13 +505,14 @@ func (h *GoodsReceiptHandler) History(c *fiber.Ctx) error {
 		ReceivedByName   string  `json:"received_by_name"`
 		LineCount        int     `json:"line_count"`
 		TotalQtyReceived float64 `json:"total_qty_received"`
+		DeliveryDate     *string `json:"delivery_date"`
 	}
 	var results []historyResp
 	for rows.Next() {
 		var r historyResp
 		if err := rows.Scan(&r.GRNID, &r.GRNNo, &r.GRNDate, &r.PONo, &r.SupplierID, &r.WarehouseCode, &r.Status,
 			&r.ScoreQuality, &r.ScoreQuantity, &r.ScoreOntime, &r.ScoreNotes,
-			&r.ReceivedByName, &r.LineCount, &r.TotalQtyReceived); err != nil {
+			&r.ReceivedByName, &r.LineCount, &r.TotalQtyReceived, &r.DeliveryDate); err != nil {
 			return err
 		}
 		results = append(results, r)

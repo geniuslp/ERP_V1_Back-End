@@ -1613,7 +1613,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Writes grn/grn_line, upserts stock_inventory.qty_on_hand per item+location, rolls up stock_item.qty as the sum, logs stock_transaction (IN), updates purchase_order_line/purchase_order status",
+                "description": "Writes grn/grn_line (including optional delivery_date, distinct from purchase_order.expected_date), upserts stock_inventory.qty_on_hand per item+location, rolls up stock_item.qty as the sum, logs stock_transaction (IN), updates purchase_order_line/purchase_order status",
                 "consumes": [
                     "application/json"
                 ],
@@ -1653,6 +1653,9 @@
                     }
                 ],
                 "description": "Confirms GRN and updates purchase_order_line.qty_received. Does not touch inventory/inventory_transaction — that table pair is unused (see CLAUDE.md); stock movement happens via POST /grn/receive instead.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -1667,6 +1670,14 @@
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Optional delivery_date",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/models.ConfirmGRNRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -11912,6 +11923,14 @@
                 }
             }
         },
+        "models.ConfirmGRNRequest": {
+            "type": "object",
+            "properties": {
+                "delivery_date": {
+                    "type": "string"
+                }
+            }
+        },
         "models.CreateBorrowRequest": {
             "type": "object",
             "properties": {
@@ -12017,6 +12036,9 @@
                 "warehouse_code"
             ],
             "properties": {
+                "delivery_date": {
+                    "type": "string"
+                },
                 "delivery_note": {
                     "type": "string"
                 },

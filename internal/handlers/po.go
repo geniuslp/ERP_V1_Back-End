@@ -213,12 +213,13 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	rows, err := h.db.Query(context.Background(), `
 		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name,
 		       po.status, po.status_receive, po.order_type, po.job_code, po.currency, po.total_amount, po.vat_amount, po.net_amount,
-		       po.expected_date::text, po.created_at, po.updated_at, po.project_code,
+		       po.expected_date::text, po.created_at, po.updated_at, po.project_code, pj.project_name,
 		       COALESCE(cu.full_name, '') AS created_by_name,
 		       COALESCE(uu.full_name, '') AS updated_by_name,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
+		LEFT JOIN project pj ON pj.project_code = po.project_code
 		LEFT JOIN users cu ON cu.id = po.created_by
 		LEFT JOIN users uu ON uu.id = po.updated_by
 		`+where+`
@@ -246,6 +247,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		CreatedAt     time.Time `json:"created_at"`
 		UpdatedAt     time.Time `json:"updated_at"`
 		ProjectCode   *string   `json:"project_code,omitempty"`
+		ProjectName   *string   `json:"project_name,omitempty"`
 		CreatedByName string    `json:"created_by_name"`
 		UpdatedByName string    `json:"updated_by_name"`
 		JobNames      []string  `json:"job_names,omitempty"`
@@ -260,7 +262,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		var r PORow
 		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.SupplierName,
 			&r.Status, &r.StatusReceive, &r.OrderType, &r.JobCode, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
-			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode,
+			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
 			&r.CreatedByName, &r.UpdatedByName, &r.RevisionRound); err != nil {
 			return err
 		}
@@ -2570,6 +2572,8 @@ type poPrintSupplier struct {
 	Address1      *string `json:"address1"`
 	TermOfPayment *string `json:"termOfPayment"`
 	Contact       *string `json:"contact"`
+	SalesPerson   *string `json:"salesPerson"`
+	ContactPhone  *string `json:"contactPhone"`
 }
 
 // poPrintItem is one line of the print-data response.
@@ -2679,6 +2683,8 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		supplierPaymentTerms        *string
 		supplierContactName         *string
 		supplierContactPhone        *string
+		supplierSalesPerson         *string
+		supplierSalesPersonPhone    *string
 	)
 
 	err := h.db.QueryRow(ctx, `
@@ -2687,7 +2693,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		       po.payment_terms, po.remarks, po.discount_amount, po.use_discount, po.use_vat, po.use_wht,
 		       po.vat_amount, po.wht_amount, po.total_amount, po.net_amount,
 		       pr.pr_no,
-		       s.supplier_name, s.address, s.payment_terms, s.contact_name, s.contact_phone,
+		       s.supplier_name, s.address, s.payment_terms, s.contact_name, s.contact_phone, s.sales_person, s.sales_person_phone,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
@@ -2699,7 +2705,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		&poPaymentTerms, &remarks, &discountAmount, &useDiscount, &useVat, &useWht,
 		&vatAmount, &whtAmount, &totalAmount, &netAmount,
 		&prNo,
-		&supplierName, &supplierAddress, &supplierPaymentTerms, &supplierContactName, &supplierContactPhone,
+		&supplierName, &supplierAddress, &supplierPaymentTerms, &supplierContactName, &supplierContactPhone, &supplierSalesPerson, &supplierSalesPersonPhone,
 		&revisionRound,
 	)
 	if err != nil {
@@ -2804,6 +2810,14 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 			Address1:      supplierAddress,
 			TermOfPayment: firstNonNil(poPaymentTerms, supplierPaymentTerms),
 			Contact:       supplierContactName,
+			SalesPerson:   supplierSalesPerson,
+			// ContactPhone is fed from sales_person_phone, not contact_phone — the
+			// "เบอร์ติดต่อ" field on the Supplier edit form is paired with "พนักงานขาย"
+			// in the same UI section and writes to sales_person_phone, confirmed live
+			// (a supplier had sales_person/sales_person_phone set while contact_phone
+			// stayed NULL). contact_phone is still selected above for the top-level
+			// "tel" field, just no longer duplicated here.
+			ContactPhone: supplierSalesPersonPhone,
 		},
 		Items:        items,
 		ExtraDiscAmt: derefFloat(discountAmount),
