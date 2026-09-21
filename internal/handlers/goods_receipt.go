@@ -100,6 +100,7 @@ type receiveGRNLine struct {
 }
 
 type receiveGRNRequest struct {
+	GRNNo        string           `json:"grn_no" validate:"required"`
 	POID         int64            `json:"po_id" validate:"required"`
 	InvoiceNo    string           `json:"invoice_no" validate:"required"`
 	DeliveryNote *string          `json:"delivery_note,omitempty"`
@@ -107,21 +108,21 @@ type receiveGRNRequest struct {
 	Lines        []receiveGRNLine `json:"lines" validate:"required,min=1,dive"`
 }
 
-func generateGRNNo(ctx context.Context, db *pgxpool.Pool) (string, error) {
-	now := time.Now()
-	prefix := fmt.Sprintf("GRN-%s-", now.Format("200601"))
-	var lastNo *string
-	err := db.QueryRow(ctx, `
-		SELECT grn_no FROM grn
-		WHERE grn_no LIKE $1
-		ORDER BY grn_no DESC LIMIT 1`, prefix+"%").Scan(&lastNo)
-	seq := 1
-	if err == nil && lastNo != nil {
-		var lastSeq int
-		fmt.Sscanf((*lastNo)[len(prefix):], "%d", &lastSeq)
-		seq = lastSeq + 1
+// ReserveGRNNumber godoc
+// @Summary      Reserve the next GRN number (consumes grn_seq)
+// @Description  Calls nextval('grn_seq') and formats it immediately as the real grn_no (GRN-<YYYYMM>-NNNN). This is the single, consolidated format for grn_no — both POST /grn/receive and POST /grn now require a number reserved from this endpoint. Unlike the old per-handler generators, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create/receive page opens, then submits the returned grn_no with the create/receive request.
+// @Tags         GoodsReceipt
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /grn/reserve-number [get]
+func (h *GoodsReceiptHandler) ReserveGRNNumber(c *fiber.Ctx) error {
+	var seq int64
+	if err := h.db.QueryRow(context.Background(), `SELECT nextval('grn_seq')`).Scan(&seq); err != nil {
+		return err
 	}
-	return fmt.Sprintf("%s%04d", prefix, seq), nil
+	grnNo := fmt.Sprintf("GRN-%s-%04d", time.Now().Format("200601"), seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"grn_no": grnNo}})
 }
 
 // Receive godoc
@@ -180,16 +181,19 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 	}
 	warehouseCode := *poWarehouseCode
 
-	grnNo, err := generateGRNNo(ctx, h.db)
-	if err != nil {
-		return err
-	}
-
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// grn_no is generated internally from grn_seq inside this transaction — the
+	// create/receive frontend page does not call reserve-number, unlike PR/PO.
+	var seq int64
+	if err := tx.QueryRow(ctx, `SELECT nextval('grn_seq')`).Scan(&seq); err != nil {
+		return err
+	}
+	grnNo := fmt.Sprintf("GRN-%s-%04d", time.Now().Format("200601"), seq)
 
 	var grnID int64
 	err = tx.QueryRow(ctx, `

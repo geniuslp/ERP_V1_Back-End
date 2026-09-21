@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"erp-api/internal/middleware"
@@ -63,25 +62,11 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
-	// grn_no is generated from an unlocked MAX(id)+1 read, so concurrent/double-click submits
-	// can race and collide on the grn_no unique constraint — retry with a freshly generated
-	// number on a duplicate-key error instead of 500ing.
-	const maxAttempts = 3
-	var grnID int64
-	var grnNo string
-	var err error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		grnID, grnNo, err = h.createGRNTx(context.Background(), claims.UserID, req, supplierID)
-		if err == nil {
-			break
-		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "grn_no") {
-			if attempt == maxAttempts {
-				return fiber.NewError(fiber.StatusConflict, "failed to generate unique GRN number, please try again")
-			}
-			continue
-		}
+	// grn_no is generated internally from grn_seq inside createGRNTx's own transaction — this
+	// create page does not call reserve-number, unlike PR/PO. grn_seq being a real Postgres
+	// sequence means no retry-on-collision loop is needed here.
+	grnID, grnNo, err := h.createGRNTx(context.Background(), claims.UserID, req, supplierID)
+	if err != nil {
 		return err
 	}
 
@@ -95,18 +80,17 @@ func (h *GRNHandler) Create(c *fiber.Ctx) error {
 // generating a fresh grn_no on each call. Returns the pgconn duplicate-key error unwrapped so
 // the caller can decide whether to retry.
 func (h *GRNHandler) createGRNTx(ctx context.Context, userID int64, req models.CreateGRNRequest, supplierID *int64) (int64, string, error) {
-	now := time.Now()
-	var seq int64
-	if err := h.db.QueryRow(ctx, `SELECT COALESCE(MAX(id),0)+1 FROM grn`).Scan(&seq); err != nil {
-		return 0, "", err
-	}
-	grnNo := fmt.Sprintf("GRN-%s-%06d", now.Format("2006"), seq)
-
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return 0, "", err
 	}
 	defer tx.Rollback(ctx)
+
+	var seq int64
+	if err := tx.QueryRow(ctx, `SELECT nextval('grn_seq')`).Scan(&seq); err != nil {
+		return 0, "", err
+	}
+	grnNo := fmt.Sprintf("GRN-%s-%04d", time.Now().Format("200601"), seq)
 
 	var grnID int64
 	err = tx.QueryRow(ctx, `

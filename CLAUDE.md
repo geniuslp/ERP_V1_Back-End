@@ -882,3 +882,91 @@ discard on rebuild/recreate stops mattering. Until that's done, any deploy step 
 recreates the `api` container should copy `uploads/` out of the old container first (or restore it
 into the new one from git/backup) — a plain `git pull` immediately before the rebuild is not
 sufficient by itself, since the final image never picks the directory up regardless.
+
+---
+
+## 🧭 Session learnings (2026-09-21) — Inventory Control (IC) module built end-to-end
+
+### 1. New IC module — project list → PO Receive → PO Return, 3 submenus under `MENU_IC`
+Built `internal/handlers/ic.go` (`ICHandler`) from scratch, routed under `/ic` (`internal/routes/routes.go`).
+Flow: a project list page → **PO Receive** (Tab 1 "document details" + Tab 2 "line items", with
+stock/cost branching by `purchase_order.order_type`, plus print) → **PO Return** (mirrors receive:
+subtracts instead of adds, reuses the same `receive_no`, no separate document number of its own).
+A 4th "project balance" page was discussed and **decided against** — only 3 submenus exist under
+the new `MENU_IC` parent menu.
+- **Tab 1 (`POST /ic/pos/{poId}/receive-document`)** creates one [ic_po_receive_document](database.md#ic_po_receive_document)
+  row per PO (409 on a second submit) — `tax_invoice_no/date`, `temp_delivery_no/date`,
+  `exchange_rate`, `remarks`; `due_date` is server-computed from `tax_invoice_date + credit_days`,
+  `credit_days` parsed out of the PO's supplier's `payment_terms` text.
+- **Tab 2 (`POST /ic/pos/{poId}/receive-lines`)** is one DB transaction: locks the PO + each
+  touched `purchase_order_line` (`SELECT ... FOR UPDATE`), validates `receive_qty` against the
+  line's remaining balance, then posts to `stock_item`/`stock_transaction` when
+  `order_type='stock'` or to the new [ic_project_cost_item](database.md#ic_project_cost_item) /
+  [ic_project_cost_item_transaction](database.md#ic_project_cost_item_transaction) when
+  `order_type='cost'`, and recomputes `purchase_order.status_receive`. On the **first successful**
+  line-item submission it also issues a `receive_no` (via [por_number_counter](database.md#por_number_counter),
+  monthly-reset, format `POR-YYYYMM-NNNN`) and stamps it onto the `ic_po_receive_document` row —
+  later partial-receive rounds against the same PO do **not** regenerate it (idempotent by design,
+  the document's receive number stays stable across multiple receive rounds).
+- **PO Return** (`POST /ic/pos/{poId}/return-lines`) is the same transactional shape in reverse:
+  validates `return_qty` against the line's current `qty_received`, subtracts from
+  `stock_item`/`stock_transaction` or `ic_project_cost_item`/`ic_project_cost_item_transaction`
+  depending on `order_type`, recomputes `status_receive`, and never touches `receive_no` at all.
+  Returning against `ic_project_cost_item` never auto-creates the row — returning an item that was
+  never received errors out (unlike receive, which auto-creates via the `material_code` join).
+- Cost-side (`order_type='cost'`) balance tracking is genuinely new: `ic_project_cost_item` is the
+  cost-flow equivalent of `stock_item`, keyed on `(project_code, mat_code, cost_subgroup_id)` —
+  there was no prior balance table for goods received into a project as a cost line item (only the
+  stock side had `stock_item`/`stock_inventory` before this).
+
+### 2. Fixed (frontend bug, found while testing IC, unrelated to IC itself): `po_no` missing from PO create payload
+While testing the IC flow end-to-end against freshly-created POs, found the PO create page's
+`POST /po` payload was missing `po_no` entirely — a frontend bug, not a backend one (the backend
+already expected/accepted it correctly). Flagged and fixed on the frontend side; noted here only
+because it was found and fixed during this session's testing pass, not because it's a backend change.
+
+### 3. Fixed: PO numbering — non-resetting sequence → monthly-resetting counter
+`po_no` generation previously drew from a plain, never-reset sequence — inconsistent with every
+other document type in this codebase (`pr_no`, `memo_no`, etc.), which all reset monthly. Replaced
+with [po_number_counter](database.md#po_number_counter) (`year_month` PK, `last_seq`), consumed via
+`GET /po/reserve-number` (`internal/handlers/po.go`): the frontend calls this once when the
+create-PO page opens, the counter is incremented and consumed immediately (not just previewed), and
+the returned `po_no` is submitted as part of `POST /po`. A gap in the sequence (from an abandoned
+create) is expected and fine, same as the existing PR/Memo numbering behavior. See
+[po_number_counter](database.md#po_number_counter) and the `po_seq`-dropped note in database.md's
+Important Notes for the current, only-code-verified state of the old sequence object itself.
+
+### 4. Fixed: CostCode display was showing the wrong (non-unique) field
+`purchase_order_line.cost_subgroup_id` display was resolving to just `cost_subgroup.subgroup_code`
+alone — not unique across the whole cost-code hierarchy, so different cost codes under different
+subject/job/group could collide on-screen. Corrected in `ic.go`'s receive-lines/return-lines
+queries (and matches the same 4-level concatenation pattern already used elsewhere in `po.go`,
+e.g. its cost-allocation report query) to the full concatenation:
+`cost_subject.subject_code || cost_job.job_code || cost_group.group_code || cost_subgroup.subgroup_code`
+(e.g. `"MP01013"`). Use this same 4-level concat pattern for any future cost-code display — never
+show `subgroup_code` alone.
+
+### 5. Fixed: `GetReceiveDocument` was missing `receive_no` in its response
+`GET /ic/pos/{poId}/receive-document` (Tab 1's "load existing document" endpoint) was not selecting
+`receive_no` in its response payload — this broke the frontend's print-button enable check, since
+the button's enabled/disabled state depends on whether a `receive_no` has been issued yet. Fixed by
+adding `receive_no` to the `SELECT` list.
+
+### 6. Fixed: Stock Transaction History "Doc No" column didn't resolve PO/PO_RETURN refs
+The history page's "Doc No" column resolves `ref_doc_type` + `ref_doc_id`/`ref_doc_no` into a
+human-readable document number per source type, but had no case for `ref_doc_type IN ('PO',
+'PO_RETURN')` — rows from the new IC receive/return flow showed a blank or raw ID instead of a doc
+number. Fixed to resolve both `'PO'` and `'PO_RETURN'` to the owning PO's `receive_no` via a join
+through [ic_po_receive_document](database.md#ic_po_receive_document) (`ic_po_receive_document.po_id
+= purchase_order.id`), rather than trying to show the PO's own `po_no` — the receive/return
+transaction is conceptually tied to the receive document, not the PO document itself.
+
+### 7. Migration-file policy reconfirmed — still no new files, despite legacy 001–016 existing
+This project's policy remains: **schema changes go through pgAdmin manually, never new files under
+`migrations/`** (per user's standing instruction). All of the new tables/columns documented in this
+session (`ic_po_receive_document`, `ic_project_cost_item`, `ic_project_cost_item_transaction`,
+`po_number_counter`, `por_number_counter`, `work_order_payment_installment`,
+`work_order_retention`, `work_order_penalty`, plus `purchase_order.job_code`/`order_type` and
+`purchase_order_line.cost_subgroup_id`) were applied directly against the live DB, not via a
+migration file. `migrations/001`–`016` are legacy files that predate this policy — they document
+history, but nothing new should be added there going forward.

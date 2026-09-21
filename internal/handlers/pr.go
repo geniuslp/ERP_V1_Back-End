@@ -189,8 +189,11 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.PRNo == "" || req.LocationText == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "pr_no and location_text are required")
+	if req.PRNo == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "document number is required, call reserve-number first")
+	}
+	if req.LocationText == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "location_text is required")
 	}
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least one line required")
@@ -286,32 +289,14 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
-	// pr_no is client-suggested (from GET /pr/next-number) but that read is unlocked and can
-	// race under concurrent/double-click submits, so the insert itself is retried on a unique
-	// violation: first attempt uses the client's number, later attempts regenerate a fresh one
-	// server-side inside the transaction so two racing requests can't collide twice in a row.
-	const maxAttempts = 3
+	// pr_no is now reserved up front via GET /pr/reserve-number (nextval('pr_seq')), so no
+	// retry-on-collision loop is needed here anymore — the sequence guarantees uniqueness.
 	prNo := req.PRNo
-	var prID int64
-	var err error
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		prID, err = h.createPRTx(context.Background(), prNo, req)
-		if err == nil {
-			break
-		}
-
+	prID, err := h.createPRTx(context.Background(), prNo, req)
+	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "purchase_request_pr_no_key" {
-			if attempt == maxAttempts {
-				return fiber.NewError(fiber.StatusConflict, "failed to generate unique PR number, please try again")
-			}
-			nextNo, genErr := h.nextPRNumberLocked(context.Background())
-			if genErr != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, "failed to generate PR number: "+genErr.Error())
-			}
-			prNo = nextNo
-			continue
+			return fiber.NewError(fiber.StatusConflict, "pr_no already used — call reserve-number again")
 		}
 		return err
 	}
@@ -387,30 +372,28 @@ func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.Crea
 	return prID, nil
 }
 
-// nextPRNumberLocked regenerates the next PR number (same PR<YYYYMM>-<seq> format as
-// GET /pr/next-number) for use as a retry value after a unique-constraint collision.
-func (h *PRHandler) nextPRNumberLocked(ctx context.Context) (string, error) {
+// ReservePRNumber godoc
+// @Summary      Reserve the next PR number (consumes pr_number_counter, resets monthly)
+// @Description  Atomically increments pr_number_counter for the current year_month (YYYYMM) and formats it immediately as the real pr_no. Unlike the old pr_seq-based version, this resets to 0001 at the start of each new year_month instead of climbing forever. The number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The frontend calls this once when the create-PR page opens, then submits the returned pr_no as part of POST /pr.
+// @Tags         Purchase Request
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /pr/reserve-number [get]
+func (h *PRHandler) ReservePRNumber(c *fiber.Ctx) error {
 	now := time.Now()
-	prefix := fmt.Sprintf("PR%04d%02d", now.Year(), int(now.Month()))
-	pattern := prefix + "-%"
-
-	var lastNo string
-	err := h.db.QueryRow(ctx, `
-		SELECT pr_no FROM purchase_request
-		WHERE pr_no LIKE $1
-		  AND status NOT IN ('CANCELLED')
-		ORDER BY pr_no DESC
-		LIMIT 1`, pattern).Scan(&lastNo)
-
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return fmt.Sprintf("%s-0001", prefix), nil
-		}
-		return "", err
+	ym := now.Format("200601")
+	var seq int64
+	if err := h.db.QueryRow(context.Background(), `
+		INSERT INTO pr_number_counter (year_month, last_seq) VALUES ($1, 1)
+		ON CONFLICT (year_month) DO UPDATE SET last_seq = pr_number_counter.last_seq + 1
+		RETURNING last_seq`, ym,
+	).Scan(&seq); err != nil {
+		return err
 	}
-	parts := strings.Split(lastNo, "-")
-	seq, _ := strconv.Atoi(parts[len(parts)-1])
-	return fmt.Sprintf("%s-%04d", prefix, seq+1), nil
+	prefix := fmt.Sprintf("PR%04d%02d", now.Year(), int(now.Month()))
+	prNo := fmt.Sprintf("%s-%04d", prefix, seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"pr_no": prNo}})
 }
 
 // SubmitPR godoc

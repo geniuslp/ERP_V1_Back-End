@@ -71,8 +71,10 @@ func (h *RequisitionHandler) Create(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// req_no is generated internally from requisition_seq inside this transaction — the
+	// create page does not call reserve-number, unlike PR/PO.
 	var seq int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0)+1 FROM requisition`).Scan(&seq); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT nextval('requisition_seq')`).Scan(&seq); err != nil {
 		return err
 	}
 	reqNo := fmt.Sprintf("REQ-%s-%06d", time.Now().Format("2006"), seq)
@@ -124,6 +126,23 @@ func (h *RequisitionHandler) Create(c *fiber.Ctx) error {
 		"success": true,
 		"data":    fiber.Map{"id": reqID, "req_no": reqNo},
 	})
+}
+
+// ReserveReqNumber godoc
+// @Summary      Reserve the next Requisition number (consumes requisition_seq)
+// @Description  Calls nextval('requisition_seq') and formats it immediately as the real req_no (REQ-<YYYY>-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-requisition page opens, then submits the returned req_no as part of POST /requisition.
+// @Tags         Requisition
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /requisition/reserve-number [get]
+func (h *RequisitionHandler) ReserveReqNumber(c *fiber.Ctx) error {
+	var seq int64
+	if err := h.db.QueryRow(context.Background(), `SELECT nextval('requisition_seq')`).Scan(&seq); err != nil {
+		return err
+	}
+	reqNo := fmt.Sprintf("REQ-%s-%06d", time.Now().Format("2006"), seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"req_no": reqNo}})
 }
 
 // List godoc

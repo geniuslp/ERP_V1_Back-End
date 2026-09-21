@@ -216,6 +216,7 @@ type BorrowLine struct {
 }
 
 type CreateBorrowRequest struct {
+	BorrowNo       string          `json:"borrow_no"`
 	Purpose        *string         `json:"purpose"`
 	ExpectedReturn *string         `json:"expected_return"`
 	Remarks        *string         `json:"remarks"`
@@ -343,6 +344,7 @@ type RequisitionLine struct {
 }
 
 type CreateRequisitionRequest struct {
+	ReqNo         string                         `json:"req_no"`
 	ProjectCode   string                         `json:"project_code"`
 	WarehouseCode string                         `json:"warehouse_code"`
 	ReqDate       *string                        `json:"req_date"`
@@ -413,6 +415,7 @@ type StockTransferLine struct {
 }
 
 type CreateStockTransferRequest struct {
+	TransferNo        string                           `json:"transfer_no"`
 	TransferType      string                           `json:"transfer_type"`
 	TransferDate      *string                          `json:"transfer_date"`
 	FromWarehouseCode *string                          `json:"from_warehouse_code"`

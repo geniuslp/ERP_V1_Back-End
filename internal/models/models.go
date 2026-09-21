@@ -1039,6 +1039,7 @@ type POLine struct {
 }
 
 type CreatePORequest struct {
+	PONo          string  `json:"po_no" validate:"required"`
 	SupplierID    int64   `json:"supplier_id" validate:"required"`
 	PRID          *int64  `json:"pr_id,omitempty"`
 	RFQID         *int64  `json:"rfq_id,omitempty"`
@@ -1170,6 +1171,7 @@ type GRNLine struct {
 }
 
 type CreateGRNRequest struct {
+	GRNNo         string          `json:"grn_no" validate:"required"`
 	POID          int64           `json:"po_id" validate:"required"`
 	WarehouseCode string          `json:"warehouse_code" validate:"required"`
 	DeliveryNote  *string         `json:"delivery_note,omitempty"`
@@ -1373,6 +1375,7 @@ type MemoLine struct {
 }
 
 type CreateMemoRequest struct {
+	MemoNo             string            `json:"memo_no"`
 	Title              string            `json:"title"`
 	ProjectCode        *string           `json:"project_code"`
 	RequestedBy        int64             `json:"requested_by"`
@@ -1497,6 +1500,7 @@ type CreateWorkOrderRequest struct {
 	// in its INSERT. Update accepts "DRAFT" (no-op save) or "PENDING_APPROVAL" (the "ส่งอนุมัติ"
 	// button submitting inline) — anything else, including jumping straight to APPROVED, is
 	// rejected; approval decisions only ever happen through the dedicated Approve/Reject flow.
+	WoNo                string   `json:"wo_no"`
 	Status              *string  `json:"status,omitempty"`
 	WoDate              *string  `json:"wo_date"`
 	EmployerName        string   `json:"employer_name" validate:"required"`
@@ -1598,6 +1602,79 @@ type WorkOrderFilter struct {
 	DateTo      string `query:"date_to"`
 	Page        int    `query:"page"`
 	PageSize    int    `query:"page_size"`
+}
+
+// ─── Work Order — Payment Conditions (installments / retention / penalty) ───────
+
+// WorkOrderPaymentInstallment mirrors work_order_payment_installment (db row + response shape).
+type WorkOrderPaymentInstallment struct {
+	ID                int64    `json:"id"`
+	InstallmentNo     int      `json:"installment_no"`
+	Description       *string  `json:"description"`
+	PercentOfContract *float64 `json:"percent_of_contract"`
+	Amount            float64  `json:"amount"`
+	DueDate           *string  `json:"due_date"`
+	PaymentStatus     string   `json:"payment_status"`
+	PaidDate          *string  `json:"paid_date"`
+	Remarks           *string  `json:"remarks"`
+}
+
+// WorkOrderPaymentInstallmentInput is one row of the submitted installments array — ID is
+// omitempty/nullable: present + >0 means "update this row", absent/0/nil means "insert new".
+type WorkOrderPaymentInstallmentInput struct {
+	ID                *int64   `json:"id"`
+	InstallmentNo     int      `json:"installment_no"`
+	Description       *string  `json:"description"`
+	PercentOfContract *float64 `json:"percent_of_contract"`
+	Amount            float64  `json:"amount"`
+	DueDate           *string  `json:"due_date"`
+	PaymentStatus     string   `json:"payment_status"`
+	PaidDate          *string  `json:"paid_date"`
+	Remarks           *string  `json:"remarks"`
+}
+
+// WorkOrderRetention mirrors work_order_retention.
+type WorkOrderRetention struct {
+	ID                int64    `json:"id"`
+	Description       *string  `json:"description"`
+	PercentOfContract *float64 `json:"percent_of_contract"`
+	Amount            float64  `json:"amount"`
+	Remarks           *string  `json:"remarks"`
+}
+
+type WorkOrderRetentionInput struct {
+	ID                *int64   `json:"id"`
+	Description       *string  `json:"description"`
+	PercentOfContract *float64 `json:"percent_of_contract"`
+	Amount            float64  `json:"amount"`
+	Remarks           *string  `json:"remarks"`
+}
+
+// WorkOrderPenalty mirrors work_order_penalty.
+type WorkOrderPenalty struct {
+	ID                int64    `json:"id"`
+	Description       *string  `json:"description"`
+	PercentPerDay     *float64 `json:"percent_per_day"`
+	ContractStartDate *string  `json:"contract_start_date"`
+	ContractEndDate   *string  `json:"contract_end_date"`
+	Remarks           *string  `json:"remarks"`
+}
+
+type WorkOrderPenaltyInput struct {
+	ID                *int64   `json:"id"`
+	Description       *string  `json:"description"`
+	PercentPerDay     *float64 `json:"percent_per_day"`
+	ContractStartDate *string  `json:"contract_start_date"`
+	ContractEndDate   *string  `json:"contract_end_date"`
+	Remarks           *string  `json:"remarks"`
+}
+
+// UpdateWorkOrderPaymentConditionsRequest is the full-replace body for
+// POST /work-order/{id}/payment-conditions — each array is the whole desired state for its table.
+type UpdateWorkOrderPaymentConditionsRequest struct {
+	Installments []WorkOrderPaymentInstallmentInput `json:"installments"`
+	Retentions   []WorkOrderRetentionInput          `json:"retentions"`
+	Penalties    []WorkOrderPenaltyInput            `json:"penalties"`
 }
 
 // ─── Finance / Payment Tracking ──────────────────────────────────────────────

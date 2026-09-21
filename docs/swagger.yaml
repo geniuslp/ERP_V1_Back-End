@@ -51,6 +51,23 @@ definitions:
       subgroup_name:
         type: string
     type: object
+  handlers.ICSubmitReceiveDocumentSwagger:
+    properties:
+      exchange_rate:
+        type: number
+      remarks:
+        type: string
+      tax_invoice_date:
+        example: "2026-09-18"
+        type: string
+      tax_invoice_no:
+        type: string
+      temp_delivery_date:
+        example: "2026-09-18"
+        type: string
+      temp_delivery_no:
+        type: string
+    type: object
   handlers.UpdateGroupReq:
     properties:
       group_name:
@@ -69,6 +86,59 @@ definitions:
         type: string
       user_id:
         type: integer
+    type: object
+  handlers.icRateReceiveDocumentRequest:
+    properties:
+      score_notes:
+        type: string
+      score_ontime:
+        maximum: 5
+        minimum: 1
+        type: integer
+      score_quality:
+        maximum: 5
+        minimum: 1
+        type: integer
+      score_quantity:
+        maximum: 5
+        minimum: 1
+        type: integer
+    required:
+    - score_ontime
+    - score_quality
+    - score_quantity
+    type: object
+  handlers.icSubmitReceiveLineInput:
+    properties:
+      line_id:
+        type: integer
+      receive_qty:
+        type: number
+    type: object
+  handlers.icSubmitReceiveLinesRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/handlers.icSubmitReceiveLineInput'
+        type: array
+      receive_document_id:
+        type: integer
+    type: object
+  handlers.icSubmitReturnLineInput:
+    properties:
+      line_id:
+        type: integer
+      return_qty:
+        type: number
+    type: object
+  handlers.icSubmitReturnLinesRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/handlers.icSubmitReturnLineInput'
+        type: array
+      remarks:
+        type: string
     type: object
   models.AddAttachmentRequest:
     properties:
@@ -311,6 +381,8 @@ definitions:
     type: object
   models.CreateBorrowRequest:
     properties:
+      borrow_no:
+        type: string
       expected_return:
         type: string
       lines:
@@ -381,6 +453,8 @@ definitions:
         type: string
       delivery_note:
         type: string
+      grn_no:
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.CreateGRNLine'
@@ -393,6 +467,7 @@ definitions:
       warehouse_code:
         type: string
     required:
+    - grn_no
     - lines
     - po_id
     - warehouse_code
@@ -555,6 +630,8 @@ definitions:
         items:
           $ref: '#/definitions/models.MemoLineRequest'
         type: array
+      memo_no:
+        type: string
       note:
         type: string
       project_code:
@@ -636,6 +713,8 @@ definitions:
         type: string
       payment_terms:
         type: string
+      po_no:
+        type: string
       pr_id:
         type: integer
       project_code:
@@ -670,6 +749,7 @@ definitions:
     required:
     - lines
     - location_text
+    - po_no
     - supplier_id
     type: object
   models.CreatePRLine:
@@ -878,6 +958,8 @@ definitions:
         type: string
       req_date:
         type: string
+      req_no:
+        type: string
       warehouse_code:
         type: string
     type: object
@@ -972,6 +1054,8 @@ definitions:
       to_warehouse_code:
         type: string
       transfer_date:
+        type: string
+      transfer_no:
         type: string
       transfer_type:
         type: string
@@ -1198,11 +1282,6 @@ definitions:
       start_date:
         type: string
       status:
-        description: |-
-          Status is only read by Update (PUT /work-order/:id) — Create always hardcodes 'DRAFT'
-          in its INSERT. Update accepts "DRAFT" (no-op save) or "PENDING_APPROVAL" (the "ส่งอนุมัติ"
-          button submitting inline) — anything else, including jumping straight to APPROVED, is
-          rejected; approval decisions only ever happen through the dedicated Approve/Reject flow.
         type: string
       supplier_address:
         type: string
@@ -1230,6 +1309,13 @@ definitions:
       wht_rate:
         type: number
       wo_date:
+        type: string
+      wo_no:
+        description: |-
+          Status is only read by Update (PUT /work-order/:id) — Create always hardcodes 'DRAFT'
+          in its INSERT. Update accepts "DRAFT" (no-op save) or "PENDING_APPROVAL" (the "ส่งอนุมัติ"
+          button submitting inline) — anything else, including jumping straight to APPROVED, is
+          rejected; approval decisions only ever happen through the dedicated Approve/Reject flow.
         type: string
       work_system:
         enum:
@@ -2183,6 +2269,8 @@ definitions:
         items:
           $ref: '#/definitions/models.MemoLineRequest'
         type: array
+      memo_no:
+        type: string
       note:
         type: string
       project_code:
@@ -2457,6 +2545,21 @@ definitions:
     required:
     - lines
     type: object
+  models.UpdateWorkOrderPaymentConditionsRequest:
+    properties:
+      installments:
+        items:
+          $ref: '#/definitions/models.WorkOrderPaymentInstallmentInput'
+        type: array
+      penalties:
+        items:
+          $ref: '#/definitions/models.WorkOrderPenaltyInput'
+        type: array
+      retentions:
+        items:
+          $ref: '#/definitions/models.WorkOrderRetentionInput'
+        type: array
+    type: object
   models.UpdateZoneReq:
     properties:
       zone_name:
@@ -2558,6 +2661,55 @@ definitions:
     required:
     - cost_code
     - qty
+    type: object
+  models.WorkOrderPaymentInstallmentInput:
+    properties:
+      amount:
+        type: number
+      description:
+        type: string
+      due_date:
+        type: string
+      id:
+        type: integer
+      installment_no:
+        type: integer
+      paid_date:
+        type: string
+      payment_status:
+        type: string
+      percent_of_contract:
+        type: number
+      remarks:
+        type: string
+    type: object
+  models.WorkOrderPenaltyInput:
+    properties:
+      contract_end_date:
+        type: string
+      contract_start_date:
+        type: string
+      description:
+        type: string
+      id:
+        type: integer
+      percent_per_day:
+        type: number
+      remarks:
+        type: string
+    type: object
+  models.WorkOrderRetentionInput:
+    properties:
+      amount:
+        type: number
+      description:
+        type: string
+      id:
+        type: integer
+      percent_of_contract:
+        type: number
+      remarks:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -3697,6 +3849,28 @@ paths:
       summary: Create Goods Receipt (single full receive) against an APPROVED PO
       tags:
       - GoodsReceipt
+  /grn/reserve-number:
+    get:
+      description: Calls nextval('grn_seq') and formats it immediately as the real
+        grn_no (GRN-<YYYYMM>-NNNN). This is the single, consolidated format for grn_no
+        — both POST /grn/receive and POST /grn now require a number reserved from
+        this endpoint. Unlike the old per-handler generators, this actually consumes
+        the sequence right away — the number is reserved even if the create is never
+        submitted (a gap is expected and fine). The frontend calls this once when
+        the create/receive page opens, then submits the returned grn_no with the create/receive
+        request.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next GRN number (consumes grn_seq)
+      tags:
+      - GoodsReceipt
   /groups:
     get:
       produces:
@@ -3827,6 +4001,724 @@ paths:
       summary: Update material group
       tags:
       - Groups
+  /ic/pos/{poId}/receive-document:
+    get:
+      description: Returns read-only PO/supplier/project context plus this PO's current
+        DRAFT receive document (receive_no IS NULL, newest such row), or null if there
+        is no draft — i.e. every existing document for this PO already has a receive_no,
+        or none exist yet. A PO can have many receive_document rows now (one per delivery/invoice
+        round); use GET /ic/pos/{poId}/receive-documents to list all of them, or GET
+        /ic/pos/{poId}/receive-documents/{docId} for one specific (already-finalized)
+        document.
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get PO receive document context + the current draft document (if any)
+      tags:
+      - IC
+    post:
+      consumes:
+      - application/json
+      description: Creates a NEW ic_po_receive_document row for this PO — a PO can
+        have many receive documents now (one per delivery/invoice round). 409s "this
+        PO has nothing left to receive" when SUM(qty_ordered - qty_received) over
+        the PO's lines is <= 0. 409s "an empty receive document already exists" if
+        this PO already has an empty draft document (receive_no IS NULL) so empty
+        drafts can't stack; that draft must be submitted (via receive-lines/submit)
+        or deleted first. Computes due_date = (business date this row is created,
+        Asia/Bangkok) + credit_days (credit_days parsed from the PO's supplier payment_terms).
+        due_date is NULL if credit_days can't be parsed. Computed once at creation
+        and never recomputed on later partial-receive rounds.
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: Receive document
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ICSubmitReceiveDocumentSwagger'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Submit the PO receive document
+      tags:
+      - IC
+  /ic/pos/{poId}/receive-documents:
+    get:
+      description: 'data.documents: newest first (created_at DESC). line_count = COUNT
+        of ic_project_cost_item_transaction rows PLUS stock_transaction rows linked
+        to that document via receive_document_id — both tables now carry that FK,
+        so this is accurate for order_type=''cost'' AND order_type=''stock'' POs (stock_transaction
+        rows written before this FK existed, or for a PO that historically had more
+        than one document, may still be unlinked — those don''t count here). deletable
+        = (receive_no IS NULL AND line_count = 0). data.remaining_qty_total = SUM(qty_ordered
+        - qty_received) over the PO''s lines. data.can_create_new = purchase_order.status
+        = ''APPROVED'' AND remaining_qty_total > 0 AND no document for this PO has
+        receive_no IS NULL — mirrors exactly the checks POST /ic/pos/{poId}/receive-document
+        enforces.'
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List all receive documents for a PO (one PO can now have many), plus
+        create-eligibility
+      tags:
+      - IC
+  /ic/pos/{poId}/receive-documents/{docId}:
+    delete:
+      description: Allowed only when receive_no IS NULL and it has no linked ic_project_cost_item_transaction
+        or stock_transaction rows (by receive_document_id) — otherwise 409. Locks
+        the document row FOR UPDATE and re-checks inside the transaction before deleting.
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: ic_po_receive_document.id
+        in: path
+        name: docId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete an empty (never-submitted) receive document
+      tags:
+      - IC
+    get:
+      description: For viewing/printing a specific (possibly already-finalized) document,
+        as opposed to GET /ic/pos/{poId}/receive-document which only ever returns
+        the current empty draft.
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: ic_po_receive_document.id
+        in: path
+        name: docId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get one specific receive document of a PO by id
+      tags:
+      - IC
+  /ic/pos/{poId}/receive-documents/{docId}/lines:
+    get:
+      description: 'Returns only the lines posted under this one receive document
+        — not all lines of the PO. Both order_type=''cost'' (ic_project_cost_item_transaction.receive_document_id)
+        and order_type=''stock'' (stock_transaction.receive_document_id) now carry
+        this FK and are scoped the same way, returning scoped_by_document=true. FALLBACK
+        for stock-type only: rows written before this FK existed (or for a PO that
+        historically had more than one document, since the backfill only linked POs
+        with exactly one document) have receive_document_id IS NULL — if the scoped
+        query returns nothing, this falls back to every ''IN'' stock_transaction row
+        for the whole PO that still has receive_document_id IS NULL, returning scoped_by_document=false
+        with a warning field. This fallback path never mixes in rows that are already
+        linked to a *different* document.'
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: ic_po_receive_document.id
+        in: path
+        name: docId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List the lines actually received under one specific receive document
+        (print feed)
+      tags:
+      - IC
+  /ic/pos/{poId}/receive-documents/{docId}/rating:
+    put:
+      consumes:
+      - application/json
+      description: 'Same validation and 1-5 scoring rules as the legacy GRN Score
+        endpoint (POST /grn/{id}/score): all three scores required, each 1-5, score_notes
+        optional. Requires the specific docId to exist for this PO (404) and to have
+        a receive_no already issued (400 — line items must be submitted via receive-lines/submit
+        before rating, same as Tab 1 must precede Tab 2). Unlike GRN (which blocks
+        re-scoring once POSTED), this endpoint rejects a second rating attempt on
+        the same document with 409 rather than allowing overwrite. Sets rated_at=NOW()
+        and rated_by=claims.UserID in one transaction. A PO can now have many receive
+        documents — this endpoint rates exactly the document named by docId, not "the
+        PO" as a whole (superseded the old PO-scoped PUT /ic/pos/{poId}/receive-document/rating,
+        which has been removed — nothing in this repo called it).'
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: ic_po_receive_document.id
+        in: path
+        name: docId
+        required: true
+        type: integer
+      - description: Supplier rating
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.icRateReceiveDocumentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Rate the supplier on one specific receive document (quality/quantity/ontime,
+        1-5)
+      tags:
+      - IC
+  /ic/pos/{poId}/receive-lines:
+    get:
+      description: Returns po_context (order_type, project_code), lines, and distinct
+        mat_code/cost_code filter options for this PO's lines. receive_document_id
+        is required and validated to belong to this PO — the remaining-balance figures
+        (qty_received, bal_receive) are still computed cumulatively across ALL of
+        the PO's receive documents (they read purchase_order_line.qty_received, a
+        single PO-line-level running total), not scoped to just this one document.
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: ic_po_receive_document.id (must belong to this PO)
+        in: query
+        name: receive_document_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List PO line items for the receiving ("รายการสินค้า") tab
+      tags:
+      - IC
+  /ic/pos/{poId}/receive-lines/submit:
+    post:
+      consumes:
+      - application/json
+      description: 'One DB transaction. receive_document_id is required. The target
+        document is locked FOR UPDATE first, before anything else — a document accepts
+        exactly ONE successful submit: if it already has a receive_no, this 409s with
+        "this receive document has already been received — create a new receive document"
+        rather than accepting more lines against it. Then locks the PO and each touched
+        purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status
+        = ''APPROVED'' (400 otherwise), validates receive_qty against the line''s
+        remaining balance (computed from purchase_order_line.qty_received, a running
+        total across ALL of the PO''s receive documents — so total received can never
+        exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction
+        (order_type=''stock'', tagging each stock_transaction row with this receive_document_id)
+        or ic_project_cost_item/ic_project_cost_item_transaction (order_type=''cost'',
+        tagging each new transaction row with this receive_document_id), and recomputes
+        purchase_order.status_receive. On success, issues receive_no (por_number_counter,
+        monthly reset) for this document — generated exactly once, at this its one
+        allowed submit.'
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: receive_document_id + lines to receive (only receive_qty > 0
+          are processed)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.icSubmitReceiveLinesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Submit this round's PO line-item receiving (stock or cost destination)
+      tags:
+      - IC
+  /ic/pos/{poId}/return-lines:
+    get:
+      description: 'Same shape as receive-lines, but for return: qty_received is the
+        current cumulative received qty, which is the max returnable amount for the
+        line. Requires purchase_order.status = ''APPROVED'' (400 otherwise).'
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List PO line items for the return ("คืนสินค้า") tab
+      tags:
+      - IC
+  /ic/pos/{poId}/return-lines/submit:
+    post:
+      consumes:
+      - application/json
+      description: One DB transaction. Locks the PO and each touched purchase_order_line
+        (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400
+        otherwise), validates return_qty against the line's current qty_received,
+        then subtracts from stock_item/stock_transaction (order_type='stock') or ic_project_cost_item/ic_project_cost_item_transaction
+        (order_type='cost'), and recomputes purchase_order.status_receive. Does not
+        touch receive_no.
+      parameters:
+      - description: purchase_order.id
+        in: path
+        name: poId
+        required: true
+        type: integer
+      - description: Lines to return (only return_qty > 0 are processed)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.icSubmitReturnLinesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Submit this round's PO line-item return (stock or cost source)
+      tags:
+      - IC
+  /ic/projects:
+    get:
+      description: Returns projects joined with their customer, paginated and optionally
+        filtered by search keyword.
+      parameters:
+      - description: search by project_code or project_name
+        in: query
+        name: search
+        type: string
+      - description: include inactive projects (default false)
+        in: query
+        name: include_inactive
+        type: boolean
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List projects for Inventory Control
+      tags:
+      - IC
+  /ic/projects/{projectId}:
+    get:
+      description: Returns id, project_code, project_name, customer_name for a project
+        by id.
+      parameters:
+      - description: project.id
+        in: path
+        name: projectId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get a single project's basic info (IC context header)
+      tags:
+      - IC
+  /ic/projects/{projectId}/po-search-options:
+    get:
+      description: Returns PR numbers and PO numbers for one project, tagged with
+        type ('PR' or 'PO') for a grouped dropdown.
+      parameters:
+      - description: project.id
+        in: path
+        name: projectId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Lightweight PR/PO number list for the IC PO-search dropdown
+      tags:
+      - IC
+  /ic/projects/{projectId}/pos:
+    get:
+      description: Resolves :projectId to project_code, then lists purchase_order
+        rows for that project. Only APPROVED POs (purchase_order.status = 'APPROVED')
+        are eligible — this is independent of status_receive. Includes due_date/credit_days
+        from ic_po_receive_document (null until Tab 1 is submitted for that PO). A
+        PO can now have many receive documents — due_date/credit_days/score fields
+        shown here are from one representative document (the newest finalized one,
+        i.e. receive_no NOT NULL, falling back to the newest draft); use GET /ic/pos/{poId}/receive-documents
+        for the full list.
+      parameters:
+      - description: project.id
+        in: path
+        name: projectId
+        required: true
+        type: integer
+      - description: search by po_no or pr_no
+        in: query
+        name: search
+        type: string
+      - description: pending (default) or completed
+        in: query
+        name: receive_status
+        type: string
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List Purchase Orders under a project (IC PO Receive list)
+      tags:
+      - IC
+  /ic/projects/{projectId}/return-pos:
+    get:
+      description: Same shape as ListProjectPOs, but filters status_receive IN ('PARTIALLY_RECEIVED','RECEIVED')
+        (no pending/completed toggle) and includes receive_no. Also requires purchase_order.status
+        = 'APPROVED', same as ListProjectPOs. Same representative-document caveat
+        as ListProjectPOs applies (a PO can have many receive documents; this list
+        shows one representative document's fields per PO).
+      parameters:
+      - description: project.id
+        in: path
+        name: projectId
+        required: true
+        type: integer
+      - description: search by po_no or pr_no
+        in: query
+        name: search
+        type: string
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List Purchase Orders under a project eligible for return
+      tags:
+      - IC
   /inventory:
     get:
       description: Returns stock levels per material per warehouse with status
@@ -6681,6 +7573,29 @@ paths:
       summary: ส่ง Memo ขออนุมัติ (DRAFT → PENDING_APPROVAL)
       tags:
       - Memo
+  /memo/reserve-number:
+    get:
+      description: Atomically increments memo_number_counter for the current year_month
+        (YYYYMM) and formats it immediately as the real memo_no (MEM-<YYMM>-NNNN),
+        same display format as before. Unlike the old memo_seq-based version, this
+        resets to 0001 at the start of each new year_month instead of climbing forever.
+        The number is reserved right away and is never reused, even if the create
+        is abandoned (a gap is expected and fine). The frontend calls this once when
+        the create-memo page opens, then submits the returned memo_no as part of POST
+        /memo.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next Memo number (consumes memo_number_counter, resets
+        monthly)
+      tags:
+      - Memo
   /menus:
     get:
       produces:
@@ -7590,6 +8505,41 @@ paths:
       summary: List PRs eligible to be linked to a new PO
       tags:
       - Purchase Order
+  /po/cost-budget:
+    get:
+      description: |-
+        One row per cost_code with at least one purchase_order_line under an APPROVED PO
+        in the given project. pu_cost sums purchase_order_line.amount grouped by
+        cost_subgroup_id. ac_cost allocates each PO's payment_log.amount_paid across its
+        lines by each line's share of the PO's net_amount (line.amount / po.net_amount),
+        then sums those allocated amounts per cost_subgroup_id. budget is hardcoded to 0 —
+        no budget-setting system exists yet — so pu_bal/ac_bal are always <= 0 for now.
+        cost_code and cost_subgroup_name follow the same join chain as po.go's Get handler
+        and project_overview.go (cost_subgroup -> cost_group -> cost_job -> cost_subject).
+        Lines with no cost_subgroup_id assigned are excluded — there's no cost_code to
+        group them under.
+      parameters:
+      - description: Project code
+        in: query
+        name: project_code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cost Budget page — Level 2 cost-code breakdown for a project
+      tags:
+      - Purchase Order
   /po/line-items:
     get:
       description: |-
@@ -7721,6 +8671,27 @@ paths:
       security:
       - BearerAuth: []
       summary: List POs that are eligible for goods receiving (GRN)
+      tags:
+      - Purchase Order
+  /po/reserve-number:
+    get:
+      description: Atomically increments po_number_counter for the current year_month
+        (YYYYMM) and formats it immediately as the real po_no. Unlike /po/next-number,
+        this actually consumes the counter — the number is reserved right away and
+        is never reused, even if the create is abandoned (a gap is expected and fine).
+        The sequence resets to 0001 at the start of each new year_month. The frontend
+        calls this once when the create-PO page opens, then submits the returned po_no
+        as part of POST /po.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next PO number (consumes po_number_counter, resets monthly)
       tags:
       - Purchase Order
   /po/search:
@@ -8139,6 +9110,27 @@ paths:
       summary: Get next PR number
       tags:
       - Purchase Request
+  /pr/reserve-number:
+    get:
+      description: Atomically increments pr_number_counter for the current year_month
+        (YYYYMM) and formats it immediately as the real pr_no. Unlike the old pr_seq-based
+        version, this resets to 0001 at the start of each new year_month instead of
+        climbing forever. The number is reserved right away and is never reused, even
+        if the create is abandoned (a gap is expected and fine). The frontend calls
+        this once when the create-PR page opens, then submits the returned pr_no as
+        part of POST /pr.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next PR number (consumes pr_number_counter, resets monthly)
+      tags:
+      - Purchase Request
   /project-overview/search:
     get:
       description: 'Searches projects (project_code/project_name) and approved PO
@@ -8355,6 +9347,26 @@ paths:
       security:
       - BearerAuth: []
       summary: ประวัติการเบิกของ (จาก stock_transaction)
+      tags:
+      - Requisition
+  /requisition/reserve-number:
+    get:
+      description: Calls nextval('requisition_seq') and formats it immediately as
+        the real req_no (REQ-<YYYY>-NNNNNN). Unlike the old MAX(id)+1 generation,
+        this actually consumes the sequence right away — the number is reserved even
+        if the create is never submitted (a gap is expected and fine). The frontend
+        calls this once when the create-requisition page opens, then submits the returned
+        req_no as part of POST /requisition.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next Requisition number (consumes requisition_seq)
       tags:
       - Requisition
   /role-menu-permissions:
@@ -8723,6 +9735,26 @@ paths:
       summary: ประวัติการเคลื่อนไหว (Requisition + Stock Transfer รวมกัน)
       tags:
       - StockTransfer
+  /stock-transfer/reserve-number:
+    get:
+      description: Calls nextval('stock_transfer_seq') and formats it immediately
+        as the real transfer_no (TRF-<YYYY>-NNNNNN). Unlike the old MAX(id)+1 generation,
+        this actually consumes the sequence right away — the number is reserved even
+        if the create is never submitted (a gap is expected and fine). The frontend
+        calls this once when the create-transfer page opens, then submits the returned
+        transfer_no as part of POST /stock-transfer.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next Stock Transfer number (consumes stock_transfer_seq)
+      tags:
+      - StockTransfer
   /stock/borrow:
     get:
       parameters:
@@ -8906,6 +9938,26 @@ paths:
       security:
       - BearerAuth: []
       summary: Submit Borrow Request
+      tags:
+      - Stock
+  /stock/borrow/reserve-number:
+    get:
+      description: Calls nextval('borrow_seq') and formats it immediately as the real
+        borrow_no (BOR-<YYMM>-NNNN), same format as before. Unlike the old generate-on-save
+        call, this actually consumes the sequence right away — the number is reserved
+        even if the create is never submitted (a gap is expected and fine). The frontend
+        calls this once when the create-borrow page opens, then submits the returned
+        borrow_no as part of POST /stock/borrow.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next Borrow number (consumes borrow_seq)
       tags:
       - Stock
   /stock/borrow/scan/{item_code}:
@@ -10079,6 +11131,98 @@ paths:
       security:
       - BearerAuth: []
       summary: ยื่นขออนุมัติหนังสือสั่งจ้าง (DRAFT/REJECTED → PENDING_APPROVAL)
+      tags:
+      - WorkOrder
+  /work-order/{woId}/payment-conditions:
+    get:
+      description: 'Fetches all 3 payment-condition lists for this WO in one call:
+        installments (work_order_payment_installment), retentions (work_order_retention),
+        penalties (work_order_penalty).'
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: woId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ดึงเงื่อนไขการชำระเงินของหนังสือสั่งจ้าง (งวดชำระ/เงินประกันผลงาน/ค่าปรับ)
+      tags:
+      - WorkOrder
+    post:
+      consumes:
+      - application/json
+      description: 'Full replace-sync for all 3 tables in one transaction: rows with
+        an id are updated, rows without one are inserted, and any existing row for
+        this wo_id not present in the submitted array is deleted. No cross-row validation
+        (e.g. percentages summing to 100) is applied — only what''s listed here. installments.payment_status
+        must be UNPAID or PAID; switching to PAID without paid_date auto-fills it
+        to today, switching back to UNPAID clears paid_date.'
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: woId
+        required: true
+        type: integer
+      - description: Full desired state of installments/retentions/penalties
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateWorkOrderPaymentConditionsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: บันทึกเงื่อนไขการชำระเงินของหนังสือสั่งจ้าง (แทนที่ทั้งหมดทั้ง 3 รายการ)
+      tags:
+      - WorkOrder
+  /work-order/reserve-number:
+    get:
+      description: Calls nextval('wo_seq') and formats it immediately as the real
+        wo_no (WO-<YYYY>-NNNNNN). Unlike the old MAX(id)+1 generation, this actually
+        consumes the sequence right away — the number is reserved even if the create
+        is never submitted (a gap is expected and fine). The frontend calls this once
+        when the create-WO page opens, then submits the returned wo_no as part of
+        POST /work-order.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reserve the next Work Order number (consumes wo_seq)
       tags:
       - WorkOrder
 securityDefinitions:

@@ -28,6 +28,9 @@
 | [erp_audit_log](#erp_audit_log) | Audit | audit log ทั้งระบบ |
 | [grn](#grn) | GRN | ใบรับเข้าสินค้า |
 | [grn_line](#grn_line) | GRN | รายการใน GRN |
+| [ic_po_receive_document](#ic_po_receive_document) | IC | หัวเอกสารรับเข้า (Tab 1) ของ IC PO Receive, 1 แถวต่อ PO |
+| [ic_project_cost_item](#ic_project_cost_item) | IC | ยอดคงเหลือของ order_type='cost' ต่อ project+mat_code+cost_subgroup |
+| [ic_project_cost_item_transaction](#ic_project_cost_item_transaction) | IC | log การรับ/คืนของ ic_project_cost_item |
 | [inventory](#inventory) | Stock | stock PR/PO (mat_code based) |
 | [inventory_transaction](#inventory_transaction) | Stock | transaction inventory |
 | [location](#location) | Master | สถานที่/ที่ตั้ง |
@@ -48,7 +51,9 @@
 | [petty_cash_status_log](#petty_cash_status_log) | PettyCash | log สถานะ petty_cash_requisition |
 | [po_attachment](#po_attachment) | PO | ไฟล์แนบ PO |
 | [po_edit_log](#po_edit_log) | PO | log การแก้ไข PO |
+| [po_number_counter](#po_number_counter) | PO | ตัว generate po_no แบบ monthly-reset (แทน po_seq) |
 | [po_status_log](#po_status_log) | PO | log สถานะ PO |
+| [por_number_counter](#por_number_counter) | IC | ตัว generate receive_no (POR-YYYYMM-NNNN) ของ IC |
 | [pr_attachment](#pr_attachment) | PR | ไฟล์แนบ PR |
 | [pr_status_log](#pr_status_log) | PR | log สถานะ PR |
 | [project](#project) | Master | โครงการ |
@@ -92,6 +97,9 @@
 | [work_order_line](#work_order_line) | WO | รายการต่อบรรทัด (cost_code แทน item) |
 | [work_order_status_log](#work_order_status_log) | WO | log สถานะ work_order |
 | [work_order_attachment](#work_order_attachment) | WO | ไฟล์แนบ work_order |
+| [work_order_payment_installment](#work_order_payment_installment) | WO | งวดชำระเงินของ WO (แทน advance_pct/advance_amount) |
+| [work_order_retention](#work_order_retention) | WO | เงินประกันผลงานของ WO (แทน retention_pct) |
+| [work_order_penalty](#work_order_penalty) | WO | ค่าปรับของ WO (แทน penalty_pct_per_day) |
 
 ---
 
@@ -129,6 +137,19 @@
   ตั้งค่าทั้งหมดผ่านหน้า Permission Matrix / Approval Matrix ที่มีอยู่แล้วในระบบ
 - ⚠️ `work_order_cost_code` (multi-select แบบแรก ก่อนเปลี่ยนเป็น line items) — **deprecated**
   ไม่ใช้แล้ว เก็บไว้เฉยๆ อย่าเพิ่ม routing ใหม่ในนี้
+- 🔴 **`po_seq` (sequence เดิมของ po_no) ถูกยกเลิกแล้ว — แทนที่ด้วย [po_number_counter](#po_number_counter)**
+  (monthly-reset counter, pattern เดียวกับ pr_no/memo_no) ยืนยันจากโค้ด `internal/handlers/po.go`
+  (`GET /po/reserve-number` เขียนลง `po_number_counter` โดยตรง ไม่มีการเรียก `nextval('po_seq')`
+  เหลืออยู่ในโค้ดปัจจุบันแล้ว) — **ยังไม่ได้ยืนยันด้วย query `information_schema` ตรงๆ ว่า sequence
+  object `po_seq` เองถูก DROP ออกจาก DB จริงหรือแค่เลิกใช้งาน** เช็ค `information_schema.sequences`
+  ก่อนอ้างว่า object นี้หายไปจริง
+- 🔴 `purchase_order_line.cost_subgroup_id` (nullable, FK → cost_subgroup.id) มีอยู่แล้วในโค้ด
+  (`po.go` select/insert) แต่ตกหล่นจาก field list เดิมของ [purchase_order_line](#purchase_order_line)
+  ด้านล่าง — เพิ่มเข้าไปแล้ว ใช้เป็น Cost Code ต่อบรรทัด mirror จาก `purchase_request_line.cost_subgroup_id`
+- 🔴 `purchase_order.job_code` และ `purchase_order.order_type` (`'stock'|'cost'`, ความหมายเดียวกับ
+  `purchase_request.order_type`) มีอยู่แล้วในโค้ดเช่นกัน แต่ตกหล่นจาก field list ของ
+  [purchase_order](#purchase_order) — เพิ่มเข้าไปแล้ว `job_code` เป็น required เสมอ (auto-fill จาก
+  PR ถ้าไม่ส่งมาและมี pr_id), `order_type` บังคับ 'stock' หรือ 'cost' — 'cost' บังคับต้องมี pr_id ด้วย
 
 ---
 
@@ -441,6 +462,76 @@ quality_remarks text          nullable
 
 ---
 
+### ic_po_receive_document
+> 🆕 2026-09-21 — หัวเอกสาร Tab 1 ของหน้า IC PO Receive (Inventory Control module) 1 แถวต่อ 1 PO
+> เท่านั้น (`UNIQUE(po_id)`, 409 ถ้า submit ซ้ำ) สร้างตอน submit Tab 1
+> (`POST /ic/pos/{poId}/receive-document`) `receive_no` เป็น `nullable` ตอนสร้างแถวนี้ ยังไม่ generate
+> — ถูกเติมทีเดียวตอน submit line-item รอบแรกที่สำเร็จ (`POST /ic/pos/{poId}/receive-lines`) ผ่าน
+> [por_number_counter](#por_number_counter) แล้วไม่ regenerate อีกในรอบ partial-receive ถัดไป
+> (idempotent) `due_date` คำนวณ = `tax_invoice_date + credit_days`, `credit_days` parse มาจาก
+> supplier.payment_terms ของ PO นั้น (ผ่าน `parsePaymentTermsDays`)
+```
+id                bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+po_id             bigint        NOT NULL  UNIQUE  — FK → purchase_order.id
+tax_invoice_no    varchar       nullable
+tax_invoice_date  date          NOT NULL
+temp_delivery_no  varchar       nullable
+temp_delivery_date date         nullable
+receive_no        varchar(30)   nullable  — เติมครั้งเดียวตอน submit line-item รอบแรกสำเร็จ, รูปแบบ POR-YYYYMM-NNNN
+credit_days       integer       nullable  — parse จาก supplier.payment_terms
+due_date          date          nullable  — = tax_invoice_date + credit_days
+exchange_rate     numeric       nullable
+remarks           text          nullable
+created_at        timestamp     NOT NULL  DEFAULT now()
+updated_at        timestamp     NOT NULL  DEFAULT now()
+created_by        bigint        nullable
+updated_by        bigint        nullable
+```
+
+---
+
+### ic_project_cost_item
+> 🆕 2026-09-21 — ยอดคงเหลือของ order_type='cost' (ซื้อเข้าโครงการแบบ cost ไม่ใช่ stock) คู่ขนานกับ
+> `stock_item` (ที่ใช้กับ order_type='stock') ผูกกับ `project_code + mat_code + cost_subgroup_id`
+> (`UNIQUE(project_code, mat_code, cost_subgroup_id)`) — auto-create แถวใหม่ (`qty_on_hand=0`,
+> `last_unit_cost=0`) ตอน receive ถ้ายังไม่มีแถวสำหรับ combination นั้น โดยดึง `item_name`/`unit`
+> จาก `material_code` (join mat_name/spec_size/unit) ตอน return **ไม่** auto-create — คืนของที่ไม่เคย
+> รับมาก่อนจะ error
+```
+id               bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+project_code     varchar(20)   NOT NULL
+mat_code         varchar(30)   NOT NULL
+cost_subgroup_id bigint        NOT NULL  — FK → cost_subgroup.id
+item_name        varchar       nullable
+unit             varchar       nullable
+qty_on_hand      numeric(18,4) NOT NULL  DEFAULT 0
+last_unit_cost   numeric(18,4) NOT NULL  DEFAULT 0
+updated_at       timestamp     NOT NULL  DEFAULT now()
+-- UNIQUE (project_code, mat_code, cost_subgroup_id)
+```
+
+---
+
+### ic_project_cost_item_transaction
+> 🆕 2026-09-21 — log การรับ (`qty` บวก) / คืน (`qty` ลบ) เข้า `ic_project_cost_item` แต่ละครั้ง
+> mirror บทบาทเดียวกับ `stock_transaction` ฝั่ง stock
+```
+id                   bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+project_cost_item_id bigint        NOT NULL  — FK → ic_project_cost_item.id
+po_id                bigint        NOT NULL  — FK → purchase_order.id
+po_line_id           bigint        NOT NULL  — FK → purchase_order_line.id
+qty                  numeric(18,4) NOT NULL  — บวก=รับ, ลบ=คืน
+qty_before           numeric(18,4) NOT NULL
+qty_after            numeric(18,4) NOT NULL
+unit_cost            numeric(18,4) NOT NULL
+remarks              text          nullable
+txn_date             timestamp     nullable
+created_at           timestamp     NOT NULL  DEFAULT now()
+created_by           bigint        nullable
+```
+
+---
+
 ### inventory
 > 🔴 **ไม่ได้ใช้งานจริง (ตัดสินใจ 2026-07-27)** — table นี้กับ `inventory_transaction` มีอยู่ใน DB
 > แต่ handler ไหน ๆ ก็ไม่ควรอ่าน/เขียนที่นี่ รวมถึง GRN confirm ด้วย ระบบ stock ที่ใช้จริงคือ
@@ -702,6 +793,29 @@ id, po_id, edited_by, reason (NOT NULL), edited_at
 
 ---
 
+### po_number_counter
+> 🆕 2026-09-21 — แทนที่ `po_seq` เดิม (ดู Important Notes ด้านบน) generate `po_no` แบบ
+> monthly-reset เหมือน pattern ที่ pr_no/memo_no ใช้อยู่แล้ว รีเซ็ตเป็น 0001 ทุกครั้งที่ขึ้น
+> `year_month` ใหม่ ใช้ผ่าน `GET /po/reserve-number` — frontend เรียกครั้งเดียวตอนเปิดหน้าสร้าง PO
+> แล้ว consume counter ทันที (เลขไม่ reuse แม้สร้าง PO ไม่สำเร็จ — เว้นช่องเลขได้ ถือว่าปกติ)
+```
+year_month varchar(6) NOT NULL  PK  — 'YYYYMM'
+last_seq   integer    NOT NULL  DEFAULT 0
+```
+
+---
+
+### por_number_counter
+> 🆕 2026-09-21 — pattern เดียวกับ `po_number_counter` generate `receive_no` ของ IC module รูปแบบ
+> `POR-YYYYMM-NNNN` consume ตอน submit line-item รอบแรกที่สำเร็จของ IC PO Receive แล้วเก็บผลไว้ที่
+> `ic_po_receive_document.receive_no` ดู [ic_po_receive_document](#ic_po_receive_document)
+```
+year_month varchar(6) NOT NULL  PK  — 'YYYYMM'
+last_seq   integer    NOT NULL  DEFAULT 0
+```
+
+---
+
 ### po_status_log / pr_status_log
 ```
 id, [po_id|pr_id], from_status, to_status (NOT NULL), changed_by, changed_at, remarks
@@ -719,7 +833,8 @@ start_date      date        nullable
 end_date        date        nullable
 status          varchar(20) NOT NULL  DEFAULT 'ACTIVE'
 is_active       boolean     NOT NULL  DEFAULT true
-owner_id        bigint      nullable  — FK → users.id
+owner_id        bigint      nullable  — FK → users.id, legacy "เจ้าของโครงการ" dropdown, ยัง accept ได้แต่ไม่ required/ไม่ขับเคลื่อนอะไรแล้ว
+customer_id     bigint      nullable  — FK → customer.cus_id, dropdown "เจ้าของโครงการ" ตัวใหม่, ใช้คู่กับ owner_id ได้อิสระต่อกัน
 budget_amount   numeric(18,4) NOT NULL DEFAULT 0
 consultant_name varchar(200)nullable
 created_at      timestamp   NOT NULL  DEFAULT now()
@@ -756,6 +871,8 @@ status           varchar(30)   NOT NULL  DEFAULT 'DRAFT'
                  — สถานะอนุมัติเท่านั้น: DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|PENDING_REAPPROVAL|CANCELLED
 status_receive   varchar(20)   NOT NULL  DEFAULT 'NOT_SENT'
                  — สถานะรับของ แยกจาก status: NOT_SENT|SENT|PARTIALLY_RECEIVED|RECEIVED
+order_type       varchar(10)   NOT NULL  DEFAULT 'stock'  — CHECK ('stock'|'cost'), เหมือน purchase_request.order_type
+job_code         varchar(20)   NOT NULL  — required เสมอ, auto-fill จาก pr.job_code ถ้าไม่ส่งมาและมี pr_id
 payment_terms    varchar(100)  nullable
 delivery_address text          nullable
 remarks          text          nullable
@@ -803,6 +920,9 @@ line_wht     numeric(18,4) NOT NULL  DEFAULT 0
 line_net     numeric(18,4) NOT NULL  DEFAULT 0
 wht_rate     numeric(5,2)  nullable
 status       varchar(20)   NOT NULL  DEFAULT 'OPEN'  — OPEN|PARTIAL|RECEIVED|CANCELLED
+cost_subgroup_id bigint    nullable  — FK → cost_subgroup.id, Cost Code ต่อบรรทัด
+                 — explicit value ชนะเสมอ, ถ้าไม่ส่งและมี pr_line_id จะ auto-fill จาก
+                   purchase_request_line.cost_subgroup_id
 description  text          nullable
 remarks      text          nullable
 ```
@@ -1326,6 +1446,14 @@ remarks, created_at, updated_at, created_by, updated_by  — เหมือน�
 >
 > 🔴 `work_order.cost_code` (คอลัมน์เดิม) ก็ deprecated เช่นกัน แทนที่ด้วยตาราง
 > `work_order_line` ทั้งหมด
+>
+> 🔴 **2026-09-21 — `advance_pct`, `advance_amount`, `retention_pct`, `penalty_pct_per_day`,
+> `progress_payment_note` deprecated สำหรับข้อมูลใหม่แล้ว** หน้า create/edit WO ไม่อ่าน/เขียน 5
+> คอลัมน์นี้อีกต่อไป แทนที่ด้วย 3 ตารางใหม่ [work_order_payment_installment](#work_order_payment_installment),
+> [work_order_retention](#work_order_retention), [work_order_penalty](#work_order_penalty) — ยังไม่ลบ
+> คอลัมน์เดิมออกจาก DB เพราะ `WorkOrderPrintStandard.tsx`/`WorkOrderDetailPage.tsx` (frontend) ยังอ่าน
+> ค่าเดิมอยู่ — WO เก่าจะยังเห็นค่าเดิมได้ปกติ แต่ WO ที่ถูกแก้ไขหลังจุดนี้ 5 คอลัมน์นี้จะเริ่ม stale
+> (ไม่มีใครเขียนอัปเดตอีก) ยังไม่ได้แก้ไข รอ task แยก
 
 ---
 
@@ -1366,6 +1494,66 @@ created_by  bigint        NOT NULL
 
 ### work_order_status_log / work_order_attachment
 > mirror `po_status_log` / `po_attachment` — ไม่มีอะไรเปลี่ยนจากฉบับ schema แรกสุด
+
+---
+
+### work_order_payment_installment
+> 🆕 2026-09-21 — งวดชำระเงินของ WO แทนที่ `advance_pct`/`advance_amount` (ดูหมายเหตุ deprecated
+> ใน [work_order](#work_order)) หลายแถวต่อ 1 WO, save แบบ full-replace (`DELETE ... WHERE NOT (id =
+> ANY(keepIDs))` ตามด้วย upsert ทีละแถว) ทุกครั้งที่บันทึกเงื่อนไขการชำระ
+```
+id                  bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+wo_id               bigint        NOT NULL  — FK → work_order.id
+installment_no      integer       nullable
+description         text          nullable
+percent_of_contract numeric(5,2)  nullable
+amount              numeric(18,2) nullable
+due_date            date          nullable
+payment_status      varchar(20)   NOT NULL  DEFAULT 'UNPAID'  — UNPAID|PAID
+paid_date           date          nullable  — auto-set = today ถ้า payment_status='PAID' และไม่ส่งมา
+remarks             text          nullable
+created_at          timestamp     NOT NULL  DEFAULT now()
+updated_at          timestamp     NOT NULL  DEFAULT now()
+created_by          bigint        nullable
+updated_by          bigint        nullable
+```
+
+---
+
+### work_order_retention
+> 🆕 2026-09-21 — เงินประกันผลงานของ WO แทนที่ `retention_pct` (ดูหมายเหตุ deprecated ใน
+> [work_order](#work_order)) save แบบ full-replace เหมือน work_order_payment_installment
+```
+id                  bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+wo_id               bigint        NOT NULL  — FK → work_order.id
+description         text          nullable
+percent_of_contract numeric(5,2)  nullable
+amount              numeric(18,2) nullable
+remarks             text          nullable
+created_at          timestamp     NOT NULL  DEFAULT now()
+updated_at          timestamp     NOT NULL  DEFAULT now()
+created_by          bigint        nullable
+updated_by          bigint        nullable
+```
+
+---
+
+### work_order_penalty
+> 🆕 2026-09-21 — ค่าปรับของ WO แทนที่ `penalty_pct_per_day` (ดูหมายเหตุ deprecated ใน
+> [work_order](#work_order)) save แบบ full-replace เหมือน 2 ตารางข้างบน
+```
+id                   bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+wo_id                bigint        NOT NULL  — FK → work_order.id
+description          text          nullable
+percent_per_day      numeric(5,2)  nullable
+contract_start_date  date          nullable
+contract_end_date    date          nullable
+remarks              text          nullable
+created_at           timestamp     NOT NULL  DEFAULT now()
+updated_at           timestamp     NOT NULL  DEFAULT now()
+created_by           bigint        nullable
+updated_by           bigint        nullable
+```
 
 ---
 

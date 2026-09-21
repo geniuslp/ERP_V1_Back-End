@@ -85,8 +85,11 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// wo_no is generated internally from wo_seq inside this transaction — the frontend's
+	// create-WO page does not call reserve-number, unlike PR/PO. wo_seq (a real Postgres
+	// sequence) replaces the old unlocked MAX(id)+1 read, so this stays race-safe.
 	var seq int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0)+1 FROM work_order`).Scan(&seq); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT nextval('wo_seq')`).Scan(&seq); err != nil {
 		return err
 	}
 	woNo := fmt.Sprintf("WO-%s-%06d", time.Now().Format("2006"), seq)
@@ -169,6 +172,23 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		"success": true,
 		"data":    fiber.Map{"id": woID, "wo_no": woNo},
 	})
+}
+
+// ReserveWONumber godoc
+// @Summary      Reserve the next Work Order number (consumes wo_seq)
+// @Description  Calls nextval('wo_seq') and formats it immediately as the real wo_no (WO-<YYYY>-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-WO page opens, then submits the returned wo_no as part of POST /work-order.
+// @Tags         WorkOrder
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /work-order/reserve-number [get]
+func (h *WorkOrderHandler) ReserveWONumber(c *fiber.Ctx) error {
+	var seq int64
+	if err := h.db.QueryRow(context.Background(), `SELECT nextval('wo_seq')`).Scan(&seq); err != nil {
+		return err
+	}
+	woNo := fmt.Sprintf("WO-%s-%06d", time.Now().Format("2006"), seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"wo_no": woNo}})
 }
 
 const workOrderSelectCols = `
@@ -792,6 +812,323 @@ func (h *WorkOrderHandler) Submit(c *fiber.Ctx) error {
 		return err
 	}
 	return c.JSON(fiber.Map{"success": true, "message": "work order submitted for approval"})
+}
+
+// ─── Payment Conditions (installments / retention / penalty) ──────────────────
+
+func fetchWorkOrderPaymentInstallments(ctx context.Context, db *pgxpool.Pool, woID int64) ([]models.WorkOrderPaymentInstallment, error) {
+	rows, err := db.Query(ctx, `
+		SELECT id, installment_no, description, percent_of_contract, amount,
+		       TO_CHAR(due_date,'YYYY-MM-DD'), payment_status, TO_CHAR(paid_date,'YYYY-MM-DD'), remarks
+		FROM work_order_payment_installment
+		WHERE wo_id=$1
+		ORDER BY installment_no ASC`, woID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []models.WorkOrderPaymentInstallment{}
+	for rows.Next() {
+		var it models.WorkOrderPaymentInstallment
+		if err := rows.Scan(&it.ID, &it.InstallmentNo, &it.Description, &it.PercentOfContract, &it.Amount,
+			&it.DueDate, &it.PaymentStatus, &it.PaidDate, &it.Remarks); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+func fetchWorkOrderRetentions(ctx context.Context, db *pgxpool.Pool, woID int64) ([]models.WorkOrderRetention, error) {
+	rows, err := db.Query(ctx, `
+		SELECT id, description, percent_of_contract, amount, remarks
+		FROM work_order_retention
+		WHERE wo_id=$1
+		ORDER BY id ASC`, woID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []models.WorkOrderRetention{}
+	for rows.Next() {
+		var it models.WorkOrderRetention
+		if err := rows.Scan(&it.ID, &it.Description, &it.PercentOfContract, &it.Amount, &it.Remarks); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+func fetchWorkOrderPenalties(ctx context.Context, db *pgxpool.Pool, woID int64) ([]models.WorkOrderPenalty, error) {
+	rows, err := db.Query(ctx, `
+		SELECT id, description, percent_per_day, TO_CHAR(contract_start_date,'YYYY-MM-DD'),
+		       TO_CHAR(contract_end_date,'YYYY-MM-DD'), remarks
+		FROM work_order_penalty
+		WHERE wo_id=$1
+		ORDER BY id ASC`, woID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []models.WorkOrderPenalty{}
+	for rows.Next() {
+		var it models.WorkOrderPenalty
+		if err := rows.Scan(&it.ID, &it.Description, &it.PercentPerDay, &it.ContractStartDate,
+			&it.ContractEndDate, &it.Remarks); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+// GetPaymentConditions godoc
+// @Summary      ดึงเงื่อนไขการชำระเงินของหนังสือสั่งจ้าง (งวดชำระ/เงินประกันผลงาน/ค่าปรับ)
+// @Description  Fetches all 3 payment-condition lists for this WO in one call: installments (work_order_payment_installment), retentions (work_order_retention), penalties (work_order_penalty).
+// @Tags         WorkOrder
+// @Security     BearerAuth
+// @Produce      json
+// @Param        woId  path  int  true  "Work Order ID"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /work-order/{woId}/payment-conditions [get]
+func (h *WorkOrderHandler) GetPaymentConditions(c *fiber.Ctx) error {
+	woID, err := strconv.ParseInt(c.Params("woId"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid woId")
+	}
+	ctx := context.Background()
+
+	var exists bool
+	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_order WHERE id=$1)`, woID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fiber.NewError(fiber.StatusNotFound, "work order not found")
+	}
+
+	installments, err := fetchWorkOrderPaymentInstallments(ctx, h.db, woID)
+	if err != nil {
+		return err
+	}
+	retentions, err := fetchWorkOrderRetentions(ctx, h.db, woID)
+	if err != nil {
+		return err
+	}
+	penalties, err := fetchWorkOrderPenalties(ctx, h.db, woID)
+	if err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"installments": installments,
+			"retentions":   retentions,
+			"penalties":    penalties,
+		},
+	})
+}
+
+// UpdatePaymentConditions godoc
+// @Summary      บันทึกเงื่อนไขการชำระเงินของหนังสือสั่งจ้าง (แทนที่ทั้งหมดทั้ง 3 รายการ)
+// @Description  Full replace-sync for all 3 tables in one transaction: rows with an id are updated, rows without one are inserted, and any existing row for this wo_id not present in the submitted array is deleted. No cross-row validation (e.g. percentages summing to 100) is applied — only what's listed here. installments.payment_status must be UNPAID or PAID; switching to PAID without paid_date auto-fills it to today, switching back to UNPAID clears paid_date.
+// @Tags         WorkOrder
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        woId  path  int  true  "Work Order ID"
+// @Param        body  body  models.UpdateWorkOrderPaymentConditionsRequest  true  "Full desired state of installments/retentions/penalties"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /work-order/{woId}/payment-conditions [post]
+func (h *WorkOrderHandler) UpdatePaymentConditions(c *fiber.Ctx) error {
+	woID, err := strconv.ParseInt(c.Params("woId"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid woId")
+	}
+	var req models.UpdateWorkOrderPaymentConditionsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	for i, ins := range req.Installments {
+		if ins.PaymentStatus != "UNPAID" && ins.PaymentStatus != "PAID" {
+			return fiber.NewError(fiber.StatusBadRequest,
+				fmt.Sprintf("installments[%d]: payment_status must be UNPAID or PAID", i))
+		}
+	}
+
+	claims := middleware.GetClaims(c)
+	ctx := context.Background()
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_order WHERE id=$1)`, woID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fiber.NewError(fiber.StatusNotFound, "work order not found")
+	}
+
+	today := time.Now().Format("2006-01-02")
+
+	// ── installments ──
+	keepInstallmentIDs := []int64{}
+	for _, ins := range req.Installments {
+		if ins.ID != nil {
+			keepInstallmentIDs = append(keepInstallmentIDs, *ins.ID)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM work_order_payment_installment
+		WHERE wo_id=$1 AND NOT (id = ANY($2))`, woID, keepInstallmentIDs,
+	); err != nil {
+		return err
+	}
+	for i, ins := range req.Installments {
+		paidDate := ins.PaidDate
+		if ins.PaymentStatus == "PAID" && (paidDate == nil || *paidDate == "") {
+			paidDate = &today
+		} else if ins.PaymentStatus == "UNPAID" {
+			paidDate = nil
+		}
+		if ins.ID != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE work_order_payment_installment SET
+					installment_no=$1, description=$2, percent_of_contract=$3, amount=$4,
+					due_date=NULLIF($5,'')::date, payment_status=$6, paid_date=$7, remarks=$8,
+					updated_at=NOW(), updated_by=$9
+				WHERE id=$10 AND wo_id=$11`,
+				ins.InstallmentNo, ins.Description, ins.PercentOfContract, ins.Amount,
+				ins.DueDate, ins.PaymentStatus, paidDate, ins.Remarks,
+				claims.UserID, *ins.ID, woID,
+			); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("installments[%d]: update error: %s", i, err.Error()))
+			}
+		} else {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO work_order_payment_installment
+				  (wo_id, installment_no, description, percent_of_contract, amount, due_date, payment_status, paid_date, remarks, created_by, updated_by)
+				VALUES ($1,$2,$3,$4,$5, NULLIF($6,'')::date, $7,$8,$9,$10,$10)`,
+				woID, ins.InstallmentNo, ins.Description, ins.PercentOfContract, ins.Amount,
+				ins.DueDate, ins.PaymentStatus, paidDate, ins.Remarks, claims.UserID,
+			); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("installments[%d]: insert error: %s", i, err.Error()))
+			}
+		}
+	}
+
+	// ── retentions ──
+	keepRetentionIDs := []int64{}
+	for _, r := range req.Retentions {
+		if r.ID != nil {
+			keepRetentionIDs = append(keepRetentionIDs, *r.ID)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM work_order_retention
+		WHERE wo_id=$1 AND NOT (id = ANY($2))`, woID, keepRetentionIDs,
+	); err != nil {
+		return err
+	}
+	for i, r := range req.Retentions {
+		if r.ID != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE work_order_retention SET
+					description=$1, percent_of_contract=$2, amount=$3, remarks=$4,
+					updated_at=NOW(), updated_by=$5
+				WHERE id=$6 AND wo_id=$7`,
+				r.Description, r.PercentOfContract, r.Amount, r.Remarks,
+				claims.UserID, *r.ID, woID,
+			); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("retentions[%d]: update error: %s", i, err.Error()))
+			}
+		} else {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO work_order_retention
+				  (wo_id, description, percent_of_contract, amount, remarks, created_by, updated_by)
+				VALUES ($1,$2,$3,$4,$5,$6,$6)`,
+				woID, r.Description, r.PercentOfContract, r.Amount, r.Remarks, claims.UserID,
+			); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("retentions[%d]: insert error: %s", i, err.Error()))
+			}
+		}
+	}
+
+	// ── penalties ──
+	keepPenaltyIDs := []int64{}
+	for _, p := range req.Penalties {
+		if p.ID != nil {
+			keepPenaltyIDs = append(keepPenaltyIDs, *p.ID)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM work_order_penalty
+		WHERE wo_id=$1 AND NOT (id = ANY($2))`, woID, keepPenaltyIDs,
+	); err != nil {
+		return err
+	}
+	for i, p := range req.Penalties {
+		if p.ID != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE work_order_penalty SET
+					description=$1, percent_per_day=$2,
+					contract_start_date=NULLIF($3,'')::date, contract_end_date=NULLIF($4,'')::date, remarks=$5,
+					updated_at=NOW(), updated_by=$6
+				WHERE id=$7 AND wo_id=$8`,
+				p.Description, p.PercentPerDay, p.ContractStartDate, p.ContractEndDate, p.Remarks,
+				claims.UserID, *p.ID, woID,
+			); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("penalties[%d]: update error: %s", i, err.Error()))
+			}
+		} else {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO work_order_penalty
+				  (wo_id, description, percent_per_day, contract_start_date, contract_end_date, remarks, created_by, updated_by)
+				VALUES ($1,$2,$3, NULLIF($4,'')::date, NULLIF($5,'')::date, $6,$7,$7)`,
+				woID, p.Description, p.PercentPerDay, p.ContractStartDate, p.ContractEndDate, p.Remarks, claims.UserID,
+			); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("penalties[%d]: insert error: %s", i, err.Error()))
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	installments, err := fetchWorkOrderPaymentInstallments(ctx, h.db, woID)
+	if err != nil {
+		return err
+	}
+	retentions, err := fetchWorkOrderRetentions(ctx, h.db, woID)
+	if err != nil {
+		return err
+	}
+	penalties, err := fetchWorkOrderPenalties(ctx, h.db, woID)
+	if err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"installments": installments,
+			"retentions":   retentions,
+			"penalties":    penalties,
+		},
+	})
 }
 
 // openWorkOrderApproval opens the step-1 approval_request for a WO transitioning into

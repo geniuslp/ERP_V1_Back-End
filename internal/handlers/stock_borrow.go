@@ -20,12 +20,21 @@ func NewStockBorrowHandler(db *pgxpool.Pool) *StockBorrowHandler {
 	return &StockBorrowHandler{db: db}
 }
 
-func generateBorrowNo(ctx context.Context, tx pgx.Tx) (string, error) {
+// ReserveBorrowNumber godoc
+// @Summary      Reserve the next Borrow number (consumes borrow_seq)
+// @Description  Calls nextval('borrow_seq') and formats it immediately as the real borrow_no (BOR-<YYMM>-NNNN), same format as before. Unlike the old generate-on-save call, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-borrow page opens, then submits the returned borrow_no as part of POST /stock/borrow.
+// @Tags         Stock
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /stock/borrow/reserve-number [get]
+func (h *StockBorrowHandler) ReserveBorrowNumber(c *fiber.Ctx) error {
 	var seq int64
-	if err := tx.QueryRow(ctx, "SELECT nextval('borrow_seq')").Scan(&seq); err != nil {
-		return "", err
+	if err := h.db.QueryRow(context.Background(), "SELECT nextval('borrow_seq')").Scan(&seq); err != nil {
+		return err
 	}
-	return fmt.Sprintf("BOR-%s-%04d", timeYYMM(), seq), nil
+	borrowNo := fmt.Sprintf("BOR-%s-%04d", timeYYMM(), seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"borrow_no": borrowNo}})
 }
 
 // rollupStockItemQty recomputes stock_item.qty as the sum of stock_inventory.qty_on_hand
@@ -284,10 +293,13 @@ func (h *StockBorrowHandler) Create(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	borrowNo, err := generateBorrowNo(ctx, tx)
-	if err != nil {
+	// borrow_no is generated internally from borrow_seq inside this transaction — the create
+	// page does not call reserve-number, unlike PR/PO.
+	var seq int64
+	if err := tx.QueryRow(ctx, "SELECT nextval('borrow_seq')").Scan(&seq); err != nil {
 		return err
 	}
+	borrowNo := fmt.Sprintf("BOR-%s-%04d", timeYYMM(), seq)
 
 	var borrowID int64
 	err = tx.QueryRow(ctx, `

@@ -116,10 +116,14 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 	// (existing txn_types like ISSUE/TRANSFER/ADJUST) simply get NULLs here and are unaffected.
 	//
 	// ref_doc_no resolution: one LEFT JOIN per ref_doc_type actually written by any INSERT INTO
-	// stock_transaction in this codebase (GRN, PR, REQUISITION, BORROW — confirmed by grepping
-	// every insert site), each gated on st.ref_doc_type so exactly zero or one of them matches
-	// per row; COALESCE below picks whichever matched. 'PO' is never a literal ref_doc_type here
-	// (a GRN's PO is reached via grn.po_id, already joined) so it's not listed separately.
+	// stock_transaction in this codebase (GRN, PR, REQUISITION, BORROW, PO, PO_RETURN — confirmed
+	// by grepping every insert site), each gated on st.ref_doc_type so exactly zero or one of them
+	// matches per row; COALESCE below picks whichever matched.
+	// 'PO' and 'PO_RETURN' (icReceiveToStock/icReturnFromStock in ic.go) both store ref_doc_id as
+	// the PO's id, and both resolve to the SAME ic_po_receive_document.receive_no — a PO return
+	// references the same receive document as its original receive, not a separate one.
+	// ic_po_receive_document has at most one row per po_id (POST /ic/pos/:poId/receive-document
+	// 409s if one already exists), so this LEFT JOIN can't multiply rows.
 	// For GRN-sourced rows specifically, ref_doc_no resolves to the PO number (po.po_no), not the
 	// GRN number — users recognize PO numbers, not GRN numbers. The GRN number itself is still
 	// exposed separately as grn_no (already joined) so traceability to the receiving document
@@ -136,7 +140,8 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 		LEFT JOIN purchase_order po ON po.id = grn.po_id
 		LEFT JOIN purchase_request pr_doc ON st.ref_doc_type = 'PR' AND pr_doc.id = st.ref_doc_id
 		LEFT JOIN requisition req_doc ON st.ref_doc_type = 'REQUISITION' AND req_doc.id = st.ref_doc_id
-		LEFT JOIN borrow borrow_doc ON st.ref_doc_type = 'BORROW' AND borrow_doc.id = st.ref_doc_id`
+		LEFT JOIN borrow borrow_doc ON st.ref_doc_type = 'BORROW' AND borrow_doc.id = st.ref_doc_id
+		LEFT JOIN ic_po_receive_document ic_recv_doc ON st.ref_doc_type IN ('PO', 'PO_RETURN') AND ic_recv_doc.po_id = st.ref_doc_id`
 
 	var total int64
 	countArgs := make([]interface{}, len(args))
@@ -157,7 +162,7 @@ func (h *StockTransactionHandler) List(c *fiber.Ctx) error {
 		       st.from_location, st.to_location, st.qty,
 		       st.qty_before, st.qty_after,
 		       st.ref_doc_type, st.ref_doc_id, st.remarks,
-		       COALESCE(po.po_no, pr_doc.pr_no, req_doc.req_no, borrow_doc.borrow_no) AS ref_doc_no,
+		       COALESCE(po.po_no, pr_doc.pr_no, req_doc.req_no, borrow_doc.borrow_no, ic_recv_doc.receive_no) AS ref_doc_no,
 		       TO_CHAR(st.txn_date, 'YYYY-MM-DD') AS txn_date,
 		       COALESCE(u.full_name, '') AS created_by_name,
 		       st.created_at,

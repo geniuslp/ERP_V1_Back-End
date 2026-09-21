@@ -61,7 +61,6 @@ func (h *StockTransferHandler) Create(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("line[%d]: qty_requested must be positive", i))
 		}
 	}
-
 	var srcWarehouseForLookup string
 	switch req.TransferType {
 	case "WH_TO_WH":
@@ -92,8 +91,10 @@ func (h *StockTransferHandler) Create(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// transfer_no is generated internally from stock_transfer_seq inside this transaction —
+	// the create page does not call reserve-number, unlike PR/PO.
 	var seq int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0)+1 FROM stock_transfer`).Scan(&seq); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT nextval('stock_transfer_seq')`).Scan(&seq); err != nil {
 		return err
 	}
 	transferNo := fmt.Sprintf("TRF-%s-%06d", time.Now().Format("2006"), seq)
@@ -168,6 +169,23 @@ func (h *StockTransferHandler) Create(c *fiber.Ctx) error {
 
 func strPtrEmpty(s *string) bool {
 	return s == nil || *s == ""
+}
+
+// ReserveTransferNumber godoc
+// @Summary      Reserve the next Stock Transfer number (consumes stock_transfer_seq)
+// @Description  Calls nextval('stock_transfer_seq') and formats it immediately as the real transfer_no (TRF-<YYYY>-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-transfer page opens, then submits the returned transfer_no as part of POST /stock-transfer.
+// @Tags         StockTransfer
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /stock-transfer/reserve-number [get]
+func (h *StockTransferHandler) ReserveTransferNumber(c *fiber.Ctx) error {
+	var seq int64
+	if err := h.db.QueryRow(context.Background(), `SELECT nextval('stock_transfer_seq')`).Scan(&seq); err != nil {
+		return err
+	}
+	transferNo := fmt.Sprintf("TRF-%s-%06d", time.Now().Format("2006"), seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"transfer_no": transferNo}})
 }
 
 // List godoc

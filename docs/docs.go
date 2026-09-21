@@ -1651,6 +1651,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/grn/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Calls nextval('grn_seq') and formats it immediately as the real grn_no (GRN-\u003cYYYYMM\u003e-NNNN). This is the single, consolidated format for grn_no — both POST /grn/receive and POST /grn now require a number reserved from this endpoint. Unlike the old per-handler generators, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create/receive page opens, then submits the returned grn_no with the create/receive request.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "GoodsReceipt"
+                ],
+                "summary": "Reserve the next GRN number (consumes grn_seq)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/grn/{id}/confirm": {
             "post": {
                 "security": [
@@ -1943,6 +1968,976 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/receive-document": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns read-only PO/supplier/project context plus this PO's current DRAFT receive document (receive_no IS NULL, newest such row), or null if there is no draft — i.e. every existing document for this PO already has a receive_no, or none exist yet. A PO can have many receive_document rows now (one per delivery/invoice round); use GET /ic/pos/{poId}/receive-documents to list all of them, or GET /ic/pos/{poId}/receive-documents/{docId} for one specific (already-finalized) document.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Get PO receive document context + the current draft document (if any)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a NEW ic_po_receive_document row for this PO — a PO can have many receive documents now (one per delivery/invoice round). 409s \"this PO has nothing left to receive\" when SUM(qty_ordered - qty_received) over the PO's lines is \u003c= 0. 409s \"an empty receive document already exists\" if this PO already has an empty draft document (receive_no IS NULL) so empty drafts can't stack; that draft must be submitted (via receive-lines/submit) or deleted first. Computes due_date = (business date this row is created, Asia/Bangkok) + credit_days (credit_days parsed from the PO's supplier payment_terms). due_date is NULL if credit_days can't be parsed. Computed once at creation and never recomputed on later partial-receive rounds.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Submit the PO receive document",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Receive document",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ICSubmitReceiveDocumentSwagger"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/receive-documents": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "data.documents: newest first (created_at DESC). line_count = COUNT of ic_project_cost_item_transaction rows PLUS stock_transaction rows linked to that document via receive_document_id — both tables now carry that FK, so this is accurate for order_type='cost' AND order_type='stock' POs (stock_transaction rows written before this FK existed, or for a PO that historically had more than one document, may still be unlinked — those don't count here). deletable = (receive_no IS NULL AND line_count = 0). data.remaining_qty_total = SUM(qty_ordered - qty_received) over the PO's lines. data.can_create_new = purchase_order.status = 'APPROVED' AND remaining_qty_total \u003e 0 AND no document for this PO has receive_no IS NULL — mirrors exactly the checks POST /ic/pos/{poId}/receive-document enforces.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List all receive documents for a PO (one PO can now have many), plus create-eligibility",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/receive-documents/{docId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "For viewing/printing a specific (possibly already-finalized) document, as opposed to GET /ic/pos/{poId}/receive-document which only ever returns the current empty draft.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Get one specific receive document of a PO by id",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_po_receive_document.id",
+                        "name": "docId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Allowed only when receive_no IS NULL and it has no linked ic_project_cost_item_transaction or stock_transaction rows (by receive_document_id) — otherwise 409. Locks the document row FOR UPDATE and re-checks inside the transaction before deleting.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Delete an empty (never-submitted) receive document",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_po_receive_document.id",
+                        "name": "docId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/receive-documents/{docId}/lines": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns only the lines posted under this one receive document — not all lines of the PO. Both order_type='cost' (ic_project_cost_item_transaction.receive_document_id) and order_type='stock' (stock_transaction.receive_document_id) now carry this FK and are scoped the same way, returning scoped_by_document=true. FALLBACK for stock-type only: rows written before this FK existed (or for a PO that historically had more than one document, since the backfill only linked POs with exactly one document) have receive_document_id IS NULL — if the scoped query returns nothing, this falls back to every 'IN' stock_transaction row for the whole PO that still has receive_document_id IS NULL, returning scoped_by_document=false with a warning field. This fallback path never mixes in rows that are already linked to a *different* document.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List the lines actually received under one specific receive document (print feed)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_po_receive_document.id",
+                        "name": "docId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/receive-documents/{docId}/rating": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same validation and 1-5 scoring rules as the legacy GRN Score endpoint (POST /grn/{id}/score): all three scores required, each 1-5, score_notes optional. Requires the specific docId to exist for this PO (404) and to have a receive_no already issued (400 — line items must be submitted via receive-lines/submit before rating, same as Tab 1 must precede Tab 2). Unlike GRN (which blocks re-scoring once POSTED), this endpoint rejects a second rating attempt on the same document with 409 rather than allowing overwrite. Sets rated_at=NOW() and rated_by=claims.UserID in one transaction. A PO can now have many receive documents — this endpoint rates exactly the document named by docId, not \"the PO\" as a whole (superseded the old PO-scoped PUT /ic/pos/{poId}/receive-document/rating, which has been removed — nothing in this repo called it).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Rate the supplier on one specific receive document (quality/quantity/ontime, 1-5)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_po_receive_document.id",
+                        "name": "docId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Supplier rating",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.icRateReceiveDocumentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/receive-lines": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns po_context (order_type, project_code), lines, and distinct mat_code/cost_code filter options for this PO's lines. receive_document_id is required and validated to belong to this PO — the remaining-balance figures (qty_received, bal_receive) are still computed cumulatively across ALL of the PO's receive documents (they read purchase_order_line.qty_received, a single PO-line-level running total), not scoped to just this one document.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List PO line items for the receiving (\"รายการสินค้า\") tab",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_po_receive_document.id (must belong to this PO)",
+                        "name": "receive_document_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/receive-lines/submit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with \"this receive document has already been received — create a new receive document\" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_cost_item/ic_project_cost_item_transaction (order_type='cost', tagging each new transaction row with this receive_document_id), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Submit this round's PO line-item receiving (stock or cost destination)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "receive_document_id + lines to receive (only receive_qty \u003e 0 are processed)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.icSubmitReceiveLinesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/return-lines": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same shape as receive-lines, but for return: qty_received is the current cumulative received qty, which is the max returnable amount for the line. Requires purchase_order.status = 'APPROVED' (400 otherwise).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List PO line items for the return (\"คืนสินค้า\") tab",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/return-lines/submit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or ic_project_cost_item/ic_project_cost_item_transaction (order_type='cost'), and recomputes purchase_order.status_receive. Does not touch receive_no.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Submit this round's PO line-item return (stock or cost source)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Lines to return (only return_qty \u003e 0 are processed)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.icSubmitReturnLinesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns projects joined with their customer, paginated and optionally filtered by search keyword.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List projects for Inventory Control",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "search by project_code or project_name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "include inactive projects (default false)",
+                        "name": "include_inactive",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns id, project_code, project_name, customer_name for a project by id.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Get a single project's basic info (IC context header)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "project.id",
+                        "name": "projectId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectId}/po-search-options": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns PR numbers and PO numbers for one project, tagged with type ('PR' or 'PO') for a grouped dropdown.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Lightweight PR/PO number list for the IC PO-search dropdown",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "project.id",
+                        "name": "projectId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectId}/pos": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Resolves :projectId to project_code, then lists purchase_order rows for that project. Only APPROVED POs (purchase_order.status = 'APPROVED') are eligible — this is independent of status_receive. Includes due_date/credit_days from ic_po_receive_document (null until Tab 1 is submitted for that PO). A PO can now have many receive documents — due_date/credit_days/score fields shown here are from one representative document (the newest finalized one, i.e. receive_no NOT NULL, falling back to the newest draft); use GET /ic/pos/{poId}/receive-documents for the full list.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List Purchase Orders under a project (IC PO Receive list)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "project.id",
+                        "name": "projectId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "search by po_no or pr_no",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "pending (default) or completed",
+                        "name": "receive_status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectId}/return-pos": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same shape as ListProjectPOs, but filters status_receive IN ('PARTIALLY_RECEIVED','RECEIVED') (no pending/completed toggle) and includes receive_no. Also requires purchase_order.status = 'APPROVED', same as ListProjectPOs. Same representative-document caveat as ListProjectPOs applies (a PO can have many receive documents; this list shows one representative document's fields per PO).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List Purchase Orders under a project eligible for return",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "project.id",
+                        "name": "projectId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "search by po_no or pr_no",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -6124,6 +7119,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/memo/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Atomically increments memo_number_counter for the current year_month (YYYYMM) and formats it immediately as the real memo_no (MEM-\u003cYYMM\u003e-NNNN), same display format as before. Unlike the old memo_seq-based version, this resets to 0001 at the start of each new year_month instead of climbing forever. The number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The frontend calls this once when the create-memo page opens, then submits the returned memo_no as part of POST /memo.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "Reserve the next Memo number (consumes memo_number_counter, resets monthly)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/memo/{id}": {
             "get": {
                 "security": [
@@ -6972,6 +7992,46 @@ const docTemplate = `{
                 }
             }
         },
+        "/po/cost-budget": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One row per cost_code with at least one purchase_order_line under an APPROVED PO\nin the given project. pu_cost sums purchase_order_line.amount grouped by\ncost_subgroup_id. ac_cost allocates each PO's payment_log.amount_paid across its\nlines by each line's share of the PO's net_amount (line.amount / po.net_amount),\nthen sums those allocated amounts per cost_subgroup_id. budget is hardcoded to 0 —\nno budget-setting system exists yet — so pu_bal/ac_bal are always \u003c= 0 for now.\ncost_code and cost_subgroup_name follow the same join chain as po.go's Get handler\nand project_overview.go (cost_subgroup -\u003e cost_group -\u003e cost_job -\u003e cost_subject).\nLines with no cost_subgroup_id assigned are excluded — there's no cost_code to\ngroup them under.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Cost Budget page — Level 2 cost-code breakdown for a project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project code",
+                        "name": "project_code",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/line-items": {
             "get": {
                 "security": [
@@ -7150,6 +8210,31 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Atomically increments po_number_counter for the current year_month (YYYYMM) and formats it immediately as the real po_no. Unlike /po/next-number, this actually consumes the counter — the number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The sequence resets to 0001 at the start of each new year_month. The frontend calls this once when the create-PO page opens, then submits the returned po_no as part of POST /po.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Reserve the next PO number (consumes po_number_counter, resets monthly)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -8064,6 +9149,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/pr/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Atomically increments pr_number_counter for the current year_month (YYYYMM) and formats it immediately as the real pr_no. Unlike the old pr_seq-based version, this resets to 0001 at the start of each new year_month instead of climbing forever. The number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The frontend calls this once when the create-PR page opens, then submits the returned pr_no as part of POST /pr.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Request"
+                ],
+                "summary": "Reserve the next PR number (consumes pr_number_counter, resets monthly)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/pr/{id}": {
             "get": {
                 "security": [
@@ -8676,6 +9786,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/requisition/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Calls nextval('requisition_seq') and formats it immediately as the real req_no (REQ-\u003cYYYY\u003e-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-requisition page opens, then submits the returned req_no as part of POST /requisition.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Requisition"
+                ],
+                "summary": "Reserve the next Requisition number (consumes requisition_seq)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/requisition/{id}": {
             "get": {
                 "security": [
@@ -9232,6 +10367,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/stock-transfer/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Calls nextval('stock_transfer_seq') and formats it immediately as the real transfer_no (TRF-\u003cYYYY\u003e-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-transfer page opens, then submits the returned transfer_no as part of POST /stock-transfer.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StockTransfer"
+                ],
+                "summary": "Reserve the next Stock Transfer number (consumes stock_transfer_seq)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/stock-transfer/{id}": {
             "get": {
                 "security": [
@@ -9447,6 +10607,31 @@ const docTemplate = `{
                 "responses": {
                     "201": {
                         "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/borrow/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Calls nextval('borrow_seq') and formats it immediately as the real borrow_no (BOR-\u003cYYMM\u003e-NNNN), same format as before. Unlike the old generate-on-save call, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-borrow page opens, then submits the returned borrow_no as part of POST /stock/borrow.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Reserve the next Borrow number (consumes borrow_seq)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -11264,6 +12449,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/work-order/reserve-number": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Calls nextval('wo_seq') and formats it immediately as the real wo_no (WO-\u003cYYYY\u003e-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-WO page opens, then submits the returned wo_no as part of POST /work-order.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "Reserve the next Work Order number (consumes wo_seq)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/work-order/{id}": {
             "get": {
                 "security": [
@@ -11461,6 +12671,108 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/work-order/{woId}/payment-conditions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Fetches all 3 payment-condition lists for this WO in one call: installments (work_order_payment_installment), retentions (work_order_retention), penalties (work_order_penalty).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "ดึงเงื่อนไขการชำระเงินของหนังสือสั่งจ้าง (งวดชำระ/เงินประกันผลงาน/ค่าปรับ)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "woId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Full replace-sync for all 3 tables in one transaction: rows with an id are updated, rows without one are inserted, and any existing row for this wo_id not present in the submitted array is deleted. No cross-row validation (e.g. percentages summing to 100) is applied — only what's listed here. installments.payment_status must be UNPAID or PAID; switching to PAID without paid_date auto-fills it to today, switching back to UNPAID clears paid_date.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "บันทึกเงื่อนไขการชำระเงินของหนังสือสั่งจ้าง (แทนที่ทั้งหมดทั้ง 3 รายการ)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "woId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Full desired state of installments/retentions/penalties",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateWorkOrderPaymentConditionsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -11542,6 +12854,31 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.ICSubmitReceiveDocumentSwagger": {
+            "type": "object",
+            "properties": {
+                "exchange_rate": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "tax_invoice_date": {
+                    "type": "string",
+                    "example": "2026-09-18"
+                },
+                "tax_invoice_no": {
+                    "type": "string"
+                },
+                "temp_delivery_date": {
+                    "type": "string",
+                    "example": "2026-09-18"
+                },
+                "temp_delivery_no": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.UpdateGroupReq": {
             "type": "object",
             "properties": {
@@ -11569,6 +12906,84 @@ const docTemplate = `{
                 },
                 "user_id": {
                     "type": "integer"
+                }
+            }
+        },
+        "handlers.icRateReceiveDocumentRequest": {
+            "type": "object",
+            "required": [
+                "score_ontime",
+                "score_quality",
+                "score_quantity"
+            ],
+            "properties": {
+                "score_notes": {
+                    "type": "string"
+                },
+                "score_ontime": {
+                    "type": "integer",
+                    "maximum": 5,
+                    "minimum": 1
+                },
+                "score_quality": {
+                    "type": "integer",
+                    "maximum": 5,
+                    "minimum": 1
+                },
+                "score_quantity": {
+                    "type": "integer",
+                    "maximum": 5,
+                    "minimum": 1
+                }
+            }
+        },
+        "handlers.icSubmitReceiveLineInput": {
+            "type": "object",
+            "properties": {
+                "line_id": {
+                    "type": "integer"
+                },
+                "receive_qty": {
+                    "type": "number"
+                }
+            }
+        },
+        "handlers.icSubmitReceiveLinesRequest": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.icSubmitReceiveLineInput"
+                    }
+                },
+                "receive_document_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.icSubmitReturnLineInput": {
+            "type": "object",
+            "properties": {
+                "line_id": {
+                    "type": "integer"
+                },
+                "return_qty": {
+                    "type": "number"
+                }
+            }
+        },
+        "handlers.icSubmitReturnLinesRequest": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.icSubmitReturnLineInput"
+                    }
+                },
+                "remarks": {
+                    "type": "string"
                 }
             }
         },
@@ -11940,6 +13355,9 @@ const docTemplate = `{
         "models.CreateBorrowRequest": {
             "type": "object",
             "properties": {
+                "borrow_no": {
+                    "type": "string"
+                },
                 "expected_return": {
                     "type": "string"
                 },
@@ -12037,6 +13455,7 @@ const docTemplate = `{
         "models.CreateGRNRequest": {
             "type": "object",
             "required": [
+                "grn_no",
                 "lines",
                 "po_id",
                 "warehouse_code"
@@ -12046,6 +13465,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "delivery_note": {
+                    "type": "string"
+                },
+                "grn_no": {
                     "type": "string"
                 },
                 "lines": {
@@ -12283,6 +13705,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.MemoLineRequest"
                     }
                 },
+                "memo_no": {
+                    "type": "string"
+                },
                 "note": {
                     "type": "string"
                 },
@@ -12358,6 +13783,7 @@ const docTemplate = `{
             "required": [
                 "lines",
                 "location_text",
+                "po_no",
                 "supplier_id"
             ],
             "properties": {
@@ -12396,6 +13822,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "payment_terms": {
+                    "type": "string"
+                },
+                "po_no": {
                     "type": "string"
                 },
                 "pr_id": {
@@ -12741,6 +14170,9 @@ const docTemplate = `{
                 "req_date": {
                     "type": "string"
                 },
+                "req_no": {
+                    "type": "string"
+                },
                 "warehouse_code": {
                     "type": "string"
                 }
@@ -12882,6 +14314,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "transfer_date": {
+                    "type": "string"
+                },
+                "transfer_no": {
                     "type": "string"
                 },
                 "transfer_type": {
@@ -13219,7 +14654,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
-                    "description": "Status is only read by Update (PUT /work-order/:id) — Create always hardcodes 'DRAFT'\nin its INSERT. Update accepts \"DRAFT\" (no-op save) or \"PENDING_APPROVAL\" (the \"ส่งอนุมัติ\"\nbutton submitting inline) — anything else, including jumping straight to APPROVED, is\nrejected; approval decisions only ever happen through the dedicated Approve/Reject flow.",
                     "type": "string"
                 },
                 "supplier_address": {
@@ -13257,6 +14691,10 @@ const docTemplate = `{
                     "type": "number"
                 },
                 "wo_date": {
+                    "type": "string"
+                },
+                "wo_no": {
+                    "description": "Status is only read by Update (PUT /work-order/:id) — Create always hardcodes 'DRAFT'\nin its INSERT. Update accepts \"DRAFT\" (no-op save) or \"PENDING_APPROVAL\" (the \"ส่งอนุมัติ\"\nbutton submitting inline) — anything else, including jumping straight to APPROVED, is\nrejected; approval decisions only ever happen through the dedicated Approve/Reject flow.",
                     "type": "string"
                 },
                 "work_system": {
@@ -14652,6 +16090,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.MemoLineRequest"
                     }
                 },
+                "memo_no": {
+                    "type": "string"
+                },
                 "note": {
                     "type": "string"
                 },
@@ -15050,6 +16491,29 @@ const docTemplate = `{
                 }
             }
         },
+        "models.UpdateWorkOrderPaymentConditionsRequest": {
+            "type": "object",
+            "properties": {
+                "installments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.WorkOrderPaymentInstallmentInput"
+                    }
+                },
+                "penalties": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.WorkOrderPenaltyInput"
+                    }
+                },
+                "retentions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.WorkOrderRetentionInput"
+                    }
+                }
+            }
+        },
         "models.UpdateZoneReq": {
             "type": "object",
             "properties": {
@@ -15200,6 +16664,81 @@ const docTemplate = `{
                         3,
                         5
                     ]
+                }
+            }
+        },
+        "models.WorkOrderPaymentInstallmentInput": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "due_date": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "installment_no": {
+                    "type": "integer"
+                },
+                "paid_date": {
+                    "type": "string"
+                },
+                "payment_status": {
+                    "type": "string"
+                },
+                "percent_of_contract": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.WorkOrderPenaltyInput": {
+            "type": "object",
+            "properties": {
+                "contract_end_date": {
+                    "type": "string"
+                },
+                "contract_start_date": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "percent_per_day": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.WorkOrderRetentionInput": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "percent_of_contract": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
                 }
             }
         }

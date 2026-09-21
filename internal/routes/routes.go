@@ -159,6 +159,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 		return c.SendString("list works")
 	})
 	pr.Get("/next-number", prH.NextNumber)
+	pr.Get("/reserve-number", prH.ReservePRNumber)
 	pr.Post("/", prH.Create)
 	pr.Put("/:id", prH.Update)
 	pr.Post("/:id/submit", prH.Submit)
@@ -175,11 +176,13 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	po := api.Group("/po")
 	po.Use(jwt)
 	po.Get("/next-number", poH.NextPONumber)
+	po.Get("/reserve-number", poH.ReservePONumber)
 	po.Get("/search", goodsReceiptH.SearchApprovedPO)
 	po.Get("/available-prs", poH.GetAvailablePRs)
 	po.Get("/pr-lines/:pr_id", poH.GetPRLinesForPO)
 	po.Get("/receivable", poH.GetReceivablePOs)
 	po.Get("/line-items", poH.ListLineItems)
+	po.Get("/cost-budget", poH.CostBudget)
 	po.Get("/", poH.List)
 	po.Get("/:id", poH.Get)
 	po.Get("/:id/receivable-lines", poH.GetReceivableLines)
@@ -203,6 +206,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Memo
 	memo := api.Group("/memo", jwt)
 	memo.Get("/", memoH.List)
+	memo.Get("/reserve-number", memoH.ReserveMemoNumber)
 	memo.Post("/", memoH.Create)
 	memo.Get("/:id", memoH.GetByID)
 	memo.Put("/:id", memoH.Update)
@@ -228,6 +232,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// GRN
 	grn := api.Group("/grn")
 	grn.Get("/", grnH.List)
+	grn.Get("/reserve-number", jwt, goodsReceiptH.ReserveGRNNumber)
 	grn.Post("/", grnH.Create)
 	grn.Post("/:id/confirm", grnH.Confirm)
 	grn.Get("/history", jwt, goodsReceiptH.History)
@@ -343,6 +348,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	// Borrow & Return
 	stock.Get("/borrow", stockBorrowH.List)
+	stock.Get("/borrow/reserve-number", stockBorrowH.ReserveBorrowNumber)
 	stock.Post("/borrow", stockBorrowH.Create)
 	stock.Get("/borrow/scan/:item_code", stockBorrowH.ScanQR)
 	stock.Get("/borrow/:id", stockBorrowH.GetByID)
@@ -360,6 +366,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	requisitionH := handlers.NewRequisitionHandler(db)
 	requisition := api.Group("/requisition", jwt)
 	requisition.Get("/", requisitionH.List)
+	requisition.Get("/reserve-number", requisitionH.ReserveReqNumber)
 	requisition.Post("/", requisitionH.Create)
 	requisition.Get("/history", requisitionH.History)
 	requisition.Get("/:id", requisitionH.Get)
@@ -382,11 +389,14 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	workOrderH := handlers.NewWorkOrderHandler(db)
 	workOrder := api.Group("/work-order", jwt)
 	workOrder.Get("/", workOrderH.List)
+	workOrder.Get("/reserve-number", workOrderH.ReserveWONumber)
 	workOrder.Post("/", workOrderH.Create)
 	workOrder.Get("/:id", workOrderH.Get)
 	workOrder.Put("/:id", workOrderH.Update)
 	workOrder.Post("/:id/submit", workOrderH.Submit)
 	workOrder.Put("/:id/lines", workOrderH.UpdateLines)
+	workOrder.Get("/:woId/payment-conditions", workOrderH.GetPaymentConditions)
+	workOrder.Post("/:woId/payment-conditions", workOrderH.UpdatePaymentConditions)
 
 	financeH := handlers.NewFinanceHandler(db)
 	finance := api.Group("/finance", jwt)
@@ -397,7 +407,8 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Stock Transfer (ย้ายคลัง)
 	stockTransferH := handlers.NewStockTransferHandler(db)
 	stockTransfer := api.Group("/stock-transfer", jwt)
-	stockTransfer.Get("/history", stockTransferH.History) // static route before :id
+	stockTransfer.Get("/history", stockTransferH.History)                      // static route before :id
+	stockTransfer.Get("/reserve-number", stockTransferH.ReserveTransferNumber) // static route before :id
 	stockTransfer.Get("/", stockTransferH.List)
 	stockTransfer.Post("/", stockTransferH.Create)
 	stockTransfer.Get("/:id", stockTransferH.Get)
@@ -462,6 +473,26 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Effective Permissions
 	effectiveH := handlers.NewEffectivePermissionHandler(db)
 	api.Get("/permissions/effective", effectiveH.GetEffective)
+
+	// Inventory Control (IC)
+	icH := handlers.NewICHandler(db)
+	ic := api.Group("/ic", jwt)
+	ic.Get("/projects", icH.ListProjects)
+	ic.Get("/projects/:projectId", icH.GetProject)
+	ic.Get("/projects/:projectId/pos", icH.ListProjectPOs)
+	ic.Get("/projects/:projectId/po-search-options", icH.POSearchOptions)
+	ic.Get("/pos/:poId/receive-document", icH.GetReceiveDocument)
+	ic.Post("/pos/:poId/receive-document", icH.SubmitReceiveDocument)
+	ic.Get("/pos/:poId/receive-documents", icH.ListReceiveDocuments)
+	ic.Get("/pos/:poId/receive-documents/:docId", icH.GetReceiveDocumentByID)
+	ic.Delete("/pos/:poId/receive-documents/:docId", icH.DeleteReceiveDocument)
+	ic.Put("/pos/:poId/receive-documents/:docId/rating", icH.RateReceiveDocument)
+	ic.Get("/pos/:poId/receive-documents/:docId/lines", icH.GetReceiveDocumentLines)
+	ic.Get("/pos/:poId/receive-lines", icH.ListReceiveLines)
+	ic.Post("/pos/:poId/receive-lines/submit", icH.SubmitReceiveLines)
+	ic.Get("/projects/:projectId/return-pos", icH.ListReturnPOs)
+	ic.Get("/pos/:poId/return-lines", icH.ListReturnLines)
+	ic.Post("/pos/:poId/return-lines/submit", icH.SubmitReturnLines)
 
 	// Health check
 	app.Get("/health", func(c *fiber.Ctx) error {

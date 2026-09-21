@@ -470,6 +470,122 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 	})
 }
 
+// costBudgetRow is one cost_code line for the Cost Budget page's Level-2 breakdown.
+type costBudgetRow struct {
+	CostCode         string  `json:"cost_code"`
+	CostSubgroupName *string `json:"cost_subgroup_name"`
+	Description      *string `json:"description"`
+	Budget           float64 `json:"budget"`
+	PuCost           float64 `json:"pu_cost"`
+	PuBal            float64 `json:"pu_bal"`
+	AcCost           float64 `json:"ac_cost"`
+	AcBal            float64 `json:"ac_bal"`
+}
+
+type costBudgetTotals struct {
+	Budget float64 `json:"budget"`
+	PuCost float64 `json:"pu_cost"`
+	PuBal  float64 `json:"pu_bal"`
+	AcCost float64 `json:"ac_cost"`
+	AcBal  float64 `json:"ac_bal"`
+}
+
+// CostBudget godoc
+// @Summary      Cost Budget page — Level 2 cost-code breakdown for a project
+// @Description  One row per cost_code with at least one purchase_order_line under an APPROVED PO
+// @Description  in the given project. pu_cost sums purchase_order_line.amount grouped by
+// @Description  cost_subgroup_id. ac_cost allocates each PO's payment_log.amount_paid across its
+// @Description  lines by each line's share of the PO's net_amount (line.amount / po.net_amount),
+// @Description  then sums those allocated amounts per cost_subgroup_id. budget is hardcoded to 0 —
+// @Description  no budget-setting system exists yet — so pu_bal/ac_bal are always <= 0 for now.
+// @Description  cost_code and cost_subgroup_name follow the same join chain as po.go's Get handler
+// @Description  and project_overview.go (cost_subgroup -> cost_group -> cost_job -> cost_subject).
+// @Description  Lines with no cost_subgroup_id assigned are excluded — there's no cost_code to
+// @Description  group them under.
+// @Tags         Purchase Order
+// @Security     BearerAuth
+// @Produce      json
+// @Param        project_code  query  string  true  "Project code"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Router       /po/cost-budget [get]
+func (h *POHandler) CostBudget(c *fiber.Ctx) error {
+	projectCode := c.Query("project_code")
+	if strings.TrimSpace(projectCode) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "project_code is required")
+	}
+
+	ctx := context.Background()
+	rows, err := h.db.Query(ctx, `
+		WITH line_alloc AS (
+			SELECT pol.id AS line_id, pol.cost_subgroup_id, pol.mat_code, pol.amount,
+			       CASE WHEN po.net_amount > 0
+			            THEN pol.amount / po.net_amount * COALESCE(pay.total_paid, 0)
+			            ELSE 0
+			       END AS ac_cost_line
+			FROM purchase_order_line pol
+			JOIN purchase_order po ON po.id = pol.po_id
+			LEFT JOIN (
+				SELECT doc_id, SUM(amount_paid) AS total_paid
+				FROM payment_log
+				WHERE doc_type = 'PO'
+				GROUP BY doc_id
+			) pay ON pay.doc_id = po.id
+			WHERE po.project_code = $1
+			  AND po.status = 'APPROVED'
+			  AND pol.cost_subgroup_id IS NOT NULL
+		)
+		SELECT
+			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			csg.subgroup_name AS cost_subgroup_name,
+			STRING_AGG(DISTINCT TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(ss.spec_description, '')), ', ') AS description,
+			SUM(la.amount) AS pu_cost,
+			SUM(la.ac_cost_line) AS ac_cost
+		FROM line_alloc la
+		LEFT JOIN cost_subgroup csg  ON csg.id = la.cost_subgroup_id
+		LEFT JOIN cost_group    cg   ON cg.id = csg.group_id
+		LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
+		LEFT JOIN material_code mc  ON mc.mat_code = la.mat_code
+		LEFT JOIN mat_name      mn  ON mn.id = mc.mat_name_id
+		LEFT JOIN spec_size     ss  ON ss.id = mc.spec_id
+		GROUP BY la.cost_subgroup_id, csub.subject_code, cj.job_code, cg.group_code, csg.subgroup_code, csg.subgroup_name
+		ORDER BY cost_code`, projectCode)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	result := []costBudgetRow{}
+	var totals costBudgetTotals
+	for rows.Next() {
+		var r costBudgetRow
+		if err := rows.Scan(&r.CostCode, &r.CostSubgroupName, &r.Description, &r.PuCost, &r.AcCost); err != nil {
+			return err
+		}
+		r.Budget = 0
+		r.PuBal = r.Budget - r.PuCost
+		r.AcBal = r.Budget - r.AcCost
+		totals.PuCost += r.PuCost
+		totals.AcCost += r.AcCost
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	totals.Budget = 0
+	totals.PuBal = totals.Budget - totals.PuCost
+	totals.AcBal = totals.Budget - totals.AcCost
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"rows":   result,
+			"totals": totals,
+		},
+	})
+}
+
 // GetPO godoc
 // @Summary      Get purchase order by ID
 // @Description  Each line includes cost_subgroup_id (nullable) — the Cost Code selected for that line, mirroring purchase_request_line.cost_subgroup_id. Header includes receiver_name/receiver_phone (both nullable).
@@ -809,6 +925,9 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if req.ApproverID == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "approver_id is required")
 	}
+	if strings.TrimSpace(req.PONo) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "document number is required, call reserve-number first")
+	}
 
 	status := req.Status
 	if status == "" {
@@ -880,28 +999,14 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
-	// po_no generation (nextPONumber) reads MAX via an unlocked LIKE/ORDER BY query, so
-	// concurrent/double-click submits can race and collide on the po_no unique constraint.
-	// Retry a few times: first attempt lets nextPONumber pick, later attempts just re-run it
-	// inside a fresh transaction so a losing request gets the next free number instead of 500ing.
-	const maxAttempts = 3
-	var poID int64
-	var poNo string
-	var approvalID *int64
-	var totalAmount, vatAmount, netAmount float64
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		poID, poNo, approvalID, totalAmount, vatAmount, netAmount, err = h.createPOTx(ctx, claims.UserID, req, status, warehouseCode, projectCode, jobCode, requestedBy, prLineCostSubgroup)
-		if err == nil {
-			break
-		}
-
+	// po_no is now reserved up front via GET /po/reserve-number (po_number_counter, monthly
+	// reset), so no retry-on-collision loop is needed here anymore — the counter's per-month
+	// UPSERT guarantees uniqueness within a given year_month.
+	poID, poNo, approvalID, totalAmount, vatAmount, netAmount, err := h.createPOTx(ctx, claims.UserID, req, status, warehouseCode, projectCode, jobCode, requestedBy, prLineCostSubgroup)
+	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "po_no") {
-			if attempt == maxAttempts {
-				return fiber.NewError(fiber.StatusConflict, "failed to generate unique PO number, please try again")
-			}
-			continue
+			return fiber.NewError(fiber.StatusConflict, "po_no already used — call reserve-number again")
 		}
 		return err
 	}
@@ -926,10 +1031,7 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 	}
 	defer tx.Rollback(ctx)
 
-	poNo, err = nextPONumber(ctx, tx)
-	if err != nil {
-		return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to generate PO number: "+err.Error())
-	}
+	poNo = req.PONo
 
 	useDiscount := req.UseDiscount != nil && *req.UseDiscount
 	useVAT := req.UseVAT != nil && *req.UseVAT
@@ -1616,28 +1718,26 @@ func (h *POHandler) NextPONumber(c *fiber.Ctx) error {
 	})
 }
 
-// nextPONumber returns the next sequential PO number for the current month, e.g. PO-202506-0001.
-func nextPONumber(ctx context.Context, tx pgx.Tx) (string, error) {
-	now := time.Now()
-	prefix := fmt.Sprintf("PO-%d%02d-", now.Year(), int(now.Month()))
-
-	var lastNo string
-	err := tx.QueryRow(ctx, `
-		SELECT po_no FROM purchase_order
-		WHERE po_no LIKE $1 AND status NOT IN ('CANCELLED')
-		ORDER BY po_no DESC LIMIT 1`, prefix+"%").Scan(&lastNo)
-
-	seq := 1
-	if err == nil {
-		parts := strings.Split(lastNo, "-")
-		if n, convErr := strconv.Atoi(parts[len(parts)-1]); convErr == nil {
-			seq = n + 1
-		}
-	} else if err != pgx.ErrNoRows {
-		return "", err
+// ReservePONumber godoc
+// @Summary      Reserve the next PO number (consumes po_number_counter, resets monthly)
+// @Description  Atomically increments po_number_counter for the current year_month (YYYYMM) and formats it immediately as the real po_no. Unlike /po/next-number, this actually consumes the counter — the number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The sequence resets to 0001 at the start of each new year_month. The frontend calls this once when the create-PO page opens, then submits the returned po_no as part of POST /po.
+// @Tags         Purchase Order
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /po/reserve-number [get]
+func (h *POHandler) ReservePONumber(c *fiber.Ctx) error {
+	ym := time.Now().Format("200601")
+	var seq int64
+	if err := h.db.QueryRow(context.Background(), `
+		INSERT INTO po_number_counter (year_month, last_seq) VALUES ($1, 1)
+		ON CONFLICT (year_month) DO UPDATE SET last_seq = po_number_counter.last_seq + 1
+		RETURNING last_seq`, ym,
+	).Scan(&seq); err != nil {
+		return err
 	}
-
-	return fmt.Sprintf("%s%04d", prefix, seq), nil
+	poNo := fmt.Sprintf("PO-%s-%04d", ym, seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"po_no": poNo}})
 }
 
 // ApprovePO godoc

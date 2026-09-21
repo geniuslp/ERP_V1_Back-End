@@ -23,13 +23,27 @@ func NewMemoHandler(db *pgxpool.Pool) *MemoHandler {
 	return &MemoHandler{db: db}
 }
 
-// generateMemoNo สร้างเลข memo รูปแบบ MEM-2506-0001
-func (h *MemoHandler) generateMemoNo(ctx context.Context) (string, error) {
+// ReserveMemoNumber godoc
+// @Summary      Reserve the next Memo number (consumes memo_number_counter, resets monthly)
+// @Description  Atomically increments memo_number_counter for the current year_month (YYYYMM) and formats it immediately as the real memo_no (MEM-<YYMM>-NNNN), same display format as before. Unlike the old memo_seq-based version, this resets to 0001 at the start of each new year_month instead of climbing forever. The number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The frontend calls this once when the create-memo page opens, then submits the returned memo_no as part of POST /memo.
+// @Tags         Memo
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /memo/reserve-number [get]
+func (h *MemoHandler) ReserveMemoNumber(c *fiber.Ctx) error {
+	now := time.Now()
+	ym := now.Format("200601")
 	var seq int64
-	if err := h.db.QueryRow(ctx, "SELECT nextval('memo_seq')").Scan(&seq); err != nil {
-		return "", err
+	if err := h.db.QueryRow(context.Background(), `
+		INSERT INTO memo_number_counter (year_month, last_seq) VALUES ($1, 1)
+		ON CONFLICT (year_month) DO UPDATE SET last_seq = memo_number_counter.last_seq + 1
+		RETURNING last_seq`, ym,
+	).Scan(&seq); err != nil {
+		return err
 	}
-	return fmt.Sprintf("MEM-%s-%04d", time.Now().Format("0601"), seq), nil
+	memoNo := fmt.Sprintf("MEM-%s-%04d", now.Format("0601"), seq)
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"memo_no": memoNo}})
 }
 
 func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, error) {
@@ -346,16 +360,26 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
 
-	memoNo, err := h.generateMemoNo(ctx)
-	if err != nil {
-		return err
-	}
-
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// memo_no is generated internally from memo_number_counter inside this transaction — the
+	// create page does not call reserve-number, unlike PR/PO. Same monthly-reset counter as
+	// ReserveMemoNumber uses, so there's only one numbering path, not two inconsistent ones.
+	now := time.Now()
+	ym := now.Format("200601")
+	var seq int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO memo_number_counter (year_month, last_seq) VALUES ($1, 1)
+		ON CONFLICT (year_month) DO UPDATE SET last_seq = memo_number_counter.last_seq + 1
+		RETURNING last_seq`, ym,
+	).Scan(&seq); err != nil {
+		return err
+	}
+	memoNo := fmt.Sprintf("MEM-%s-%04d", now.Format("0601"), seq)
 
 	var memoID int64
 	err = tx.QueryRow(ctx, `
