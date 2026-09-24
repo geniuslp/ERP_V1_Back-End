@@ -970,3 +970,50 @@ session (`ic_po_receive_document`, `ic_project_cost_item`, `ic_project_cost_item
 `purchase_order_line.cost_subgroup_id`) were applied directly against the live DB, not via a
 migration file. `migrations/001`–`016` are legacy files that predate this policy — they document
 history, but nothing new should be added there going forward.
+
+---
+
+## 🧭 Session learnings (2026-09-24) — IC Project Movement (ตัดเบิก/โอน) built end-to-end [Backend]
+
+### 1. New feature: `ic_project_movement` / `ic_project_movement_line`
+Header + line-item tables for "ตัดเบิก" (`ISSUE`) / "โอน" (`TRANSFER`) documents against a project's
+[ic_project_cost_item](database.md#ic_project_cost_item) balance. Handler: `internal/handlers/ic_project_movement.go`,
+routed under `/ic/projects/:projectCode/movements`.
+
+### 2. Submit design (`POST /ic/projects/:projectCode/movements/:id/submit`)
+Single transaction:
+- Locks **all** touched `ic_project_cost_item` rows (source + destination, across all lines) with
+  `SELECT ... FOR UPDATE`, sorted by `id` ascending to avoid deadlocks between concurrent submits.
+- Re-validates `qty_on_hand` at submit time, not just at add-line time (balance may have moved since).
+- Destination row **must already exist** — does NOT auto-create. Rejects with
+  `"โครงการปลายทางยังไม่มีรายการนี้"` if missing. This differs deliberately from PO-receive, which
+  auto-creates `ic_project_cost_item` on receive.
+- All-or-nothing across every line.
+- Status `DRAFT → POSTED` (reused the existing column, no new status values).
+- Idempotent: re-submitting an already-`POSTED` document is rejected.
+
+### 3. `ic_project_cost_item_transaction` schema change
+`po_id`/`po_line_id` made nullable; added `movement_id`, `movement_line_id`, `ref_type`
+(`'PO' | 'MOVEMENT_ISSUE' | 'MOVEMENT_TRANSFER'`) with a CHECK constraint enforcing exactly one
+reference type is populated per row. Submit logs a negative (source) **and** a positive
+(destination) row per line. Applied via pgAdmin, no migration file (see 2026-09-21 #7).
+
+### 4. New endpoint `GET /ic/projects/:projectCode/cost-transactions`
+Project-scoped transaction history, parallel to the global warehouse-scoped Stock Transaction page,
+but reading `ic_project_cost_item_transaction` instead of `stock_transaction`. The two systems stay
+fully separate — **no UNION, do not conflate them.**
+
+### 5. 🔴 Real bug found and fixed: PO/PR `order_type` mismatch was never validated
+`purchase_order.order_type` and its linked `purchase_request.order_type` are stored independently,
+with no cross-validation anywhere. Found a live case: **PO-202609-0003** has PR `order_type='cost'`
+but PO `order_type='stock'`. The receive-lines handler is **not** buggy — it correctly branched on
+the PO's own (wrong) value, so items went to `stock_item` instead of `ic_project_cost_item`.
+Fix: `po.go` `Create`/`Update` now reject a PO/PR `order_type` mismatch when `pr_id` is set.
+PO-202609-0003's already-received data was **left as-is** (genuinely in `stock_item` now), not
+backfilled; a fresh PR/PO was used to test the cost/project flow.
+
+### 6. 🔴 Known open item — end-to-end test NOT yet completed
+Full flow (add line → Submit → verify source/destination `qty_on_hand` → verify cost-transactions
+history shows the new rows) has **not** been completed successfully. Every attempt so far hit test
+data that ended up in `stock_item` rather than `ic_project_cost_item`, due to the `order_type` bug
+in #5. Retest with a fresh, consistent `cost`-type PR/PO before treating this feature as verified.

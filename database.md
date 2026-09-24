@@ -31,6 +31,8 @@
 | [ic_po_receive_document](#ic_po_receive_document) | IC | หัวเอกสารรับเข้า (Tab 1) ของ IC PO Receive, 1 แถวต่อ PO |
 | [ic_project_cost_item](#ic_project_cost_item) | IC | ยอดคงเหลือของ order_type='cost' ต่อ project+mat_code+cost_subgroup |
 | [ic_project_cost_item_transaction](#ic_project_cost_item_transaction) | IC | log การรับ/คืนของ ic_project_cost_item |
+| [ic_project_movement](#ic_project_movement) | IC | หัวเอกสารตัดเบิก/โอน (ISSUE/TRANSFER) ของ project cost |
+| [ic_project_movement_line](#ic_project_movement_line) | IC | รายการใน ic_project_movement |
 | [inventory](#inventory) | Stock | stock PR/PO (mat_code based) |
 | [inventory_transaction](#inventory_transaction) | Stock | transaction inventory |
 | [location](#location) | Master | สถานที่/ที่ตั้ง |
@@ -515,19 +517,78 @@ updated_at       timestamp     NOT NULL  DEFAULT now()
 ### ic_project_cost_item_transaction
 > 🆕 2026-09-21 — log การรับ (`qty` บวก) / คืน (`qty` ลบ) เข้า `ic_project_cost_item` แต่ละครั้ง
 > mirror บทบาทเดียวกับ `stock_transaction` ฝั่ง stock
+> 🆕 2026-09-24 — po_id/po_line_id เปลี่ยนเป็น nullable, เพิ่ม `movement_id`, `movement_line_id`,
+> `ref_type` เพื่อรองรับ log จาก [ic_project_movement](#ic_project_movement) (ตัดเบิก/โอน) ไม่ใช่แค่
+> PO receive/return — CHECK constraint บังคับว่าต้องมีอย่างใดอย่างหนึ่งเท่านั้น (PO ref หรือ movement
+> ref) ไม่ปนกัน: `ref_type='PO'` ต้องมี po_id+po_line_id (movement_id/movement_line_id เป็น NULL),
+> `ref_type IN ('MOVEMENT_ISSUE','MOVEMENT_TRANSFER')` ต้องมี movement_id+movement_line_id
+> (po_id/po_line_id เป็น NULL) — submit ลง 2 แถวต่อ line (ต้นทาง `qty` ลบ, ปลายทาง `qty` บวก)
 ```
-id                   bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+id                   bigint        NOT NULL  PK  DEFAULT nextval('ic_project_cost_item_transaction_id_seq')
 project_cost_item_id bigint        NOT NULL  — FK → ic_project_cost_item.id
-po_id                bigint        NOT NULL  — FK → purchase_order.id
-po_line_id           bigint        NOT NULL  — FK → purchase_order_line.id
-qty                  numeric(18,4) NOT NULL  — บวก=รับ, ลบ=คืน
+po_id                bigint        nullable  — FK → purchase_order.id (เฉพาะ ref_type='PO')
+po_line_id           bigint        nullable  — FK → purchase_order_line.id (เฉพาะ ref_type='PO')
+qty                  numeric(18,4) NOT NULL  — บวก=รับ/เข้า, ลบ=คืน/ออก
 qty_before           numeric(18,4) NOT NULL
 qty_after            numeric(18,4) NOT NULL
 unit_cost            numeric(18,4) NOT NULL
-remarks              text          nullable
-txn_date             timestamp     nullable
+txn_date             date          NOT NULL  DEFAULT CURRENT_DATE
 created_at           timestamp     NOT NULL  DEFAULT now()
 created_by           bigint        nullable
+remarks              text          nullable
+receive_document_id  bigint        nullable  — FK → ic_po_receive_document.id
+movement_id          bigint        nullable  — FK → ic_project_movement.id (เฉพาะ ref_type='MOVEMENT_*')
+movement_line_id     bigint        nullable  — FK → ic_project_movement_line.id (เฉพาะ ref_type='MOVEMENT_*')
+ref_type             varchar(20)   NOT NULL  DEFAULT 'PO'  — 'PO' | 'MOVEMENT_ISSUE' | 'MOVEMENT_TRANSFER'
+-- CHECK chk_ic_project_cost_item_txn_ref_consistency:
+--   ref_type='PO' → po_id+po_line_id NOT NULL, movement_* NULL
+--   ref_type IN ('MOVEMENT_ISSUE','MOVEMENT_TRANSFER') → movement_id+movement_line_id NOT NULL, po_* NULL
+```
+
+---
+
+### ic_project_movement
+> 🆕 2026-09-24 — หัวเอกสารตัดเบิก (ISSUE) / โอน (TRANSFER) ของ project cost item ผูกกับ
+> `project_code` + `job_code` (`job_code` ต้องเป็นหนึ่งใน `project.job_codes`) — status: `DRAFT` ตอน
+> สร้าง, เปลี่ยนเป็น `POSTED` ตอน submit (ดู CLAUDE.md session เดียวกันนี้สำหรับ submit logic:
+> lock+validate+หักต้นทาง/เครดิตปลายทาง แบบ all-or-nothing) submit แล้วห้ามเพิ่ม line หรือ submit
+> ซ้ำอีก
+```
+id           bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+doc_no       varchar       NOT NULL
+doc_type     varchar       NOT NULL  — 'ISSUE' | 'TRANSFER'
+doc_date     date          nullable
+project_code varchar(20)   NOT NULL  — FK → project.project_code
+job_code     varchar       NOT NULL
+requested_by bigint        NOT NULL  — FK → users.id
+remarks      text          nullable
+status       varchar       NOT NULL  DEFAULT 'DRAFT'  — 'DRAFT' | 'POSTED'
+created_by   bigint        nullable
+created_at   timestamp     NOT NULL  DEFAULT now()
+updated_at   timestamp     NOT NULL  DEFAULT now()
+```
+
+---
+
+### ic_project_movement_line
+> 🆕 2026-09-24 — รายการใน ic_project_movement 1 แถว = 1 mat_code ที่จะตัด/โอน จาก
+> (`movement.project_code`, `mat_code`, `cost_subgroup_id`) ไปยัง (`to_project_code`, `mat_code`,
+> `to_cost_subgroup_id`) — ตอน add line จะ validate `qty <= qty_on_hand` ของต้นทางแล้ว (แต่ submit
+> จะ re-validate อีกรอบ เผื่อยอดเปลี่ยนไปหลัง add) ยังไม่หัก `qty_on_hand` จริงตอน insert แถวนี้
+> — หักจริงตอน submit เอกสารทั้งใบเท่านั้น (ดู [ic_project_movement](#ic_project_movement))
+> แถวปลายทางใน `ic_project_cost_item` ต้องมีอยู่แล้ว (ไม่ auto-create) `line_no` running ต่อ `movement_id`
+```
+id                  bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+movement_id         bigint        NOT NULL  — FK → ic_project_movement.id
+line_no             int           NOT NULL
+mat_code            varchar(30)   NOT NULL
+cost_subgroup_id    bigint        NOT NULL  — FK → cost_subgroup.id
+qty                 numeric(18,4) NOT NULL  — > 0
+to_project_code     varchar(20)   NOT NULL
+to_cost_subgroup_id bigint        NOT NULL  — FK → cost_subgroup.id
+remarks             text          nullable
+created_at          timestamp     NOT NULL  DEFAULT now()
+created_by          bigint        nullable
 ```
 
 ---

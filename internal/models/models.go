@@ -1801,6 +1801,129 @@ type PettyCashLine struct {
 	StockOnHand float64 `json:"stock_on_hand"`
 }
 
+type IcProjectMovement struct {
+	ID          int64     `json:"id"`
+	DocNo       string    `json:"doc_no"`
+	DocType     string    `json:"doc_type"` // "ISSUE" | "TRANSFER"
+	DocDate     string    `json:"doc_date"`
+	ProjectCode string    `json:"project_code"`
+	JobCode     string    `json:"job_code"`
+	RequestedBy int64     `json:"requested_by"`
+	Remarks     *string   `json:"remarks"`
+	Status      string    `json:"status"`
+	CreatedBy   int64     `json:"created_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type IcProjectMovementDetail struct {
+	ID              int64     `json:"id"`
+	DocNo           string    `json:"doc_no"`
+	DocType         string    `json:"doc_type"`
+	DocDate         string    `json:"doc_date"`
+	ProjectCode     string    `json:"project_code"`
+	ProjectName     string    `json:"project_name"`
+	JobCode         string    `json:"job_code"`
+	JobName         string    `json:"job_name"`
+	RequestedBy     int64     `json:"requested_by"`
+	RequestedByName string    `json:"requested_by_name"`
+	Status          string    `json:"status"`
+	Remarks         *string   `json:"remarks"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type IcAvailableMaterial struct {
+	MatCode        string  `json:"mat_code"`
+	MatName        string  `json:"mat_name"`
+	CostSubgroupID int64   `json:"cost_subgroup_id"`
+	CostCode       string  `json:"cost_code"`
+	CostName       string  `json:"cost_name"`
+	Unit           *string `json:"unit"`
+	QtyOnHand      float64 `json:"qty_on_hand"`
+}
+
+type IcCostCodeOption struct {
+	CostSubgroupID int64  `json:"cost_subgroup_id"`
+	CostCode       string `json:"cost_code"`
+	SubgroupName   string `json:"subgroup_name"`
+}
+
+type CreateIcProjectMovementLineRequest struct {
+	MatCode          string  `json:"mat_code" validate:"required"`
+	CostSubgroupID   int64   `json:"cost_subgroup_id" validate:"required"`
+	Qty              float64 `json:"qty" validate:"required,gt=0"`
+	ToProjectCode    string  `json:"to_project_code" validate:"required"`
+	ToCostSubgroupID int64   `json:"to_cost_subgroup_id" validate:"required"`
+	Remarks          *string `json:"remarks"`
+}
+
+type IcProjectMovementLine struct {
+	ID               int64   `json:"id"`
+	LineNo           int     `json:"line_no"`
+	MatCode          string  `json:"mat_code"`
+	MatName          string  `json:"mat_name"`
+	CostSubgroupID   int64   `json:"cost_subgroup_id"`
+	CostCode         string  `json:"cost_code"`
+	CostName         string  `json:"cost_name"`
+	Unit             *string `json:"unit"`
+	Qty              float64 `json:"qty"`
+	ToProjectCode    string  `json:"to_project_code"`
+	ToProjectName    string  `json:"to_project_name"`
+	ToCostSubgroupID int64   `json:"to_cost_subgroup_id"`
+	ToCostCode       string  `json:"to_cost_code"`
+	ToCostName       string  `json:"to_cost_name"`
+	Remarks          *string `json:"remarks"`
+}
+
+type IcProjectMovementListItem struct {
+	ID              int64     `json:"id"`
+	DocNo           string    `json:"doc_no"`
+	DocType         string    `json:"doc_type"`
+	DocDate         string    `json:"doc_date"`
+	Status          string    `json:"status"`
+	JobCode         string    `json:"job_code"`
+	JobName         string    `json:"job_name"`
+	RequestedByName string    `json:"requested_by_name"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type IcProjectCostTransaction struct {
+	ID              int64     `json:"id"`
+	Qty             float64   `json:"qty"`
+	QtyBefore       float64   `json:"qty_before"`
+	QtyAfter        float64   `json:"qty_after"`
+	UnitCost        float64   `json:"unit_cost"`
+	Remarks         *string   `json:"remarks"`
+	TxnDate         string    `json:"txn_date"`
+	RefType         string    `json:"ref_type"`
+	MatCode         string    `json:"mat_code"`
+	MatName         string    `json:"mat_name"`
+	CostSubgroupID  int64     `json:"cost_subgroup_id"`
+	CostCode        string    `json:"cost_code"`
+	CostName        string    `json:"cost_name"`
+	RefNo           *string   `json:"ref_no"`
+	CreatedByName   string    `json:"created_by_name"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type IcProjectCostTransactionFilter struct {
+	RefType  string `query:"ref_type"`
+	Search   string `query:"search"`
+	DateFrom string `query:"date_from"`
+	DateTo   string `query:"date_to"`
+	Page     int    `query:"page"`
+	PageSize int    `query:"page_size"`
+}
+
+type CreateIcProjectMovementRequest struct {
+	DocType     string  `json:"doc_type" validate:"required,oneof=ISSUE TRANSFER"`
+	DocDate     string  `json:"doc_date"`
+	ProjectCode string  `json:"project_code" validate:"required"`
+	JobCode     string  `json:"job_code" validate:"required"`
+	RequestedBy int64   `json:"requested_by" validate:"required"`
+	Remarks     *string `json:"remarks"`
+}
+
 type CreatePettyCashRequest struct {
 	Purpose      string                    `json:"purpose"`
 	Currency     string                    `json:"currency"`

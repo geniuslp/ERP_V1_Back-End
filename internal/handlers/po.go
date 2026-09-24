@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -768,6 +769,7 @@ func (h *POHandler) resolvePOAutoFields(
 		if err := h.db.QueryRow(ctx, `SELECT status, project_code, requested_by, warehouse_code, job_code, order_type FROM purchase_request WHERE id=$1`, *prID).Scan(&prStatus, &projectCode, &requestedBy, &warehouseCode, &prJobCode, &prOrderType); err != nil {
 			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "PR not found")
 		}
+		log.Printf("DEBUG resolvePOAutoFields: prID=%d prOrderType=%q (from DB purchase_request.order_type)", *prID, prOrderType)
 		if prStatus != "COMPLETED" {
 			return nil, nil, nil, nil, nil, "", fiber.NewError(fiber.StatusBadRequest, "PR must be COMPLETED before creating a PO")
 		}
@@ -940,6 +942,11 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 		req.Currency = "THB"
 	}
 
+	// Captured before the "" -> "stock" default below, so the mismatch check right after
+	// resolvePOAutoFields can tell "client explicitly said stock" apart from "client said
+	// nothing" — only the former should be rejected when it conflicts with a linked PR.
+	explicitReqOrderType := req.OrderType
+
 	if req.OrderType == "" {
 		req.OrderType = "stock"
 	}
@@ -970,6 +977,18 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	// resolvePOAutoFields already makes order_type authoritative from the linked PR when
+	// pr_id is set (same precedence as project_code/warehouse_code/job_code below) — but a
+	// client that explicitly chose a conflicting order_type should be told, not silently
+	// overridden, since that's exactly the class of bug that let PO-202609-0003 end up
+	// order_type='stock' while its linked PR was 'cost' (the write below used to ignore
+	// effectiveOrderType and store the raw/defaulted req.OrderType instead).
+	log.Printf("DEBUG PO Create: req.PRID=%v explicitReqOrderType=%q effectiveOrderType=%q", req.PRID, explicitReqOrderType, effectiveOrderType)
+	if req.PRID != nil && explicitReqOrderType != "" && explicitReqOrderType != effectiveOrderType {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("order_type (%s) ไม่ตรงกับ PR ต้นทาง (%s)", explicitReqOrderType, effectiveOrderType))
+	}
+	req.OrderType = effectiveOrderType
+	log.Printf("DEBUG PO Create: req.OrderType after override=%q", req.OrderType)
 	// warehouse_code is required only when the effective order type is 'stock' —
 	// GoodsReceiptHandler.Receive hard-requires it to resolve stock_inventory's location for
 	// warehouse-bound purchases, so a stock PO created without one is a receiving dead-end
@@ -1085,6 +1104,7 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 	}
 	netAmount = totalAmount - discountAmount + vatAmount - whtAmount
 
+	log.Printf("DEBUG createPOTx: about to INSERT with req.OrderType=%q req.PRID=%v", req.OrderType, req.PRID)
 	err = tx.QueryRow(ctx, `
 		INSERT INTO purchase_order
 		  (po_no, po_date, supplier_id, pr_id, rfq_id, location_text, warehouse_code, project_code, requested_by, approver_id, ref, currency,
@@ -1438,6 +1458,11 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
 
+	// Captured before the "" -> currentOrderType fallback below, so the mismatch check right
+	// after resolvePOAutoFields can tell "client explicitly said X" apart from "client left
+	// order_type out of this update" — only the former should be rejected on conflict.
+	explicitReqOrderType := req.OrderType
+
 	orderType := req.OrderType
 	if orderType == "" {
 		orderType = currentOrderType
@@ -1449,10 +1474,18 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_id is required when order_type is 'cost'")
 	}
 
-	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, _, err := h.resolvePOAutoFields(ctx, req.PRID, orderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
+	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, effectiveOrderType, err := h.resolvePOAutoFields(ctx, req.PRID, orderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
 		return err
 	}
+	// Same authoritative-from-PR precedence and explicit-conflict rejection as Create — see
+	// the comment there. This was previously discarded (`_`) and the UPDATE below wrote the
+	// pre-resolution `orderType` instead of the PR-derived value, the same class of bug that
+	// let PO-202609-0003 drift from its linked PR's order_type.
+	if req.PRID != nil && explicitReqOrderType != "" && explicitReqOrderType != effectiveOrderType {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("order_type (%s) ไม่ตรงกับ PR ต้นทาง (%s)", explicitReqOrderType, effectiveOrderType))
+	}
+	orderType = effectiveOrderType
 
 	// job_code: explicit request value wins; otherwise the source PR's job_code (if
 	// pr_id was (re)sent); otherwise the PO's current value — Update never requires

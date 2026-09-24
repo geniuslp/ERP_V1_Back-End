@@ -478,6 +478,8 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	icH := handlers.NewICHandler(db)
 	ic := api.Group("/ic", jwt)
 	ic.Get("/projects", icH.ListProjects)
+	icMoveH := handlers.NewIcProjectMovementHandler(db)
+	ic.Get("/projects/by-code/:projectCode", icMoveH.GetProjectByCode)
 	ic.Get("/projects/:projectId", icH.GetProject)
 	ic.Get("/projects/:projectId/pos", icH.ListProjectPOs)
 	ic.Get("/projects/:projectId/po-search-options", icH.POSearchOptions)
@@ -493,6 +495,18 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	ic.Get("/projects/:projectId/return-pos", icH.ListReturnPOs)
 	ic.Get("/pos/:poId/return-lines", icH.ListReturnLines)
 	ic.Post("/pos/:poId/return-lines/submit", icH.SubmitReturnLines)
+
+	// IC Project Movement (Issue/Transfer)
+	ic.Get("/projects/:projectCode/job-codes", icMoveH.ListProjectJobCodes)
+	ic.Get("/projects/:projectCode/movements", icMoveH.ListMovements)
+	ic.Post("/projects/:projectCode/movements", icMoveH.CreateMovement)
+	ic.Get("/projects/:projectCode/movements/:id", icMoveH.GetMovement)
+	ic.Get("/projects/:projectCode/movements/:id/available-materials", icMoveH.ListAvailableMaterials)
+	ic.Get("/projects/:projectCode/cost-codes", icMoveH.ListProjectCostCodes)
+	ic.Post("/projects/:projectCode/movements/:id/lines", icMoveH.AddMovementLine)
+	ic.Get("/projects/:projectCode/movements/:id/lines", icMoveH.ListMovementLines)
+	ic.Post("/projects/:projectCode/movements/:id/submit", icMoveH.SubmitMovement)
+	ic.Get("/projects/:projectCode/cost-transactions", icMoveH.ListCostTransactions)
 
 	// Health check
 	app.Get("/health", func(c *fiber.Ctx) error {

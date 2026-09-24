@@ -2703,6 +2703,626 @@
                 }
             }
         },
+        "/ic/projects/by-code/{projectCode}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns id, project_code, project_name, customer_name for a project by project_code — the string identifier this movement feature is keyed on throughout (route param, job-codes lookup, movement create), unlike GET /ic/projects/{projectId} which takes the numeric id.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "Get a single project's basic info by project_code (IC Project Movement context header)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/cost-codes": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "For the ToCostCode dropdown — :projectCode here is the TARGET project (ToProject), re-called whenever the user changes it, not the movement's own project. Returns every cost_subgroup under any job_code assigned to this project. Each project.job_codes entry (e.g. \"MP\") is matched by reconstructing it as cost_subject.subject_code || cost_job.job_code (subject_code is 1 char, cost_job.job_code is 1 char) — the same decomposition ListAvailableMaterials uses, since cost_job.job_code alone is a different, single-letter code space.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "List cost-subgroup codes for a project, across all of its job_codes",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "target project.project_code (ToProject)",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/cost-transactions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Parallel to the Stock Transaction page, but scoped to one project and reading from ic_project_cost_item_transaction. created_by_name is resolved via users.full_name (matching this project's established display convention everywhere else — e.g. GetMovement, ListMovements — not username).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "List IC Project cost-item transaction history for a project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter: PO, MOVEMENT_ISSUE, or MOVEMENT_TRANSFER",
+                        "name": "ref_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search mat_code/mat_name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/job-codes": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Reads project.job_codes (text[]) for this project_code and resolves each against the fixed JobTypes list (internal/handlers/job_type.go) — NOT the unrelated cost_job master table, which uses a different single-letter code space (P/E/S/F/G/H/B) scoped per cost subject and shares the \"job_code\" column name only by coincidence. Returns an empty array if the project has no job_codes assigned.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "List job codes assigned to a project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/movements": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Newest first. job_name is resolved from the fixed JobTypes list (job_type.go), NOT joined against cost_job — cost_job.job_code is a different, single-letter code space (see ListAvailableMaterials/ListProjectCostCodes for the same caveat) and a direct join on it would silently exclude every row. requested_by is displayed via users.full_name, matching GetMovement and the existing pr.go pattern.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "List IC Project Movement documents for a project, paginated",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (PIS-YYYYMM-NNNN for ISSUE, PTR-YYYYMM-NNNN for TRANSFER, monthly-reset counter shared mechanism with ic_po_receive_document.receive_no), and inserts the row with status=DRAFT.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "Create an IC Project Movement (Issue or Transfer) header",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Movement header",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateIcProjectMovementRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/movements/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns doc_no, doc_type, doc_date, project_code/name, job_code/name, requested_by (id + full_name), status, remarks, created_at for one movement, scoped to the given project_code. job_name is resolved from the fixed JobTypes list (job_type.go), not the unrelated cost_job table.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "Get one IC Project Movement header, joined for display",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_project_movement.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/movements/{id}/available-materials": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Populates the MatCode dropdown for adding a line item — joins ic_project_cost_item to material_code/mat_name/spec_size for display name (same pattern as PR line items) and to the 4-level cost code hierarchy for the job_code filter. Only rows with qty_on_hand \u003e 0 are returned. job_code (e.g. \"MP\") is decomposed as cost_subject.subject_code=LEFT(job_code,1) + cost_job.job_code=SUBSTRING(job_code,2), the same convention pr_approval.go uses to resolve purchase_request.job_code — NOT a direct match against cost_job.job_code, which is a single-letter code in a different space (P/E/S/F/G/H/B) that never equals a 2-char JobTypes code on its own.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "List materials with on-hand cost-item balance for a project, filtered by job_code",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "movement's own project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_project_movement.id (unused for filtering here, kept for route symmetry)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "job_code to filter cost items by (e.g. MP)",
+                        "name": "job_code",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/movements/{id}/lines": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Joins back to material_code/cost_subgroup hierarchy (source and target) and project for display, same field shape as available-materials/cost-codes plus to_project_name.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "List line items for an IC Project Movement (detail page table)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "movement's own project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_project_movement.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Validates qty against ic_project_cost_item.qty_on_hand (locked FOR UPDATE) for (project_code, mat_code, cost_subgroup_id) and rejects with 400 if insufficient. Does NOT deduct qty_on_hand here — deduction happens only when the whole movement document is confirmed/submitted (a separate, not-yet-built step). Inserts with the next line_no for this movement.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "Add a line item to an IC Project Movement (staged, not yet deducted)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "movement's own project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_project_movement.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Line item",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateIcProjectMovementLineRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/projects/{projectCode}/movements/{id}/submit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One all-or-nothing transaction. Locks every touched ic_project_cost_item row (source + destination across all lines, deduped and sorted by id ascending to avoid deadlocks with concurrent movements), re-validates qty_on_hand under lock, then for each line moves qty from the source item to the destination item and logs both sides into ic_project_cost_item_transaction (ref_type MOVEMENT_ISSUE/MOVEMENT_TRANSFER). Lines where source and destination are identical (same project/mat_code/cost_subgroup) are skipped entirely — no balance change, no transaction rows. Destination items must already exist (no auto-create); missing destination or insufficient source qty aborts the whole submit with 400. Transitions ic_project_movement.status DRAFT -\u003e POSTED; already-POSTED rejects with 400.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC Project Movement"
+                ],
+                "summary": "Submit (confirm/post) an IC Project Movement",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "movement's own project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "ic_project_movement.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/ic/projects/{projectId}": {
             "get": {
                 "security": [
@@ -13499,6 +14119,69 @@
                 },
                 "is_active": {
                     "type": "boolean"
+                }
+            }
+        },
+        "models.CreateIcProjectMovementLineRequest": {
+            "type": "object",
+            "required": [
+                "cost_subgroup_id",
+                "mat_code",
+                "qty",
+                "to_cost_subgroup_id",
+                "to_project_code"
+            ],
+            "properties": {
+                "cost_subgroup_id": {
+                    "type": "integer"
+                },
+                "mat_code": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "to_cost_subgroup_id": {
+                    "type": "integer"
+                },
+                "to_project_code": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CreateIcProjectMovementRequest": {
+            "type": "object",
+            "required": [
+                "doc_type",
+                "job_code",
+                "project_code",
+                "requested_by"
+            ],
+            "properties": {
+                "doc_date": {
+                    "type": "string"
+                },
+                "doc_type": {
+                    "type": "string",
+                    "enum": [
+                        "ISSUE",
+                        "TRANSFER"
+                    ]
+                },
+                "job_code": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "requested_by": {
+                    "type": "integer"
                 }
             }
         },
