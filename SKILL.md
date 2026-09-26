@@ -355,3 +355,33 @@ tx.Exec(ctx, `UPDATE purchase_request_line
     req.Qty, prLineID)
 ```
 ⚠️ ใช้ `FOR UPDATE` ตอน SELECT PR line กัน race condition เวลามีคนสร้าง PO จาก PR เดียวกันพร้อมกัน
+
+---
+### Linked-warehouse project branch (Stock ↔ Project transfers)
+🆕 2026-09-26 — a `project` row can represent a warehouse instead of tracking its own cost items,
+via `project.linked_warehouse_code`. Any feature that touches a project's stock/cost balance
+(`ic_project_movement`, "คงเหลือวัสดุ", cost-transactions history, future reports) must check this
+first — do not assume every `project_code` maps to `ic_project_cost_item`:
+
+```go
+// Check BOTH source and destination project independently — one may be linked, the other not.
+var linkedWarehouseCode *string
+tx.QueryRow(ctx,
+    `SELECT linked_warehouse_code FROM project WHERE project_code=$1`,
+    projectCode).Scan(&linkedWarehouseCode)
+
+if linkedWarehouseCode != nil {
+    // Warehouse-linked: balance lives in stock_item.qty (global pool per mat_code),
+    // NOT ic_project_cost_item, and NOT stock_inventory (confirmed empty, do not use).
+    // - No cost_subgroup concept — cost_subgroup_id/cost_name/cost_code must be resolved
+    //   via material_code -> cost_subgroup -> cost_group -> cost_job -> cost_subject (same
+    //   join chain /stock/items uses), never hardcoded blank.
+    // - ISSUE is not supported for a linked-warehouse SOURCE project (no receipt-pool concept).
+    // - linked -> linked transfer is rejected (400 "use Stock Transfer instead").
+} else {
+    // Normal project: balance lives in ic_project_cost_item, keyed on
+    // (project_code, mat_code, cost_subgroup_id) as before.
+}
+```
+ดูตารางแยก source×destination เต็ม ๆ ใน CLAUDE.md "Session learnings (2026-09-26)" —
+`internal/handlers/ic_project_movement.go` เป็น reference implementation ของ pattern นี้

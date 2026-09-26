@@ -497,15 +497,15 @@ definitions:
       remarks:
         type: string
       to_cost_subgroup_id:
+        description: required for TRANSFER, ignored for ISSUE
         type: integer
       to_project_code:
+        description: required for TRANSFER, ignored for ISSUE
         type: string
     required:
     - cost_subgroup_id
     - mat_code
     - qty
-    - to_cost_subgroup_id
-    - to_project_code
     type: object
   models.CreateIcProjectMovementRequest:
     properties:
@@ -758,6 +758,8 @@ definitions:
       payment_terms:
         type: string
       po_no:
+        description: ignored — Create always generates po_no server-side; kept so
+          old clients sending it still parse
         type: string
       pr_id:
         type: integer
@@ -793,7 +795,6 @@ definitions:
     required:
     - lines
     - location_text
-    - po_no
     - supplier_id
     type: object
   models.CreatePRLine:
@@ -4847,15 +4848,16 @@ paths:
       - IC Project Movement
   /ic/projects/{projectCode}/movements/{id}/available-materials:
     get:
-      description: Populates the MatCode dropdown for adding a line item — joins ic_project_cost_item
-        to material_code/mat_name/spec_size for display name (same pattern as PR line
-        items) and to the 4-level cost code hierarchy for the job_code filter. Only
-        rows with qty_on_hand > 0 are returned. job_code (e.g. "MP") is decomposed
-        as cost_subject.subject_code=LEFT(job_code,1) + cost_job.job_code=SUBSTRING(job_code,2),
-        the same convention pr_approval.go uses to resolve purchase_request.job_code
-        — NOT a direct match against cost_job.job_code, which is a single-letter code
-        in a different space (P/E/S/F/G/H/B) that never equals a 2-char JobTypes code
-        on its own.
+      description: Populates the MatCode dropdown for adding a line item — joins ic_project_receipt_pool
+        (the source of truth for movements) to material_code/mat_name/spec_size for
+        display name (same pattern as PR line items) and to the 4-level cost code
+        hierarchy for the job_code filter. Only rows with remaining (qty_received
+        - qty_issued) > 0 are returned; the response's qty_on_hand field carries that
+        computed remaining. job_code (e.g. "MP") is decomposed as cost_subject.subject_code=LEFT(job_code,1)
+        + cost_job.job_code=SUBSTRING(job_code,2), the same convention pr_approval.go
+        uses to resolve purchase_request.job_code — NOT a direct match against cost_job.job_code,
+        which is a single-letter code in a different space (P/E/S/F/G/H/B) that never
+        equals a 2-char JobTypes code on its own.
       parameters:
       - description: movement's own project.project_code
         in: path
@@ -4868,10 +4870,21 @@ paths:
         name: id
         required: true
         type: integer
-      - description: job_code to filter cost items by (e.g. MP)
+      - description: optional job_code filter (e.g. MP)
         in: query
         name: job_code
-        required: true
+        type: string
+      - description: cost_subgroup.id filter
+        in: query
+        name: subgroup_id
+        type: integer
+      - description: mat_name.id filter
+        in: query
+        name: mat_name_id
+        type: integer
+      - description: search mat_code / mat_name / spec
+        in: query
+        name: q
         type: string
       produces:
       - application/json
@@ -4933,11 +4946,15 @@ paths:
     post:
       consumes:
       - application/json
-      description: Validates qty against ic_project_cost_item.qty_on_hand (locked
-        FOR UPDATE) for (project_code, mat_code, cost_subgroup_id) and rejects with
-        400 if insufficient. Does NOT deduct qty_on_hand here — deduction happens
-        only when the whole movement document is confirmed/submitted (a separate,
-        not-yet-built step). Inserts with the next line_no for this movement.
+      description: Validates qty against ic_project_receipt_pool remaining = qty_received
+        - qty_issued (locked FOR UPDATE) for (project_code, mat_code, cost_subgroup_id)
+        and rejects with 400 if insufficient. For doc_type='ISSUE' the destination
+        is forced to (movement.project_code, the line's own cost_subgroup_id) and
+        any to_project_code/to_cost_subgroup_id in the body is ignored; for 'TRANSFER'
+        both are required. Only DRAFT movements accept new lines. Does NOT deduct
+        qty_on_hand here — deduction happens only when the whole movement document
+        is confirmed/submitted (a separate, not-yet-built step). Inserts with the
+        next line_no for this movement.
       parameters:
       - description: movement's own project.project_code
         in: path
@@ -4977,16 +4994,21 @@ paths:
       - IC Project Movement
   /ic/projects/{projectCode}/movements/{id}/submit:
     post:
-      description: One all-or-nothing transaction. Locks every touched ic_project_cost_item
-        row (source + destination across all lines, deduped and sorted by id ascending
-        to avoid deadlocks with concurrent movements), re-validates qty_on_hand under
-        lock, then for each line moves qty from the source item to the destination
-        item and logs both sides into ic_project_cost_item_transaction (ref_type MOVEMENT_ISSUE/MOVEMENT_TRANSFER).
-        Lines where source and destination are identical (same project/mat_code/cost_subgroup)
-        are skipped entirely — no balance change, no transaction rows. Destination
-        items must already exist (no auto-create); missing destination or insufficient
-        source qty aborts the whole submit with 400. Transitions ic_project_movement.status
-        DRAFT -> POSTED; already-POSTED rejects with 400.
+      consumes:
+      - application/json
+      description: One all-or-nothing transaction. Locks every touched source ic_project_receipt_pool
+        row and destination ic_project_cost_item row (each set deduped and sorted
+        by id ascending, pools first then cost items, to avoid deadlocks with concurrent
+        movements), re-validates remaining (qty_received - qty_issued) under lock,
+        then for each line adds qty to the pool's qty_issued (logged as ISSUE_OUT
+        / ref_type MOVEMENT in ic_project_receipt_pool_transaction) and credits the
+        destination ic_project_cost_item (logged in ic_project_cost_item_transaction,
+        ref_type MOVEMENT_ISSUE/MOVEMENT_TRANSFER). A missing destination ic_project_cost_item
+        row is auto-created. Every line is posted, including ISSUE lines whose destination
+        key equals the source key (source is the receipt pool, destination is the
+        cost item — different tables). Insufficient source remaining aborts the whole
+        submit with 400. Transitions ic_project_movement.status DRAFT -> POSTED; already-POSTED
+        rejects with 400.
       parameters:
       - description: movement's own project.project_code
         in: path
@@ -4998,6 +5020,11 @@ paths:
         name: id
         required: true
         type: integer
+      - description: optional {\
+        in: body
+        name: body
+        schema:
+          type: object
       produces:
       - application/json
       responses:
@@ -5020,6 +5047,56 @@ paths:
       security:
       - BearerAuth: []
       summary: Submit (confirm/post) an IC Project Movement
+      tags:
+      - IC Project Movement
+  /ic/projects/{projectCode}/stock:
+    get:
+      description: Reads ic_project_cost_item (the destination-side balance table)
+        for this project, joined to material_code for the display name (mat_name +
+        spec_description, same pattern as available-materials) and to the 4-level
+        cost code hierarchy. only_with_stock defaults to true (qty_on_hand > 0); pass
+        only_with_stock=false to also see zero-balance rows. job_code (e.g. "MP")
+        uses the same decomposition as available-materials (cost_subject.subject_code
+        = first character, cost_job.job_code = the rest). search matches mat_code
+        or the composed mat_name (case-insensitive). Note this is the cost-item balance
+        only — received-but-not-yet-issued quantity lives in ic_project_receipt_pool
+        and is not included here.
+      parameters:
+      - description: project.project_code
+        in: path
+        name: projectCode
+        required: true
+        type: string
+      - description: Filter by job code (e.g. MP)
+        in: query
+        name: job_code
+        type: string
+      - description: Match mat_code or mat_name
+        in: query
+        name: search
+        type: string
+      - description: Only rows with qty_on_hand > 0 (default true)
+        in: query
+        name: only_with_stock
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Current cost-item balance list for a project
       tags:
       - IC Project Movement
   /ic/projects/{projectId}:
@@ -5361,6 +5438,11 @@ paths:
         in: query
         name: unit_id
         type: integer
+      - description: When true, only materials with cost_subgroup_id set (PR picker);
+          stock/qty_on_hand is never used as a filter
+        in: query
+        name: has_cost_subgroup
+        type: boolean
       - description: When set, adds stock_on_hand per material from project_stock
           for that project (read-only reference, e.g. Petty Cash line picker)
         in: query
@@ -9172,13 +9254,13 @@ paths:
       - Purchase Order
   /po/reserve-number:
     get:
-      description: Atomically increments po_number_counter for the current year_month
-        (YYYYMM) and formats it immediately as the real po_no. Unlike /po/next-number,
-        this actually consumes the counter — the number is reserved right away and
-        is never reused, even if the create is abandoned (a gap is expected and fine).
-        The sequence resets to 0001 at the start of each new year_month. The frontend
-        calls this once when the create-PO page opens, then submits the returned po_no
-        as part of POST /po.
+      description: 'Returns what the next po_no would be for the current year_month
+        (YYYYMM), WITHOUT incrementing po_number_counter. This is a best-effort, non-binding
+        preview for the create-PO form only: two users opening the form at the same
+        time may see the same number, and the number may already be taken by submit
+        time. POST /po ignores any po_no in the request body and always generates
+        the authoritative number inside its own transaction — display the po_no returned
+        by POST /po after success, not this preview.'
       produces:
       - application/json
       responses:
@@ -9188,7 +9270,8 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Reserve the next PO number (consumes po_number_counter, resets monthly)
+      summary: Preview the next PO number (peeks at po_number_counter, does NOT consume
+        it)
       tags:
       - Purchase Order
   /po/search:
@@ -9239,8 +9322,13 @@ paths:
         and created_at ("วันที่เปิดเอกสาร" — the DB row insert timestamp). dept_name,
         memo_no, and required_date are null when the PR has no dept_code/memo_id/
         required_date or the code doesn't resolve to a live row.
+        Each item also carries has_active_po_link (bool) — true if any of this PR's
+        lines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.
+        Same condition the PR detail page's blocking-PO warning banner and the Update
+        handler's edit guard use — the frontend should hide/disable "แก้ไข" when true.
       parameters:
-      - description: status filter
+      - description: status filter — one of DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED,
+          FULFILLED, CANCELLED
         in: query
         name: status
         type: string
@@ -9249,6 +9337,22 @@ paths:
         in: query
         name: available_for_po
         type: boolean
+      - description: matches pr_no or remarks (ILIKE, substring)
+        in: query
+        name: search
+        type: string
+      - description: filter by created_at >= this date (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: filter by created_at <= this date (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: exact match on pr.job_code
+        in: query
+        name: job_code
+        type: string
       - default: 1
         description: page
         in: query
@@ -10601,13 +10705,13 @@ paths:
       - Stock
   /stock/items:
     get:
-      description: cost_code is joined from material_code (matched by mat_code — stock_item
-        and material_code are separate parallel stock systems with no FK between them,
-        only a shared mat_code value) -> cost_subgroup -> cost_group -> cost_job ->
-        cost_subject, using the same subject_code+job_code+group_code+subgroup_code
-        concatenation as every other cost-code query in this codebase. LEFT JOIN throughout,
-        so an item with no matching material_code row (or one with no cost_subgroup_id
-        set) still appears in the list, just with cost_code=null.
+      description: 'cost_code is joined from material_code (matched by mat_code —
+        stock_item and material_code are separate parallel stock systems with no FK
+        between them, only a shared mat_code value) -> cost_subgroup -> cost_group
+        -> cost_job -> cost_subject, using the same subject_code+job_code+group_code+subgroup_code
+        concatenation as every other cost-code query in this codebase. Always-on filter:
+        only items whose material_code has a cost_subgroup_id set are returned (not
+        a query param), so cost_code is always non-null.'
       parameters:
       - description: Search
         in: query

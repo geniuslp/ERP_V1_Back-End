@@ -1039,7 +1039,7 @@ type POLine struct {
 }
 
 type CreatePORequest struct {
-	PONo          string  `json:"po_no" validate:"required"`
+	PONo          string  `json:"po_no"` // ignored — Create always generates po_no server-side; kept so old clients sending it still parse
 	SupplierID    int64   `json:"supplier_id" validate:"required"`
 	PRID          *int64  `json:"pr_id,omitempty"`
 	RFQID         *int64  `json:"rfq_id,omitempty"`
@@ -1852,8 +1852,8 @@ type CreateIcProjectMovementLineRequest struct {
 	MatCode          string  `json:"mat_code" validate:"required"`
 	CostSubgroupID   int64   `json:"cost_subgroup_id" validate:"required"`
 	Qty              float64 `json:"qty" validate:"required,gt=0"`
-	ToProjectCode    string  `json:"to_project_code" validate:"required"`
-	ToCostSubgroupID int64   `json:"to_cost_subgroup_id" validate:"required"`
+	ToProjectCode    string  `json:"to_project_code"`        // required for TRANSFER, ignored for ISSUE
+	ToCostSubgroupID int64   `json:"to_cost_subgroup_id"`   // required for TRANSFER, ignored for ISSUE
 	Remarks          *string `json:"remarks"`
 }
 

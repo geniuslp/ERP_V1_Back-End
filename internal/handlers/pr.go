@@ -835,6 +835,21 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
+	// requested_by and pr_date are both NOT NULL at the DB level (requested_by is also an FK to
+	// users.id) but only carry a `validate:"required"` struct tag that's never actually enforced
+	// — nothing calls a validator against req before this handler reaches the SQL UPDATE. Confirmed
+	// via direct testing against the live DB: requested_by=0 raises a raw
+	// "violates foreign key constraint \"purchase_request_requested_by_fkey\"" (SQLSTATE 23503),
+	// and an empty pr_date raises "invalid input syntax for type date" (SQLSTATE 22007) — both
+	// unhandled Postgres errors reaching the client. dept_code, by contrast, is nullable with no
+	// FK enforced in the live DB (confirmed empty dept_code round-trips with zero error), so it is
+	// NOT the cause of this class of bug — these two fields are.
+	if req.RequestedBy <= 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "requested_by is required")
+	}
+	if strings.TrimSpace(req.PRDate) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "pr_date is required")
+	}
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least one line required")
 	}
@@ -888,6 +903,38 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	}
 	if currentStatus != "DRAFT" {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR must be DRAFT to edit (current status: %s)", currentStatus))
+	}
+
+	// Same condition the PR detail page's "PO ที่ต้องยกเลิกก่อนแก้ไข PR นี้" warning banner uses:
+	// if any of this PR's lines are still referenced by a non-CANCELLED PO line, the DELETE below
+	// would hit purchase_order_line_pr_line_id_fkey and fail with a raw Postgres error. Check up
+	// front and reject with a specific, plain-Thai message instead — this must NOT contain
+	// SQLSTATE/violates/foreign key wording, since the frontend's generic-error sanitizer
+	// (GENERIC_ERROR_MESSAGE regex in src/services/api.ts) treats that pattern as an opaque error.
+	{
+		rows, err := h.db.Query(ctx, `
+			SELECT DISTINCT po.po_no
+			FROM purchase_order_line pol
+			JOIN purchase_order po ON po.id = pol.po_id
+			WHERE pol.pr_line_id IN (SELECT id FROM purchase_request_line WHERE pr_id = $1)
+			  AND po.status != 'CANCELLED'`, prID)
+		if err != nil {
+			return err
+		}
+		var blockingPOs []string
+		for rows.Next() {
+			var poNo string
+			if err := rows.Scan(&poNo); err != nil {
+				rows.Close()
+				return err
+			}
+			blockingPOs = append(blockingPOs, poNo)
+		}
+		rows.Close()
+		if len(blockingPOs) > 0 {
+			return fiber.NewError(fiber.StatusConflict,
+				fmt.Sprintf("ไม่สามารถแก้ไข PR นี้ได้ เนื่องจากมี PO ที่ยังไม่ยกเลิกผูกอยู่: %s", strings.Join(blockingPOs, ", ")))
+		}
 	}
 
 	orderType := req.OrderType

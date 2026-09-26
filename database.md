@@ -582,14 +582,19 @@ id                  bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
 movement_id         bigint        NOT NULL  — FK → ic_project_movement.id
 line_no             int           NOT NULL
 mat_code            varchar(30)   NOT NULL
-cost_subgroup_id    bigint        NOT NULL  — FK → cost_subgroup.id
+cost_subgroup_id    bigint        nullable  — FK → cost_subgroup.id
 qty                 numeric(18,4) NOT NULL  — > 0
 to_project_code     varchar(20)   NOT NULL
-to_cost_subgroup_id bigint        NOT NULL  — FK → cost_subgroup.id
+to_cost_subgroup_id bigint        nullable  — FK → cost_subgroup.id
 remarks             text          nullable
 created_at          timestamp     NOT NULL  DEFAULT now()
 created_by          bigint        nullable
 ```
+> 🔴 2026-09-26 — `cost_subgroup_id`/`to_cost_subgroup_id` changed from `NOT NULL` to nullable to
+> support linked-warehouse projects (see [project](#project) and CLAUDE.md "Session learnings
+> (2026-09-26)"). `NULL` means "not applicable" — only when the source or destination project
+> (respectively) is warehouse-linked (`project.linked_warehouse_code IS NOT NULL`), since
+> `stock_item` has no cost subgroup concept.
 
 ---
 
@@ -644,18 +649,24 @@ updated_by     bigint        nullable
 ---
 
 ### location
+> 🆕 2026-09-26 — added `warehouse_code`, see below.
 ```
-id            integer     NOT NULL  PK
-location_code varchar(20) NOT NULL  UNIQUE
-location_name varchar(100)NOT NULL
-location_type varchar(20) NOT NULL
-parent_id     integer     nullable  — self-ref
-is_active     boolean     NOT NULL  DEFAULT true
-created_at    timestamp   NOT NULL  DEFAULT now()
-updated_at    timestamp   NOT NULL  DEFAULT now()
-created_by    bigint      nullable
-updated_by    bigint      nullable
+id             integer     NOT NULL  PK
+location_code  varchar(20) NOT NULL  UNIQUE
+location_name  varchar(100)NOT NULL
+location_type  varchar(20) NOT NULL
+parent_id      integer     nullable  — self-ref
+warehouse_code varchar(20) nullable  — FK → warehouse.warehouse_code, 🆕 2026-09-26
+is_active      boolean     NOT NULL  DEFAULT true
+created_at     timestamp   NOT NULL  DEFAULT now()
+updated_at     timestamp   NOT NULL  DEFAULT now()
+created_by     bigint      nullable
+updated_by     bigint      nullable
 ```
+`warehouse_code` lets code resolve "which warehouse does this location belong to" without
+hardcoding. Mapped rows: `SAL→FAC-S`, `PRJ→FAC-P`, `HO→HO`, `OFF→HO`, `BO→BO`. `NULL` for
+non-warehouse locations (`DEP, DEPB, DEPU, DEPT, HUT, SOL, UEN, SELF`). See CLAUDE.md "Session
+learnings (2026-09-26)" for the linked-warehouse-projects feature this supports.
 
 ---
 
@@ -885,24 +896,33 @@ id, [po_id|pr_id], from_status, to_status (NOT NULL), changed_by, changed_at, re
 ---
 
 ### project
+> 🆕 2026-09-26 — added `linked_warehouse_code`, see below. An earlier, now-abandoned attempt
+> added `project_type` (`WAREHOUSE`/`PROJECT` enum) instead — that column was **dropped** and all
+> code referencing it removed. Do not resurrect it; `linked_warehouse_code` is the only field that
+> matters for this behavior.
 ```
-id              integer     NOT NULL  PK
-project_code    varchar(20) NOT NULL  UNIQUE
-project_name    varchar(200)NOT NULL
-location_code   varchar(20) nullable
-start_date      date        nullable
-end_date        date        nullable
-status          varchar(20) NOT NULL  DEFAULT 'ACTIVE'
-is_active       boolean     NOT NULL  DEFAULT true
-owner_id        bigint      nullable  — FK → users.id, legacy "เจ้าของโครงการ" dropdown, ยัง accept ได้แต่ไม่ required/ไม่ขับเคลื่อนอะไรแล้ว
-customer_id     bigint      nullable  — FK → customer.cus_id, dropdown "เจ้าของโครงการ" ตัวใหม่, ใช้คู่กับ owner_id ได้อิสระต่อกัน
-budget_amount   numeric(18,4) NOT NULL DEFAULT 0
-consultant_name varchar(200)nullable
-created_at      timestamp   NOT NULL  DEFAULT now()
-updated_at      timestamp   NOT NULL  DEFAULT now()
-created_by      bigint      nullable
-updated_by      bigint      nullable
+id                    integer     NOT NULL  PK
+project_code          varchar(20) NOT NULL  UNIQUE
+project_name          varchar(200)NOT NULL
+location_code         varchar(20) nullable
+start_date            date        nullable
+end_date              date        nullable
+status                varchar(20) NOT NULL  DEFAULT 'ACTIVE'
+is_active             boolean     NOT NULL  DEFAULT true
+owner_id              bigint      nullable  — FK → users.id, legacy "เจ้าของโครงการ" dropdown, ยัง accept ได้แต่ไม่ required/ไม่ขับเคลื่อนอะไรแล้ว
+customer_id           bigint      nullable  — FK → customer.cus_id, dropdown "เจ้าของโครงการ" ตัวใหม่, ใช้คู่กับ owner_id ได้อิสระต่อกัน
+budget_amount         numeric(18,4) NOT NULL DEFAULT 0
+consultant_name       varchar(200)nullable
+linked_warehouse_code varchar(20) nullable  — FK → warehouse.warehouse_code, 🆕 2026-09-26
+created_at            timestamp   NOT NULL  DEFAULT now()
+updated_at            timestamp   NOT NULL  DEFAULT now()
+created_by            bigint      nullable
+updated_by            bigint      nullable
 ```
+`linked_warehouse_code`: `NULL` for a normal cost-tracked project. Set to a real `warehouse_code`
+(e.g. `'FAC-S'`) for a project that is actually a warehouse proxy (e.g. `2026-WH-002`) — lets
+`ic_project_movement` TRANSFER move stock between `stock_item` and this project's
+`ic_project_cost_item`. See CLAUDE.md "Session learnings (2026-09-26)" for the full branch logic.
 
 ---
 
@@ -1100,6 +1120,11 @@ id, count_id, mat_code, zone_id, qty_system, qty_counted, qty_diff, remarks
 ---
 
 ### stock_inventory
+> 🔴 2026-09-26 — confirmed **empty system-wide (0 rows)** as of this session. Not used by the
+> linked-warehouse-projects feature (see [project](#project),
+> CLAUDE.md "Session learnings (2026-09-26)") or any other live code path except the disabled
+> Borrow/Return flow (`/stock/borrow/*` routes are unregistered — see the same session note). Do
+> not build new features assuming this table is populated without checking `SELECT COUNT(*)` first.
 ```
 id             bigint        NOT NULL  PK
 item_id        bigint        NOT NULL  — FK → stock_item.id

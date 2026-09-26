@@ -217,7 +217,16 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		       po.expected_date::text, po.created_at, po.updated_at, po.project_code, pj.project_name,
 		       COALESCE(cu.full_name, '') AS created_by_name,
 		       COALESCE(uu.full_name, '') AS updated_by_name,
-		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round
+		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round,
+		       (SELECT ARRAY_AGG(DISTINCT x.pr_no ORDER BY x.pr_no) FROM (
+		           SELECT pr.pr_no
+		           FROM purchase_order_line pol
+		           JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
+		           JOIN purchase_request pr ON pr.id = prl.pr_id
+		           WHERE pol.po_id = po.id
+		           UNION
+		           SELECT pr2.pr_no FROM purchase_request pr2 WHERE pr2.id = po.pr_id
+		       ) x) AS pr_nos
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
@@ -256,6 +265,16 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		// (COUNT of po_edit_log rows). 0 = original, never edited. po_no itself never changes;
 		// the frontend composes a display suffix like "#R2" from this when > 0.
 		RevisionRound int `json:"revision_round"`
+		// PRNos: distinct pr_no(s) this PO originated from. Resolved from BOTH the header-level
+		// link (purchase_order.pr_id) and the line-level link (purchase_order_line.pr_line_id ->
+		// purchase_request_line.pr_id) — a PO can have pr_id set with lines that don't carry
+		// pr_line_id (pr_line_id is optional per line), or vice versa in principle, so neither
+		// relation alone is guaranteed complete. Always an array (not a single string) since
+		// nothing in the schema prevents a PO's lines from referencing pr_line_ids that belong to
+		// different PRs when po.pr_id itself is null — this differs from the common case (one PO
+		// from one PR) but is not blocked at the DB or handler level. Empty array (omitted, since
+		// omitempty) when the PO has no PR link at all.
+		PRNos []string `json:"pr_nos,omitempty"`
 	}
 
 	var items []PORow
@@ -264,7 +283,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.SupplierName,
 			&r.Status, &r.StatusReceive, &r.OrderType, &r.JobCode, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
-			&r.CreatedByName, &r.UpdatedByName, &r.RevisionRound); err != nil {
+			&r.CreatedByName, &r.UpdatedByName, &r.RevisionRound, &r.PRNos); err != nil {
 			return err
 		}
 		items = append(items, r)
@@ -927,10 +946,6 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if req.ApproverID == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "approver_id is required")
 	}
-	if strings.TrimSpace(req.PONo) == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "document number is required, call reserve-number first")
-	}
-
 	status := req.Status
 	if status == "" {
 		status = "DRAFT"
@@ -1050,7 +1065,35 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 	}
 	defer tx.Rollback(ctx)
 
-	poNo = req.PONo
+	// po_no is generated HERE, inside the same transaction as the purchase_order INSERT, and
+	// req.PONo (the number previewed via GET /po/reserve-number when the form opened) is
+	// deliberately ignored — a form left open can hold a number that is stale by submit time.
+	// The counter row is locked until commit, so there is no gap between "get number" and "use
+	// number", and a rolled-back create doesn't consume a number. The exists-check guards against
+	// the counter lagging behind po_no values inserted outside this flow.
+	ym := time.Now().Format("200601")
+	for attempt := 0; attempt < 20; attempt++ {
+		var seq int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO po_number_counter (year_month, last_seq) VALUES ($1, 1)
+			ON CONFLICT (year_month) DO UPDATE SET last_seq = po_number_counter.last_seq + 1
+			RETURNING last_seq`, ym,
+		).Scan(&seq); err != nil {
+			return 0, "", nil, 0, 0, 0, err
+		}
+		poNo = fmt.Sprintf("PO-%s-%04d", ym, seq)
+		var taken bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM purchase_order WHERE po_no = $1)`, poNo).Scan(&taken); err != nil {
+			return 0, "", nil, 0, 0, 0, err
+		}
+		if !taken {
+			break
+		}
+		poNo = ""
+	}
+	if poNo == "" {
+		return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "could not allocate a free po_no")
+	}
 
 	useDiscount := req.UseDiscount != nil && *req.UseDiscount
 	useVAT := req.UseVAT != nil && *req.UseVAT
@@ -1752,8 +1795,8 @@ func (h *POHandler) NextPONumber(c *fiber.Ctx) error {
 }
 
 // ReservePONumber godoc
-// @Summary      Reserve the next PO number (consumes po_number_counter, resets monthly)
-// @Description  Atomically increments po_number_counter for the current year_month (YYYYMM) and formats it immediately as the real po_no. Unlike /po/next-number, this actually consumes the counter — the number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The sequence resets to 0001 at the start of each new year_month. The frontend calls this once when the create-PO page opens, then submits the returned po_no as part of POST /po.
+// @Summary      Preview the next PO number (peeks at po_number_counter, does NOT consume it)
+// @Description  Returns what the next po_no would be for the current year_month (YYYYMM), WITHOUT incrementing po_number_counter. This is a best-effort, non-binding preview for the create-PO form only: two users opening the form at the same time may see the same number, and the number may already be taken by submit time. POST /po ignores any po_no in the request body and always generates the authoritative number inside its own transaction — display the po_no returned by POST /po after success, not this preview.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -1761,15 +1804,13 @@ func (h *POHandler) NextPONumber(c *fiber.Ctx) error {
 // @Router       /po/reserve-number [get]
 func (h *POHandler) ReservePONumber(c *fiber.Ctx) error {
 	ym := time.Now().Format("200601")
-	var seq int64
-	if err := h.db.QueryRow(context.Background(), `
-		INSERT INTO po_number_counter (year_month, last_seq) VALUES ($1, 1)
-		ON CONFLICT (year_month) DO UPDATE SET last_seq = po_number_counter.last_seq + 1
-		RETURNING last_seq`, ym,
-	).Scan(&seq); err != nil {
+	var last int64
+	err := h.db.QueryRow(context.Background(),
+		`SELECT last_seq FROM po_number_counter WHERE year_month = $1`, ym).Scan(&last)
+	if err != nil && err != pgx.ErrNoRows {
 		return err
 	}
-	poNo := fmt.Sprintf("PO-%s-%04d", ym, seq)
+	poNo := fmt.Sprintf("PO-%s-%04d", ym, last+1)
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"po_no": poNo}})
 }
 

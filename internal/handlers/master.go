@@ -375,6 +375,7 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 // @Param        spec_id       query  int     false  "Filter by spec_size ID"
 // @Param        brand_id      query  int     false  "Filter by brand ID"
 // @Param        unit_id       query  int     false  "Filter by unit ID"
+// @Param        has_cost_subgroup query bool false "When true, only materials with cost_subgroup_id set (PR picker); stock/qty_on_hand is never used as a filter"
 // @Param        project_code  query  string  false  "When set, adds stock_on_hand per material from project_stock for that project (read-only reference, e.g. Petty Cash line picker)"
 // @Param        page          query  int     false  "Page number (default 1)"
 // @Success      200   {object}  models.PaginatedResponse
@@ -391,6 +392,7 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 	specID := c.QueryInt("spec_id", 0)
 	brandID := c.QueryInt("brand_id", 0)
 	unitID := c.QueryInt("unit_id", 0)
+	hasCostSubgroup := c.QueryBool("has_cost_subgroup", false)
 	projectCode := strings.TrimSpace(c.Query("project_code"))
 	page := c.QueryInt("page", 1)
 	if page < 1 {
@@ -452,6 +454,9 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		conditions = append(conditions, fmt.Sprintf("mc.unit_id = $%d", idx))
 		args = append(args, unitID)
 		idx++
+	}
+	if hasCostSubgroup {
+		conditions = append(conditions, "mc.cost_subgroup_id IS NOT NULL")
 	}
 
 	// project_code is only used in the SELECT-time JOIN below (for stock_on_hand), not a

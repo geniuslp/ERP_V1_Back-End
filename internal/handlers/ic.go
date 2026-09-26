@@ -510,12 +510,19 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 	}
 	req.TaxInvoiceNo = strings.TrimSpace(req.TaxInvoiceNo)
 	req.TaxInvoiceDate = strings.TrimSpace(req.TaxInvoiceDate)
-	if req.TaxInvoiceDate == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "tax_invoice_date is required")
+	// tax_invoice_no/date are optional (a document may carry only temp_delivery_no/date, or
+	// neither yet) — empty values are stored as NULL, not ''. A non-empty date must still parse.
+	var taxInvoiceNo *string
+	if req.TaxInvoiceNo != "" {
+		taxInvoiceNo = &req.TaxInvoiceNo
 	}
-	taxInvoiceDate, err := time.Parse("2006-01-02", req.TaxInvoiceDate)
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "tax_invoice_date must be in YYYY-MM-DD format")
+	var taxInvoiceDate *time.Time
+	if req.TaxInvoiceDate != "" {
+		t, err := time.Parse("2006-01-02", req.TaxInvoiceDate)
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "tax_invoice_date must be in YYYY-MM-DD format")
+		}
+		taxInvoiceDate = &t
 	}
 
 	var supplierID *int64
@@ -585,7 +592,7 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 		RETURNING id, po_id, tax_invoice_no, tax_invoice_date::text, temp_delivery_no, temp_delivery_date::text,
 		          credit_days, due_date::text, exchange_rate, remarks,
 		          created_at::text, updated_at::text, created_by, updated_by`,
-		poID, req.TaxInvoiceNo, taxInvoiceDate, req.TempDeliveryNo, req.TempDeliveryDate,
+		poID, taxInvoiceNo, taxInvoiceDate, req.TempDeliveryNo, req.TempDeliveryDate,
 		creditDays, dueDate, req.ExchangeRate, req.Remarks, createdBy,
 	).Scan(&d.ID, &d.POID, &d.TaxInvoiceNo, &d.TaxInvoiceDate, &d.TempDeliveryNo, &d.TempDeliveryDate,
 		&d.CreditDays, &d.DueDate, &d.ExchangeRate, &d.Remarks,
@@ -664,6 +671,8 @@ func (h *ICHandler) ListReceiveDocuments(c *fiber.Ctx) error {
 		LEFT JOIN (
 			SELECT receive_document_id, COUNT(*) AS line_count FROM (
 				SELECT receive_document_id FROM ic_project_cost_item_transaction WHERE receive_document_id IS NOT NULL
+				UNION ALL
+				SELECT receive_document_id FROM ic_project_receipt_pool_transaction WHERE receive_document_id IS NOT NULL
 				UNION ALL
 				SELECT receive_document_id FROM stock_transaction WHERE receive_document_id IS NOT NULL
 			) combined
@@ -790,6 +799,7 @@ func (h *ICHandler) DeleteReceiveDocument(c *fiber.Ctx) error {
 	if err := tx.QueryRow(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM ic_project_cost_item_transaction WHERE receive_document_id = $1) +
+			(SELECT COUNT(*) FROM ic_project_receipt_pool_transaction WHERE receive_document_id = $1) +
 			(SELECT COUNT(*) FROM stock_transaction WHERE receive_document_id = $1)`, docID,
 	).Scan(&linkedCount); err != nil {
 		return err
@@ -1328,14 +1338,17 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	if orderType == "cost" {
 		rows, err := h.db.Query(ctx, `
 			SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code,
-			       t.qty, ici.mat_code, ici.item_name, ici.unit, t.unit_cost
-			FROM ic_project_cost_item_transaction t
-			JOIN ic_project_cost_item ici ON ici.id = t.project_cost_item_id
-			LEFT JOIN cost_subgroup cs ON ici.cost_subgroup_id = cs.id
+			       t.qty, pool.mat_code, pool.item_name, COALESCE(u.unit_name, pool.unit), COALESCE(pol.unit_price, 0)
+			FROM ic_project_receipt_pool_transaction t
+			JOIN ic_project_receipt_pool pool ON pool.id = t.receipt_pool_id
+			LEFT JOIN purchase_order_line pol ON pol.id = t.po_line_id
+			LEFT JOIN material_code mc ON mc.mat_code = pool.mat_code
+			LEFT JOIN unit u ON u.id = mc.unit_id
+			LEFT JOIN cost_subgroup cs ON pool.cost_subgroup_id = cs.id
 			LEFT JOIN cost_group    cg ON cg.id = cs.group_id
 			LEFT JOIN cost_job      cj ON cj.id = cg.job_id
 			LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
-			WHERE t.receive_document_id = $1 AND t.qty > 0
+			WHERE t.receive_document_id = $1 AND t.txn_type = 'RECEIVE' AND t.qty > 0
 			ORDER BY t.id`, docID)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to list document lines: "+err.Error())
@@ -1363,7 +1376,7 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	// order_type == 'stock': scoped query first — stock_transaction.receive_document_id now
 	// exists and is written on every new receive (icReceiveToStock).
 	scopedRows, err := h.db.Query(ctx, `
-		SELECT NULL::text AS cost_code, si.mat_code, si.item_name, u.unit_code, 0::numeric AS unit_price, st.qty
+		SELECT NULL::text AS cost_code, si.mat_code, si.item_name, u.unit_name, 0::numeric AS unit_price, st.qty
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
 		LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
@@ -1397,7 +1410,7 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	// Nothing linked to this document specifically — fall back to this PO's still-unlinked
 	// (receive_document_id IS NULL) rows only, never rows already linked to a different document.
 	rows, err := h.db.Query(ctx, `
-		SELECT NULL::text AS cost_code, si.mat_code, si.item_name, u.unit_code, 0::numeric AS unit_price, st.qty
+		SELECT NULL::text AS cost_code, si.mat_code, si.item_name, u.unit_name, 0::numeric AS unit_price, st.qty
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
 		LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
@@ -1477,54 +1490,53 @@ func icReceiveToStock(ctx context.Context, tx pgx.Tx, matCode string, lineNo int
 // receiveDocumentID is stamped on the new transaction row so it can be attributed back to the
 // specific receive document it was submitted under (a PO can have many).
 func icReceiveToProjectCost(ctx context.Context, tx pgx.Tx, projectCode, matCode string, costSubgroupID int64, receiveQty, unitPrice float64, poID, poLineID, userID, receiveDocumentID int64) error {
-	var costItemID int64
-	var qtyBefore float64
+	var poolID int64
 	err := tx.QueryRow(ctx, `
-		SELECT id, qty_on_hand FROM ic_project_cost_item
+		SELECT id FROM ic_project_receipt_pool
 		WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3 FOR UPDATE`,
 		projectCode, matCode, costSubgroupID,
-	).Scan(&costItemID, &qtyBefore)
+	).Scan(&poolID)
 	if err != nil {
 		var itemName string
-		var unitCode *string
+		var unitName *string
 		if err := tx.QueryRow(ctx, `
 			SELECT NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), mc.mat_code),
-			       u.unit_code
+			       u.unit_name
 			FROM material_code mc
 			LEFT JOIN mat_name mn  ON mc.mat_name_id = mn.id
 			LEFT JOIN spec_size sp ON mc.spec_id = sp.id
 			LEFT JOIN unit u       ON mc.unit_id = u.id
 			WHERE mc.mat_code = $1`, matCode,
-		).Scan(&itemName, &unitCode); err != nil {
-			return fmt.Errorf("mat_code %s: not found in material_code — cannot auto-create ic_project_cost_item", matCode)
+		).Scan(&itemName, &unitName); err != nil {
+			return fmt.Errorf("mat_code %s: not found in material_code — cannot auto-create ic_project_receipt_pool", matCode)
 		}
 		if itemName == "" {
 			itemName = matCode
 		}
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO ic_project_cost_item (project_code, mat_code, cost_subgroup_id, item_name, unit, qty_on_hand, last_unit_cost)
-			VALUES ($1, $2, $3, $4, $5, 0, 0)
-			RETURNING id, qty_on_hand`,
-			projectCode, matCode, costSubgroupID, itemName, unitCode,
-		).Scan(&costItemID, &qtyBefore); err != nil {
-			return fmt.Errorf("mat_code %s: failed to auto-create ic_project_cost_item: %w", matCode, err)
+			INSERT INTO ic_project_receipt_pool (project_code, mat_code, cost_subgroup_id, item_name, unit, qty_received, qty_issued, last_unit_cost)
+			VALUES ($1, $2, $3, $4, $5, 0, 0, 0)
+			RETURNING id`,
+			projectCode, matCode, costSubgroupID, itemName, unitName,
+		).Scan(&poolID); err != nil {
+			return fmt.Errorf("mat_code %s: failed to auto-create ic_project_receipt_pool: %w", matCode, err)
 		}
 	}
 
-	qtyAfter := qtyBefore + receiveQty
 	if _, err := tx.Exec(ctx, `
-		UPDATE ic_project_cost_item SET qty_on_hand = $1, last_unit_cost = $2, updated_at = NOW() WHERE id = $3`,
-		qtyAfter, unitPrice, costItemID,
+		UPDATE ic_project_receipt_pool
+		SET qty_received = qty_received + $1, last_unit_cost = $2, updated_at = NOW() WHERE id = $3`,
+		receiveQty, unitPrice, poolID,
 	); err != nil {
-		return fmt.Errorf("mat_code %s: failed to update ic_project_cost_item: %w", matCode, err)
+		return fmt.Errorf("mat_code %s: failed to update ic_project_receipt_pool: %w", matCode, err)
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO ic_project_cost_item_transaction (project_cost_item_id, po_id, po_line_id, qty, qty_before, qty_after, unit_cost, created_by, receive_document_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		costItemID, poID, poLineID, receiveQty, qtyBefore, qtyAfter, unitPrice, userID, receiveDocumentID,
+		INSERT INTO ic_project_receipt_pool_transaction (receipt_pool_id, txn_type, qty, ref_type, po_id, po_line_id, receive_document_id, created_by)
+		VALUES ($1, 'RECEIVE', $2, 'PO', $3, $4, $5, $6)`,
+		poolID, receiveQty, poID, poLineID, receiveDocumentID, userID,
 	); err != nil {
-		return fmt.Errorf("mat_code %s: failed to insert ic_project_cost_item_transaction: %w", matCode, err)
+		return fmt.Errorf("mat_code %s: failed to insert ic_project_receipt_pool_transaction: %w", matCode, err)
 	}
 
 	return nil

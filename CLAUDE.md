@@ -1017,3 +1017,91 @@ Full flow (add line → Submit → verify source/destination `qty_on_hand` → v
 history shows the new rows) has **not** been completed successfully. Every attempt so far hit test
 data that ended up in `stock_item` rather than `ic_project_cost_item`, due to the `order_type` bug
 in #5. Retest with a fresh, consistent `cost`-type PR/PO before treating this feature as verified.
+
+---
+
+## 🧭 Session learnings (2026-09-26) — linked-warehouse projects (Stock ↔ Project transfers)
+
+### 1. New concept: a project can *be* a warehouse (`project.linked_warehouse_code`)
+Added `project.linked_warehouse_code varchar(20) NULL REFERENCES warehouse(warehouse_code)` —
+`NULL` for a normal cost-tracked project, set to a real `warehouse_code` (e.g. `'FAC-S'`) for a
+project that is actually a warehouse proxy (e.g. `2026-WH-002`). This lets the existing
+`ic_project_movement` TRANSFER flow move stock between the general stock system (`stock_item`) and
+a normal project's `ic_project_cost_item`, reusing the same UI/endpoints instead of building a
+parallel one. **An earlier, now-abandoned attempt added `project.project_type`
+(`WAREHOUSE`/`PROJECT` enum) — that column was dropped and all code referencing it removed. Do not
+resurrect it**; `linked_warehouse_code` (NULL vs not-NULL) is the only field that matters now.
+Also added `location.warehouse_code varchar(20) REFERENCES warehouse(warehouse_code)` so code can
+resolve "which warehouse does this location belong to" without hardcoding (mapped: `SAL→FAC-S`,
+`PRJ→FAC-P`, `HO→HO`, `OFF→HO`, `BO→BO`; NULL for non-warehouse locations
+`DEP/DEPB/DEPU/DEPT/HUT/SOL/UEN/SELF`). See [location](database.md#location) and
+[project](database.md#project).
+
+### 2. Branch logic — all in `internal/handlers/ic_project_movement.go`
+Keyed off `linked_warehouse_code IS NULL` (normal) or `NOT NULL` (linked) on the SOURCE and
+DESTINATION project **independently**:
+
+| Source | Destination | Deduct | Credit |
+|--------|-------------|--------|--------|
+| normal | normal | `ic_project_cost_item` | `ic_project_cost_item` (unchanged, existing TRANSFER) |
+| linked | normal | `stock_item.qty` (locked UPDATE) + `stock_transaction` OUT | `ic_project_cost_item` + positive `MOVEMENT_TRANSFER` row |
+| normal | linked | `ic_project_cost_item` + negative `MOVEMENT_TRANSFER` row | `stock_item.qty` (locked UPDATE, auto-create row if missing) + `stock_transaction` IN |
+| linked | linked | rejected, 400 `"use Stock Transfer instead"` | — |
+
+ISSUE is **not** supported for warehouse-linked source projects (rejected 400 at picker, line-add,
+and submit) — a linked project has no receipt-pool concept. Only TRANSFER works for linked
+projects. Reflected in schema: `ic_project_movement_line.cost_subgroup_id` and
+`to_cost_subgroup_id` are now **nullable** (were `NOT NULL`) — `NULL` means "not applicable," only
+when the source/destination (respectively) is warehouse-linked, since `stock_item` has no cost
+subgroup concept.
+
+### 3. Key design decision — why `stock_item.qty` directly, not `stock_inventory`
+We originally built this against `stock_inventory` (per-warehouse, per-location balances) for a
+"real" multi-warehouse breakdown, but abandoned it: there is no verified, ongoing sync between
+`stock_item.qty` and `stock_inventory` — GRN receive's documented "write `stock_inventory` then
+roll up to `stock_item`" behavior (see "Session learnings (2026-08-04)" #2) was never confirmed
+live, and **`stock_inventory` was found empty (0 rows) system-wide this session**. Using
+`stock_inventory` would have made "warehouse-linked" balances silently drift from `stock_item`'s
+real numbers. We use `stock_item.qty` directly instead: simpler, always correct, but means **all**
+warehouse-linked projects currently share **one global pool per `mat_code`** (no true
+per-warehouse split) — acceptable for now since in practice all stock sits at one physical
+location (WH01/SAL) anyway. If real multi-warehouse tracking is needed later, `stock_inventory` is
+the right foundation, but building an actual sync mechanism (tied to GRN receive, borrow/return if
+ever un-retired, and every stock-mutating flow) is a prerequisite, not optional.
+
+### 4. `/stock/borrow/*` routes unregistered (404) — Borrow/Return retired
+Removed from `routes.go`; all return 404. Reason: the Borrow/Return business process is retired
+(only "เบิก"/issue is used now), and `stock_borrow.go`'s receive/return handlers roll up
+`stock_item.qty` from `stock_inventory` — since that table is empty, any use would silently zero
+real `stock_item.qty`. `stock_borrow.go` and the `borrow`/`borrow_line` tables are **not deleted**
+(reversible), just unreachable via API.
+
+### 5. Fixed: warehouse-linked rows showed blank cost_subgroup/cost_name/cost_code
+`cost_subgroup_id`/`cost_name`/`cost_code` must be resolved via the
+`material_code → cost_subgroup → cost_group → cost_job → cost_subject` join chain (same one
+`/stock/items` uses) wherever a linked-warehouse row needs to display them — the "คงเหลือวัสดุ"
+page and the available-materials picker both do this now. Hardcoding these blank for
+warehouse-linked rows was a bug introduced and fixed this session.
+
+### 6. Other fixes this session (brief changelog)
+- Fixed: TRANSFER line-add/submit previously always checked `ic_project_receipt_pool` regardless
+  of `doc_type` (a leftover from when only ISSUE existed) — now correctly branches ISSUE→pool,
+  TRANSFER→`ic_project_cost_item` (or the linked-warehouse branch above).
+- Removed: CostName column from the "คงเหลือวัสดุ" page (`GET /ic/projects/:code/stock`) — CostCode
+  stays. Kept elsewhere (e.g. available-materials modal still shows CostName). (Frontend change,
+  noted here for context only.)
+- Frontend-only, noted for context: "เพิ่มรายการ" no longer saves each line to the backend
+  immediately — lines accumulate in local state until Submit sends the whole batch; losing unsaved
+  lines on refresh is accepted/expected behavior, not a bug.
+
+### 7. 🔴 STILL UNRESOLVED — flag prominently for next session: timestamp display ~7h ahead
+Recorded/displayed times run ~7 hours ahead of real Thailand local time (consistent with a raw UTC
+value being shown without local conversion). Confirmed present at multiple points this session
+(11:09→18:08, and a 22:49 save). Root cause (DB storage, Go serialization, or frontend display)
+has been asked about twice but never actually investigated/answered. **Treat as a priority
+investigation next session, not optional.**
+
+### 8. Migration-file policy reconfirmed (again)
+All schema changes this session (`location.warehouse_code`, `project.linked_warehouse_code`,
+nullable `ic_project_movement_line.cost_subgroup_id`/`to_cost_subgroup_id`) were applied directly
+against the live DB via pgAdmin, per the standing policy — no new file under `migrations/`.

@@ -40,11 +40,19 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 // @Description  and created_at ("วันที่เปิดเอกสาร" — the DB row insert timestamp). dept_name,
 // @Description  memo_no, and required_date are null when the PR has no dept_code/memo_id/
 // @Description  required_date or the code doesn't resolve to a live row.
+// @Description  Each item also carries has_active_po_link (bool) — true if any of this PR's
+// @Description  lines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.
+// @Description  Same condition the PR detail page's blocking-PO warning banner and the Update
+// @Description  handler's edit guard use — the frontend should hide/disable "แก้ไข" when true.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
-// @Param        status            query  string  false  "status filter"
+// @Param        status            query  string  false  "status filter — one of DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED, CANCELLED"
 // @Param        available_for_po  query  bool    false  "true = only COMPLETED PRs with remaining unreferenced qty on at least one line"
+// @Param        search            query  string  false  "matches pr_no or remarks (ILIKE, substring)"
+// @Param        date_from         query  string  false  "filter by created_at >= this date (YYYY-MM-DD)"
+// @Param        date_to           query  string  false  "filter by created_at <= this date (YYYY-MM-DD)"
+// @Param        job_code          query  string  false  "exact match on pr.job_code"
 // @Param        page              query  int     false  "page"   default(1)
 // @Param        limit             query  int     false  "limit"  default(20)
 // @Success      200  {object}  fiber.Map
@@ -52,6 +60,10 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	status := c.Query("status")
 	availableForPO := c.Query("available_for_po") == "true"
+	search := c.Query("search")
+	dateFrom := c.Query("date_from")
+	dateTo := c.Query("date_to")
+	jobCode := c.Query("job_code")
 	page := max(c.QueryInt("page", 1), 1)
 	limit := c.QueryInt("limit", 20)
 	offset := (page - 1) * limit
@@ -60,6 +72,36 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	if status != "" {
 		statusFilter = &status
 	}
+	var searchFilter *string
+	if search != "" {
+		searchFilter = &search
+	}
+	var dateFromFilter *string
+	if dateFrom != "" {
+		dateFromFilter = &dateFrom
+	}
+	var dateToFilter *string
+	if dateTo != "" {
+		dateToFilter = &dateTo
+	}
+	var jobCodeFilter *string
+	if jobCode != "" {
+		jobCodeFilter = &jobCode
+	}
+
+	// Combinable AND filters, each a no-op when its param is absent (NULL check short-circuits).
+	// Used with two different parameter offsets: $2-$5 in the count query (no limit/offset there),
+	// $4-$7 in the main select (after $2=limit, $3=offset).
+	countExtraFilters := `
+		AND ($2::text IS NULL OR pr.pr_no ILIKE '%' || $2 || '%' OR pr.remarks ILIKE '%' || $2 || '%')
+		AND ($3::date IS NULL OR pr.created_at::date >= $3::date)
+		AND ($4::date IS NULL OR pr.created_at::date <= $4::date)
+		AND ($5::text IS NULL OR pr.job_code = $5)`
+	selectExtraFilters := `
+		AND ($4::text IS NULL OR pr.pr_no ILIKE '%' || $4 || '%' OR pr.remarks ILIKE '%' || $4 || '%')
+		AND ($5::date IS NULL OR pr.created_at::date >= $5::date)
+		AND ($6::date IS NULL OR pr.created_at::date <= $6::date)
+		AND ($7::text IS NULL OR pr.job_code = $7)`
 
 	// available_for_po forces status=COMPLETED (PR's only "usable" terminal status) and adds a
 	// live EXISTS check: at least one line whose referenced-qty sum, from non-cancelled
@@ -88,8 +130,9 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 
 	var total int64
 	h.db.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM purchase_request pr WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`,
-		statusFilter,
+		`SELECT COUNT(*) FROM purchase_request pr
+		 WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+countExtraFilters,
+		statusFilter, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter,
 	).Scan(&total)
 
 	type PRListItem struct {
@@ -113,6 +156,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		RequiredDate       *string `json:"required_date,omitempty"`
 		CreatedAt          string  `json:"created_at"`
 		PoConversionStatus string  `json:"po_conversion_status"`
+		HasActivePOLink    bool    `json:"has_active_po_link"`
 	}
 
 	// po_conversion_status is computed per PR from an aggregate over purchase_request_line,
@@ -127,6 +171,13 @@ WITH poconv AS (
 	       BOOL_OR(COALESCE(prl.qty_ordered, 0) > 0) AS any_ordered
 	FROM purchase_request_line prl
 	GROUP BY prl.pr_id
+),
+activepo AS (
+	SELECT DISTINCT prl.pr_id
+	FROM purchase_request_line prl
+	JOIN purchase_order_line pol ON pol.pr_line_id = prl.id
+	JOIN purchase_order po ON po.id = pol.po_id
+	WHERE po.status != 'CANCELLED'
 )
 SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        COALESCE(u1.full_name, '') AS requested_by,
@@ -138,19 +189,21 @@ SELECT pr.id AS pr_id, pr.pr_no, pr.status,
            WHEN COALESCE(pc.all_full, false) THEN 'FULLY_CONVERTED'
            WHEN COALESCE(pc.any_ordered, false) THEN 'PARTIALLY_CONVERTED'
            ELSE 'NOT_CONVERTED'
-       END AS po_conversion_status
+       END AS po_conversion_status,
+       (ap.pr_id IS NOT NULL) AS has_active_po_link
 FROM purchase_request pr
 LEFT JOIN users u1 ON u1.id = pr.requested_by
 LEFT JOIN poconv pc ON pc.pr_id = pr.id
+LEFT JOIN activepo ap ON ap.pr_id = pr.id
 LEFT JOIN cost_subject cs ON cs.subject_code = LEFT(pr.job_code, 1)
 LEFT JOIN cost_job cj ON cj.subject_id = cs.id AND cj.job_code = SUBSTRING(pr.job_code FROM 2)
 LEFT JOIN project pj ON pj.project_code = pr.project_code
 LEFT JOIN departments d ON d.dept_code = pr.dept_code
 LEFT JOIN memo m ON m.id = pr.memo_id
-WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)
+WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+selectExtraFilters+`
 ORDER BY pr.created_at DESC
 LIMIT $2 OFFSET $3`,
-		statusFilter, limit, offset,
+		statusFilter, limit, offset, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter,
 	)
 	if err != nil {
 		return err
@@ -163,7 +216,7 @@ LIMIT $2 OFFSET $3`,
 		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
 			&item.LocationText, &item.ProjectCode, &item.DeptCode, &item.Remarks, &item.PRDate, &item.PRType, &item.JobCode,
 			&item.JobName, &item.ProjectName, &item.DeptName, &item.MemoID, &item.MemoNo, &item.RequiredDate, &item.CreatedAt,
-			&item.PoConversionStatus)
+			&item.PoConversionStatus, &item.HasActivePOLink)
 		items = append(items, item)
 	}
 

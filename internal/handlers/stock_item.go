@@ -66,7 +66,7 @@ func (h *StockItemHandler) ListCategories(c *fiber.Ctx) error {
 
 // List godoc
 // @Summary      รายการ Stock Item
-// @Description  cost_code is joined from material_code (matched by mat_code — stock_item and material_code are separate parallel stock systems with no FK between them, only a shared mat_code value) -> cost_subgroup -> cost_group -> cost_job -> cost_subject, using the same subject_code+job_code+group_code+subgroup_code concatenation as every other cost-code query in this codebase. LEFT JOIN throughout, so an item with no matching material_code row (or one with no cost_subgroup_id set) still appears in the list, just with cost_code=null.
+// @Description  cost_code is joined from material_code (matched by mat_code — stock_item and material_code are separate parallel stock systems with no FK between them, only a shared mat_code value) -> cost_subgroup -> cost_group -> cost_job -> cost_subject, using the same subject_code+job_code+group_code+subgroup_code concatenation as every other cost-code query in this codebase. Always-on filter: only items whose material_code has a cost_subgroup_id set are returned (not a query param), so cost_code is always non-null.
 // @Tags         Stock
 // @Security     BearerAuth
 // @Produce      json
@@ -92,7 +92,9 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
-	where := []string{"1=1"}
+	// Always-on: only items whose material has a cost_subgroup_id assigned
+	// (the cost-coded set /master/stock is meant to show). Not opt-in.
+	where := []string{"mc.cost_subgroup_id IS NOT NULL"}
 	args := []interface{}{}
 	i := 1
 
@@ -127,6 +129,7 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 	err := h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM stock_item si
 		LEFT JOIN stock_category sc ON sc.id = si.category_id
+		LEFT JOIN material_code mc  ON mc.mat_code = si.mat_code
 		WHERE %s`, whereClause), countArgs...).Scan(&total)
 	if err != nil {
 		return err

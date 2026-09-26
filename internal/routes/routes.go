@@ -315,7 +315,8 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	stockItemImgH := handlers.NewStockItemImageHandler(db)
 	stockInvH := handlers.NewStockInventoryHandler(db)
 	stockTxnH := handlers.NewStockTransactionHandler(db)
-	stockBorrowH := handlers.NewStockBorrowHandler(db)
+	// Borrow & Return retired (2026-09-25): /stock/borrow routes intentionally unregistered — see stock_borrow.go
+	// (kept, reversible). Its rollupStockItemQty would zero stock_item.qty while stock_inventory is empty.
 	stockResH := handlers.NewStockReservationHandler(db)
 
 	stock := api.Group("/stock", jwt)
@@ -345,17 +346,6 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Transactions
 	stock.Get("/transactions", stockTxnH.List)
 	stock.Post("/transactions", stockTxnH.Create)
-
-	// Borrow & Return
-	stock.Get("/borrow", stockBorrowH.List)
-	stock.Get("/borrow/reserve-number", stockBorrowH.ReserveBorrowNumber)
-	stock.Post("/borrow", stockBorrowH.Create)
-	stock.Get("/borrow/scan/:item_code", stockBorrowH.ScanQR)
-	stock.Get("/borrow/:id", stockBorrowH.GetByID)
-	stock.Post("/borrow/:id/submit", stockBorrowH.Submit)
-	stock.Post("/borrow/:id/approve", middleware.RequireRole("MANAGER", "ADMIN_CENTER"), stockBorrowH.Approve)
-	stock.Post("/borrow/:id/receive", stockBorrowH.Receive)
-	stock.Post("/borrow/:id/return", stockBorrowH.Return)
 
 	// Reservation
 	stock.Get("/reservations", stockResH.List)
@@ -507,6 +497,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	ic.Get("/projects/:projectCode/movements/:id/lines", icMoveH.ListMovementLines)
 	ic.Post("/projects/:projectCode/movements/:id/submit", icMoveH.SubmitMovement)
 	ic.Get("/projects/:projectCode/cost-transactions", icMoveH.ListCostTransactions)
+	ic.Get("/projects/:projectCode/stock", icMoveH.ListProjectStock)
 
 	// Health check
 	app.Get("/health", func(c *fiber.Ctx) error {
