@@ -7732,6 +7732,70 @@ const docTemplate = `{
                 }
             }
         },
+        "/materials/{code}/price-history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns past PO lines for the given mat_code, most recent first, for the \"ดูราคาที่เคยซื้อ\" price-history panel on the PO line-item picker. Excludes CANCELLED POs.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Historical purchase price for a material",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "mat_code",
+                        "name": "code",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page number, default 1",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size, default 20, cap 100",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date from (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date to (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/memo": {
             "get": {
                 "security": [
@@ -15938,6 +16002,9 @@ const docTemplate = `{
         "models.Memo": {
             "type": "object",
             "properties": {
+                "approved_at": {
+                    "type": "string"
+                },
                 "approver_id": {
                     "type": "integer"
                 },

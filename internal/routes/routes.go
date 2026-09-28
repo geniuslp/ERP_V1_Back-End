@@ -70,6 +70,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/materials/stats", masterH.GetMaterialStats)
 	master.Put("/materials/:code", masterH.UpdateMaterial)
 	master.Get("/materials/:code", masterH.GetMaterial)
+	master.Get("/materials/:code/price-history", masterH.GetMaterialPriceHistory)
 	master.Get("/allMaterial", masterH.GetAllMaterial)
 
 	// Cost Code hierarchy (subject → job → group → subgroup)

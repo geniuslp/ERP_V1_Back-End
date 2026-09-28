@@ -1662,6 +1662,8 @@ definitions:
     type: object
   models.Memo:
     properties:
+      approved_at:
+        type: string
       approver_id:
         type: integer
       approver_name:
@@ -7887,6 +7889,49 @@ paths:
       summary: Get unit by code
       tags:
       - MaterialCode
+  /materials/{code}/price-history:
+    get:
+      description: Returns past PO lines for the given mat_code, most recent first,
+        for the "ดูราคาที่เคยซื้อ" price-history panel on the PO line-item picker.
+        Excludes CANCELLED POs.
+      parameters:
+      - description: mat_code
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: page number, default 1
+        in: query
+        name: page
+        type: integer
+      - description: page size, default 20, cap 100
+        in: query
+        name: limit
+        type: integer
+      - description: Date from (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Date to (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Historical purchase price for a material
+      tags:
+      - Master
   /materials/search:
     get:
       description: Search active materials by mat_code or mat_name for the Create

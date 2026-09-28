@@ -112,7 +112,10 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 		SELECT pr.id, pr.pr_no, pr.pr_date, pr.required_date, pr.status, pr.priority,
 		       u.full_name, pr.location_text, w.warehouse_name,
 		       (SELECT COUNT(*) FROM purchase_request_line prl WHERE prl.pr_id = pr.id),
-		       pr.remarks, pr.created_at, pr.memo_id, m.memo_no
+		       pr.remarks, pr.created_at, pr.memo_id, m.memo_no,
+		       (SELECT psl.changed_at FROM pr_status_log psl
+		        WHERE psl.pr_id = pr.id AND psl.to_status = 'COMPLETED'
+		        ORDER BY psl.changed_at DESC LIMIT 1) AS approved_at
 		FROM purchase_request pr
 		LEFT JOIN users u ON u.id = pr.requested_by
 		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
@@ -139,6 +142,7 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 		CreatedAt     time.Time  `json:"created_at"`
 		MemoID        *int64     `json:"memo_id,omitempty"`
 		MemoNo        *string    `json:"memo_no,omitempty"`
+		ApprovedAt    *time.Time `json:"approved_at,omitempty"`
 	}
 
 	var items []PRRow
@@ -147,7 +151,7 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 		if err := rows.Scan(
 			&r.PRID, &r.PRNo, &r.PRDate, &r.RequiredDate, &r.Status, &r.Priority,
 			&r.RequestedBy, &r.LocationName, &r.WarehouseName,
-			&r.LineCount, &r.Remarks, &r.CreatedAt, &r.MemoID, &r.MemoNo,
+			&r.LineCount, &r.Remarks, &r.CreatedAt, &r.MemoID, &r.MemoNo, &r.ApprovedAt,
 		); err != nil {
 			log.Printf("❌ scan error: %v", err)
 			return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})

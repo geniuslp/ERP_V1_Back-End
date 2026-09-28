@@ -1342,6 +1342,7 @@ type Memo struct {
 	RequestedByName string           `json:"requested_by_name,omitempty"`
 	ApproverName    *string          `json:"approver_name,omitempty"`
 	ProjectName     *string          `json:"project_name,omitempty"`
+	ApprovedAt      *time.Time       `json:"approved_at,omitempty"`
 	Lines           []MemoLine       `json:"lines,omitempty"`
 	Attachments     []MemoAttachment `json:"attachments,omitempty"`
 }
@@ -1852,8 +1853,8 @@ type CreateIcProjectMovementLineRequest struct {
 	MatCode          string  `json:"mat_code" validate:"required"`
 	CostSubgroupID   int64   `json:"cost_subgroup_id" validate:"required"`
 	Qty              float64 `json:"qty" validate:"required,gt=0"`
-	ToProjectCode    string  `json:"to_project_code"`        // required for TRANSFER, ignored for ISSUE
-	ToCostSubgroupID int64   `json:"to_cost_subgroup_id"`   // required for TRANSFER, ignored for ISSUE
+	ToProjectCode    string  `json:"to_project_code"`     // required for TRANSFER, ignored for ISSUE
+	ToCostSubgroupID int64   `json:"to_cost_subgroup_id"` // required for TRANSFER, ignored for ISSUE
 	Remarks          *string `json:"remarks"`
 }
 
@@ -1888,22 +1889,22 @@ type IcProjectMovementListItem struct {
 }
 
 type IcProjectCostTransaction struct {
-	ID              int64     `json:"id"`
-	Qty             float64   `json:"qty"`
-	QtyBefore       float64   `json:"qty_before"`
-	QtyAfter        float64   `json:"qty_after"`
-	UnitCost        float64   `json:"unit_cost"`
-	Remarks         *string   `json:"remarks"`
-	TxnDate         string    `json:"txn_date"`
-	RefType         string    `json:"ref_type"`
-	MatCode         string    `json:"mat_code"`
-	MatName         string    `json:"mat_name"`
-	CostSubgroupID  int64     `json:"cost_subgroup_id"`
-	CostCode        string    `json:"cost_code"`
-	CostName        string    `json:"cost_name"`
-	RefNo           *string   `json:"ref_no"`
-	CreatedByName   string    `json:"created_by_name"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID             int64     `json:"id"`
+	Qty            float64   `json:"qty"`
+	QtyBefore      float64   `json:"qty_before"`
+	QtyAfter       float64   `json:"qty_after"`
+	UnitCost       float64   `json:"unit_cost"`
+	Remarks        *string   `json:"remarks"`
+	TxnDate        string    `json:"txn_date"`
+	RefType        string    `json:"ref_type"`
+	MatCode        string    `json:"mat_code"`
+	MatName        string    `json:"mat_name"`
+	CostSubgroupID int64     `json:"cost_subgroup_id"`
+	CostCode       string    `json:"cost_code"`
+	CostName       string    `json:"cost_name"`
+	RefNo          *string   `json:"ref_no"`
+	CreatedByName  string    `json:"created_by_name"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type IcProjectCostTransactionFilter struct {

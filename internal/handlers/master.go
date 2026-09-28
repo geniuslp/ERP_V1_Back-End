@@ -255,6 +255,105 @@ func (h *MasterHandler) GetMaterial(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": m})
 }
 
+// GetMaterialPriceHistory godoc
+// @Summary      Historical purchase price for a material
+// @Description  Returns past PO lines for the given mat_code, most recent first, for the "ดูราคาที่เคยซื้อ" price-history panel on the PO line-item picker. Excludes CANCELLED POs.
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        code   path  string  true   "mat_code"
+// @Param        page       query int     false  "page number, default 1"
+// @Param        limit      query int     false  "page size, default 20, cap 100"
+// @Param        date_from  query string  false  "Date from (YYYY-MM-DD)"
+// @Param        date_to    query string  false  "Date to (YYYY-MM-DD)"
+// @Success      200    {object}  fiber.Map
+// @Failure      500    {object}  fiber.Map
+// @Router       /materials/{code}/price-history [get]
+func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
+	matCode := c.Params("code")
+
+	page := max(c.QueryInt("page", 1), 1)
+	limit := min(max(c.QueryInt("limit", 20), 1), 100)
+	offset := (page - 1) * limit
+
+	var dateFrom, dateTo *string
+	if v := strings.TrimSpace(c.Query("date_from")); v != "" {
+		dateFrom = &v
+	}
+	if v := strings.TrimSpace(c.Query("date_to")); v != "" {
+		dateTo = &v
+	}
+
+	var total int64
+	if err := h.db.QueryRow(context.Background(), `
+		SELECT COUNT(*)
+		FROM purchase_order_line pol
+		JOIN purchase_order po ON po.id = pol.po_id
+		WHERE pol.mat_code = $1
+		  AND pol.status != 'CANCELLED'
+		  AND po.status != 'CANCELLED'
+		  AND ($2::date IS NULL OR po.po_date >= $2::date)
+		  AND ($3::date IS NULL OR po.po_date <= $3::date)`, matCode, dateFrom, dateTo,
+	).Scan(&total); err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
+	}
+
+	rows, err := h.db.Query(context.Background(), `
+		SELECT pol.mat_code, mn.mat_name, ss.spec_description AS spec_name, s.supplier_name, po.po_date, pol.unit_price, po.po_no
+		FROM purchase_order_line pol
+		JOIN purchase_order po       ON po.id = pol.po_id
+		JOIN material_code mc        ON mc.mat_code = pol.mat_code
+		JOIN mat_name mn             ON mn.id = mc.mat_name_id
+		LEFT JOIN spec_size ss       ON ss.id = mc.spec_id
+		LEFT JOIN supplier s         ON s.id = po.supplier_id
+		WHERE pol.mat_code = $1
+		  AND pol.status != 'CANCELLED'
+		  AND po.status != 'CANCELLED'
+		  AND ($4::date IS NULL OR po.po_date >= $4::date)
+		  AND ($5::date IS NULL OR po.po_date <= $5::date)
+		ORDER BY po.po_date DESC
+		LIMIT $2 OFFSET $3`, matCode, limit, offset, dateFrom, dateTo)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
+	}
+	defer rows.Close()
+
+	type PriceHistoryRow struct {
+		MatCode      string    `json:"mat_code"`
+		MatName      string    `json:"mat_name"`
+		SpecName     *string   `json:"spec_name,omitempty"`
+		SupplierName *string   `json:"supplier_name,omitempty"`
+		PODate       time.Time `json:"po_date"`
+		UnitPrice    float64   `json:"unit_price"`
+		PONo         string    `json:"po_no"`
+	}
+
+	items := []PriceHistoryRow{}
+	for rows.Next() {
+		var r PriceHistoryRow
+		if err := rows.Scan(&r.MatCode, &r.MatName, &r.SpecName, &r.SupplierName, &r.PODate, &r.UnitPrice, &r.PONo); err != nil {
+			return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
+		}
+		items = append(items, r)
+	}
+
+	totalPages := int(total) / limit
+	if int(total)%limit != 0 || totalPages == 0 {
+		totalPages++
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": models.PaginatedResponse{
+			Data:       items,
+			Total:      total,
+			Page:       page,
+			PageSize:   limit,
+			TotalPages: totalPages,
+		},
+	})
+}
+
 // SearchMaterials godoc
 // @Summary      Type-ahead material search
 // @Description  Search active materials by mat_code or mat_name for the Create PO combobox. Returns mat_code, mat_name, unit, and last purchase price (nullable). Prefix matches on mat_code rank first. When warehouse_code is passed (e.g. Requisition item picker), results are additionally scoped to materials that have a stock_item row at that warehouse, and each result includes qty_on_hand from that warehouse.

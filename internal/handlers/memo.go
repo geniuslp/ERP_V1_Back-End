@@ -224,11 +224,18 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 		       m.created_at, m.updated_at,
 		       u.full_name   AS requested_by_name,
 		       au.full_name  AS approver_name,
-		       p.project_name
+		       p.project_name,
+		       msl.changed_at AS approved_at
 		FROM public.memo m
 		JOIN public.users    u  ON u.id  = m.requested_by
 		LEFT JOIN public.users au ON au.id = m.approver_id
 		LEFT JOIN public.project  p ON p.project_code  = m.project_code
+		LEFT JOIN LATERAL (
+		    SELECT changed_at
+		    FROM public.memo_status_log
+		    WHERE memo_id = m.id AND to_status = 'APPROVED'
+		    ORDER BY changed_at DESC LIMIT 1
+		) msl ON true
 		` + where + `
 		ORDER BY m.created_at DESC
 		LIMIT $` + fmt.Sprintf("%d", i) + ` OFFSET $` + fmt.Sprintf("%d", i+1)
@@ -250,7 +257,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 			&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation,
 			&siteDeliveryDate, &m.ResponsibleFactory, &m.Note, &m.Status,
 			&m.CreatedAt, &m.UpdatedAt,
-			&m.RequestedByName, &m.ApproverName, &m.ProjectName,
+			&m.RequestedByName, &m.ApproverName, &m.ProjectName, &m.ApprovedAt,
 		); err != nil {
 			return err
 		}

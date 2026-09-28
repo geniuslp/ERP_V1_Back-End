@@ -217,6 +217,8 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		       po.expected_date::text, po.created_at, po.updated_at, po.project_code, pj.project_name,
 		       COALESCE(cu.full_name, '') AS created_by_name,
 		       COALESCE(uu.full_name, '') AS updated_by_name,
+		       al.action_at AS approved_at,
+		       au.full_name AS approved_by_name,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round,
 		       (SELECT ARRAY_AGG(DISTINCT x.pr_no ORDER BY x.pr_no) FROM (
 		           SELECT pr.pr_no
@@ -232,6 +234,13 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		LEFT JOIN project pj ON pj.project_code = po.project_code
 		LEFT JOIN users cu ON cu.id = po.created_by
 		LEFT JOIN users uu ON uu.id = po.updated_by
+		LEFT JOIN LATERAL (
+		    SELECT action_at, action_by
+		    FROM approval_log
+		    WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
+		    ORDER BY action_at DESC LIMIT 1
+		) al ON true
+		LEFT JOIN users au ON au.id = al.action_by
 		`+where+`
 		ORDER BY po.created_at DESC LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
@@ -240,27 +249,29 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	defer rows.Close()
 
 	type PORow struct {
-		POID          int64     `json:"po_id"`
-		PONo          string    `json:"po_no"`
-		PODate        time.Time `json:"po_date"`
-		SupplierID    *int64    `json:"supplier_id,omitempty"`
-		SupplierName  *string   `json:"supplier_name,omitempty"`
-		Status        string    `json:"status"`
-		StatusReceive string    `json:"status_receive"`
-		OrderType     string    `json:"order_type"`
-		JobCode       string    `json:"job_code"`
-		Currency      string    `json:"currency"`
-		TotalAmount   float64   `json:"total_amount"`
-		VATAmount     float64   `json:"vat_amount"`
-		NetAmount     float64   `json:"net_amount"`
-		ExpectedDate  *string   `json:"expected_date,omitempty"`
-		CreatedAt     time.Time `json:"created_at"`
-		UpdatedAt     time.Time `json:"updated_at"`
-		ProjectCode   *string   `json:"project_code,omitempty"`
-		ProjectName   *string   `json:"project_name,omitempty"`
-		CreatedByName string    `json:"created_by_name"`
-		UpdatedByName string    `json:"updated_by_name"`
-		JobNames      []string  `json:"job_names,omitempty"`
+		POID           int64      `json:"po_id"`
+		PONo           string     `json:"po_no"`
+		PODate         time.Time  `json:"po_date"`
+		SupplierID     *int64     `json:"supplier_id,omitempty"`
+		SupplierName   *string    `json:"supplier_name,omitempty"`
+		Status         string     `json:"status"`
+		StatusReceive  string     `json:"status_receive"`
+		OrderType      string     `json:"order_type"`
+		JobCode        string     `json:"job_code"`
+		Currency       string     `json:"currency"`
+		TotalAmount    float64    `json:"total_amount"`
+		VATAmount      float64    `json:"vat_amount"`
+		NetAmount      float64    `json:"net_amount"`
+		ExpectedDate   *string    `json:"expected_date,omitempty"`
+		CreatedAt      time.Time  `json:"created_at"`
+		UpdatedAt      time.Time  `json:"updated_at"`
+		ProjectCode    *string    `json:"project_code,omitempty"`
+		ProjectName    *string    `json:"project_name,omitempty"`
+		CreatedByName  string     `json:"created_by_name"`
+		UpdatedByName  string     `json:"updated_by_name"`
+		ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+		ApprovedByName *string    `json:"approved_by_name,omitempty"`
+		JobNames       []string   `json:"job_names,omitempty"`
 		// RevisionRound is how many times this PO has been edited-and-resent for re-approval
 		// (COUNT of po_edit_log rows). 0 = original, never edited. po_no itself never changes;
 		// the frontend composes a display suffix like "#R2" from this when > 0.
@@ -283,7 +294,8 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.SupplierName,
 			&r.Status, &r.StatusReceive, &r.OrderType, &r.JobCode, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
-			&r.CreatedByName, &r.UpdatedByName, &r.RevisionRound, &r.PRNos); err != nil {
+			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName,
+			&r.RevisionRound, &r.PRNos); err != nil {
 			return err
 		}
 		items = append(items, r)
