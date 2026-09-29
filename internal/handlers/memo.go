@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"slices"
 	"strings"
@@ -49,6 +51,11 @@ func (h *MemoHandler) ReserveMemoNumber(c *fiber.Ctx) error {
 func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, error) {
 	var m models.Memo
 	var siteDeliveryDate *time.Time
+	var requesterSigPath, requesterSigMime *string
+	var approvedAt *time.Time
+	var approvedByID *int64
+	var approvedByName, approvedBySigPath, approvedBySigMime *string
+	var fallbackApproverSigPath, fallbackApproverSigMime *string
 	err := h.db.QueryRow(ctx, `
 		SELECT m.id, m.memo_no, m.title, m.project_code,
 		       m.requested_by, m.approver_id, m.department, m.delivery_location,
@@ -56,11 +63,21 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 		       m.created_at, m.updated_at,
 		       u.full_name   AS requested_by_name,
 		       au.full_name  AS approver_name,
-		       p.project_name
+		       p.project_name,
+		       u.signature_path, u.signature_mime,
+		       msl.changed_at, msl.changed_by, ab.full_name, ab.signature_path, ab.signature_mime,
+		       au.signature_path, au.signature_mime
 		FROM public.memo m
 		JOIN public.users    u  ON u.id  = m.requested_by
 		LEFT JOIN public.users au ON au.id = m.approver_id
 		LEFT JOIN public.project  p ON p.project_code  = m.project_code
+		LEFT JOIN LATERAL (
+		    SELECT changed_at, changed_by
+		    FROM public.memo_status_log
+		    WHERE memo_id = m.id AND to_status = 'APPROVED'
+		    ORDER BY changed_at DESC LIMIT 1
+		) msl ON true
+		LEFT JOIN public.users ab ON ab.id = msl.changed_by
 		WHERE m.id = $1`, id,
 	).Scan(
 		&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
@@ -68,6 +85,9 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 		&siteDeliveryDate, &m.ResponsibleFactory, &m.Note, &m.Status,
 		&m.CreatedAt, &m.UpdatedAt,
 		&m.RequestedByName, &m.ApproverName, &m.ProjectName,
+		&requesterSigPath, &requesterSigMime,
+		&approvedAt, &approvedByID, &approvedByName, &approvedBySigPath, &approvedBySigMime,
+		&fallbackApproverSigPath, &fallbackApproverSigMime,
 	)
 	if err != nil {
 		return nil, err
@@ -75,6 +95,46 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 	if siteDeliveryDate != nil {
 		s := siteDeliveryDate.Format("2006-01-02")
 		m.SiteDeliveryDate = &s
+	}
+
+	// requester_signature: same DRAFT exclusion rule as PR.
+	if m.Status != "DRAFT" {
+		if dataURL := loadSignatureDataURL(derefStr(requesterSigPath), derefStr(requesterSigMime)); dataURL != "" {
+			m.RequesterSignature = &models.UserSignatureInfo{
+				UserID:           m.RequestedBy,
+				FullName:         m.RequestedByName,
+				SignatureDataURL: dataURL,
+			}
+		}
+	}
+
+	// approval_signature: only for an actually-APPROVED memo. "Approver" = whoever performed
+	// the latest to_status='APPROVED' transition in memo_status_log (Memo approval never writes
+	// approval_log); fall back to memo.approver_id only when no such log row exists.
+	if m.Status == "APPROVED" {
+		var userID int64
+		var fullName, sigPath, sigMime string
+		if approvedByID != nil {
+			userID = *approvedByID
+			fullName = derefStr(approvedByName)
+			sigPath = derefStr(approvedBySigPath)
+			sigMime = derefStr(approvedBySigMime)
+		} else if m.ApproverID != nil {
+			userID = *m.ApproverID
+			fullName = derefStr(m.ApproverName)
+			sigPath = derefStr(fallbackApproverSigPath)
+			sigMime = derefStr(fallbackApproverSigMime)
+		}
+		if userID != 0 {
+			if dataURL := loadSignatureDataURL(sigPath, sigMime); dataURL != "" {
+				m.ApprovalSignature = &models.UserSignatureInfo{
+					UserID:           userID,
+					FullName:         fullName,
+					ApprovedAt:       approvedAt,
+					SignatureDataURL: dataURL,
+				}
+			}
+		}
 	}
 
 	rows, err := h.db.Query(ctx, `
@@ -294,7 +354,14 @@ func (h *MemoHandler) GetByID(c *fiber.Ctx) error {
 
 	m, err := h.getByID(context.Background(), int64(id))
 	if err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "memo not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fiber.NewError(fiber.StatusNotFound, "memo not found")
+		}
+		// Any other error (e.g. a scan/column mismatch, a real DB failure) is a bug, not a
+		// missing row — surfacing it as a blanket 404 hides it entirely. Log it and return it
+		// as a real 500 so it's visible instead of silently misreported.
+		log.Printf("❌ memo getByID(%d) failed: %v", id, err)
+		return err
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": m})
@@ -607,7 +674,7 @@ func (h *MemoHandler) Delete(c *fiber.Ctx) error {
 
 	var refCount int
 	if err := h.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM public.purchase_request WHERE memo_id=$1`, id,
+		`SELECT COUNT(*) FROM public.purchase_request WHERE memo_id=$1 AND deleted_at IS NULL`, id,
 	).Scan(&refCount); err != nil {
 		return err
 	}

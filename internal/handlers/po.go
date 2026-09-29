@@ -178,6 +178,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 
 	var conditions []string
 	var args []any
+	conditions = append(conditions, "po.deleted_at IS NULL")
 	if c.QueryBool("my", false) {
 		claims := middleware.GetClaims(c)
 		if claims == nil {
@@ -224,10 +225,10 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 		           SELECT pr.pr_no
 		           FROM purchase_order_line pol
 		           JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
-		           JOIN purchase_request pr ON pr.id = prl.pr_id
+		           JOIN purchase_request pr ON pr.id = prl.pr_id AND pr.deleted_at IS NULL
 		           WHERE pol.po_id = po.id
 		           UNION
-		           SELECT pr2.pr_no FROM purchase_request pr2 WHERE pr2.id = po.pr_id
+		           SELECT pr2.pr_no FROM purchase_request pr2 WHERE pr2.id = po.pr_id AND pr2.deleted_at IS NULL
 		       ) x) AS pr_nos
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
@@ -645,17 +646,23 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       s.office_phone, s.sales_person,
 		       s.contact_email, s.contact_phone,
 		       pr.pr_no, w.address, pj.project_name,
-		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
+		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id),
+		       `+poApprovalSignatureSelect+`
 		FROM purchase_order po
 		LEFT JOIN users u ON u.id = po.requested_by
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		LEFT JOIN warehouse w ON w.warehouse_code = po.warehouse_code
 		LEFT JOIN project pj ON pj.project_code = po.project_code
-		WHERE po.id = $1`, id)
+		`+poApprovalSignatureJoins+`
+		WHERE po.id = $1 AND po.deleted_at IS NULL`, id)
 
 	var po models.PurchaseOrder
 	var requestedByName *string
+	var approvedAt *time.Time
+	var approvedByID *int64
+	var approvedByName, approvedBySigPath, approvedBySigMime *string
+	var fallbackApproverName, fallbackApproverSigPath, fallbackApproverSigMime *string
 	if err := row.Scan(&po.POID, &po.PONo, &po.PODate, &po.SupplierID, &po.PRID,
 		&po.RFQID, &po.Ref, &po.LocationText, &po.WarehouseCode, &po.ProjectCode,
 		&po.RequestedBy, &requestedByName, &po.ApproverID,
@@ -670,13 +677,19 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		&po.OfficePhone, &po.SalesPerson,
 		&po.ContactEmail, &po.ContactPhone,
 		&po.PRNo, &po.WarehouseAddress, &po.ProjectName,
-		&po.RevisionRound); err != nil {
+		&po.RevisionRound,
+		&approvedAt, &approvedByID, &approvedByName, &approvedBySigPath, &approvedBySigMime,
+		&fallbackApproverName, &fallbackApproverSigPath, &fallbackApproverSigMime); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if requestedByName != nil {
 		po.RequestedByName = *requestedByName
 	}
 	po.CanEditApproved = po.Status == "APPROVED" && time.Since(po.CreatedAt) < 365*24*time.Hour
+
+	po.ApprovalSignature = resolvePOApprovalSignature(po.Status, po.ApproverID,
+		approvedAt, approvedByID, approvedByName, approvedBySigPath, approvedBySigMime,
+		fallbackApproverName, fallbackApproverSigPath, fallbackApproverSigMime)
 
 	rows, _ := h.db.Query(context.Background(), `
 		SELECT pol.id, pol.po_id, pol.line_no, pol.mat_code, pol.pr_line_id, pol.qty_ordered, pol.qty_received,
@@ -1303,7 +1316,7 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		    pr.created_at
 		FROM purchase_request pr
 		LEFT JOIN users u ON u.id = pr.requested_by
-		WHERE pr.status = 'COMPLETED'
+		WHERE pr.status = 'COMPLETED' AND pr.deleted_at IS NULL
 		  AND EXISTS (
 		      SELECT 1 FROM purchase_request_line prl
 		      WHERE prl.pr_id = pr.id
@@ -2752,6 +2765,98 @@ func (h *POHandler) GetLogs(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": logs})
 }
 
+// Delete godoc
+// @Summary      Soft-delete a PO
+// @Description  Only allowed while status=DRAFT and nothing has been received against it (status_receive=NOT_SENT and no grn/ic_po_receive_document rows). Sets deleted_at/deleted_by inside a transaction; rolls back qty_ordered on every PR line this PO's lines referenced and recomputes the parent PR's status (reuses the exact same accounting Cancel uses), and logs both the PO and (if it changed) PR status change. Never deletes rows.
+// @Tags         Purchase Order
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "PO ID"
+// @Success      200  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Failure      409  {object}  fiber.Map
+// @Router       /po/{id} [delete]
+func (h *POHandler) Delete(c *fiber.Ctx) error {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
+	poID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid PO id")
+	}
+
+	ctx := context.Background()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var status, statusReceive string
+	var poPRID *int64
+	var alreadyDeleted bool
+	if err := tx.QueryRow(ctx,
+		`SELECT status, status_receive, pr_id, (deleted_at IS NOT NULL) FROM purchase_order WHERE id=$1 FOR UPDATE`, poID,
+	).Scan(&status, &statusReceive, &poPRID, &alreadyDeleted); err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "PO not found")
+	}
+	if alreadyDeleted {
+		return fiber.NewError(fiber.StatusNotFound, "PO not found")
+	}
+	if status != "DRAFT" {
+		return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("ไม่สามารถลบ PO นี้ได้ เนื่องจากสถานะไม่ใช่ DRAFT (สถานะปัจจุบัน: %s)", status))
+	}
+	if statusReceive != "NOT_SENT" {
+		return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("ไม่สามารถลบ PO นี้ได้ เนื่องจากมีการรับของแล้ว (status_receive: %s)", statusReceive))
+	}
+
+	// "Nothing has been received" — confirmed defensively (a DRAFT PO's status_receive should
+	// already be NOT_SENT, but goods receipt happens through two separate, independently-decided
+	// flows against the same purchase_order.id: the legacy grn/grn_line path (grn_approval.go)
+	// and the newer ic_po_receive_document/stock_item path (ic.go) — check both directly rather
+	// than trusting status_receive alone.
+	var hasReceipt bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM grn WHERE po_id = $1)
+		    OR EXISTS(SELECT 1 FROM ic_po_receive_document WHERE po_id = $1)`, poID,
+	).Scan(&hasReceipt); err != nil {
+		return err
+	}
+	if hasReceipt {
+		return fiber.NewError(fiber.StatusConflict, "ไม่สามารถลบ PO นี้ได้ เนื่องจากมีเอกสารรับของอ้างอิงอยู่")
+	}
+
+	// revertPOLineClaims must run before soft-deleting — the PO's lines stay OPEN (never
+	// touched here, same "don't change status/lines" rule Delete follows for PR), so this reads
+	// their current, live claims and reverts them exactly like Cancel does.
+	if err := revertPOLineClaims(ctx, tx, poID, poPRID, claims.UserID, "PO deleted"); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE purchase_order SET deleted_at=NOW(), deleted_by=$1 WHERE id=$2`,
+		claims.UserID, poID,
+	); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO po_status_log (po_id, from_status, to_status, changed_by, remarks)
+		 VALUES ($1,$2,$2,$3,'soft deleted')`,
+		poID, status, claims.UserID,
+	); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{"success": true, "message": "PO deleted"})
+}
+
 // poPrintSupplier is the nested supplier block of the print-data response.
 type poPrintSupplier struct {
 	Name          string  `json:"name"`
@@ -2829,6 +2934,9 @@ type poPrintData struct {
 	UseDiscount   bool            `json:"useDiscount"`
 	UseVat        bool            `json:"useVat"`
 	UseWht        bool            `json:"useWht"`
+	// ApprovalSignature: only populated when the PO's status is APPROVED — see
+	// resolvePOApprovalSignature. Shared shape/resolution logic with POHandler.Get.
+	ApprovalSignature *models.UserSignatureInfo `json:"approval_signature"`
 }
 
 // PrintData godoc
@@ -2871,6 +2979,16 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		supplierContactPhone        *string
 		supplierSalesPerson         *string
 		supplierSalesPersonPhone    *string
+		status                      string
+		approverID                  *int64
+		approvedAt                  *time.Time
+		approvedByID                *int64
+		approvedByName              *string
+		approvedBySigPath           *string
+		approvedBySigMime           *string
+		fallbackApproverName        *string
+		fallbackApproverSigPath     *string
+		fallbackApproverSigMime     *string
 	)
 
 	err := h.db.QueryRow(ctx, `
@@ -2880,12 +2998,15 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		       po.vat_amount, po.wht_amount, po.total_amount, po.net_amount,
 		       pr.pr_no,
 		       s.supplier_name, s.address, s.payment_terms, s.contact_name, s.contact_phone, s.sales_person, s.sales_person_phone,
-		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id)
+		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id),
+		       po.status, po.approver_id,
+		       `+poApprovalSignatureSelect+`
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
-		WHERE po.id = $1`, id,
+		`+poApprovalSignatureJoins+`
+		WHERE po.id = $1 AND po.deleted_at IS NULL`, id,
 	).Scan(&poNo, &poDate, &expectedDate, &projectCode, &projectName, &locationText,
 		&receiverName, &receiverPhone, &jobCode, &poRef,
 		&poPaymentTerms, &remarks, &discountAmount, &useDiscount, &useVat, &useWht,
@@ -2893,10 +3014,17 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		&prNo,
 		&supplierName, &supplierAddress, &supplierPaymentTerms, &supplierContactName, &supplierContactPhone, &supplierSalesPerson, &supplierSalesPersonPhone,
 		&revisionRound,
+		&status, &approverID,
+		&approvedAt, &approvedByID, &approvedByName, &approvedBySigPath, &approvedBySigMime,
+		&fallbackApproverName, &fallbackApproverSigPath, &fallbackApproverSigMime,
 	)
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
+
+	approvalSignature := resolvePOApprovalSignature(status, approverID,
+		approvedAt, approvedByID, approvedByName, approvedBySigPath, approvedBySigMime,
+		fallbackApproverName, fallbackApproverSigPath, fallbackApproverSigMime)
 
 	rows, err := h.db.Query(ctx, `
 		SELECT pol.line_no, pol.mat_code, pol.description, pol.qty_ordered, pol.unit_price,
@@ -3005,17 +3133,18 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 			// "tel" field, just no longer duplicated here.
 			ContactPhone: supplierSalesPersonPhone,
 		},
-		Items:        items,
-		ExtraDiscAmt: derefFloat(discountAmount),
-		ShippingAmt:  0,
-		VatAmt:       vatAmount,
-		WhtAmt:       whtAmount,
-		TotalAmt:     totalAmount,
-		NetAmt:       netAmount,
-		Remark:       remarks,
-		UseDiscount:  derefBool(useDiscount),
-		UseVat:       derefBool(useVat),
-		UseWht:       derefBool(useWht),
+		Items:             items,
+		ExtraDiscAmt:      derefFloat(discountAmount),
+		ShippingAmt:       0,
+		VatAmt:            vatAmount,
+		WhtAmt:            whtAmount,
+		TotalAmt:          totalAmount,
+		NetAmt:            netAmount,
+		Remark:            remarks,
+		UseDiscount:       derefBool(useDiscount),
+		UseVat:            derefBool(useVat),
+		UseWht:            derefBool(useWht),
+		ApprovalSignature: approvalSignature,
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": data})
@@ -3207,4 +3336,68 @@ func firstNonNil(vals ...*string) *string {
 		}
 	}
 	return nil
+}
+
+// poApprovalSignatureJoins is the shared SQL fragment resolving "who actually approved this PO"
+// — appended after a query's other JOINs, referencing the `po` alias. Selects (in order):
+// al.action_at, al.action_by, au.full_name, au.signature_path, au.signature_mime,
+// fb.full_name, fb.signature_path, fb.signature_mime — 8 columns, matching
+// resolvePOApprovalSignature's parameters 1:1. Shared by POHandler.Get and POHandler.PrintData
+// so the two never drift apart.
+const poApprovalSignatureJoins = `
+		LEFT JOIN LATERAL (
+		    SELECT action_at, action_by
+		    FROM approval_log
+		    WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
+		    ORDER BY action_at DESC LIMIT 1
+		) al ON true
+		LEFT JOIN users au ON au.id = al.action_by
+		LEFT JOIN users fb ON fb.id = po.approver_id`
+
+const poApprovalSignatureSelect = `al.action_at, al.action_by, au.full_name, au.signature_path, au.signature_mime,
+		       fb.full_name, fb.signature_path, fb.signature_mime`
+
+// resolvePOApprovalSignature builds the approval_signature response value from the raw columns
+// poApprovalSignatureSelect/poApprovalSignatureJoins produce. Returns nil whenever status isn't
+// APPROVED, no approver can be identified, or the approver has no signature file (never errors —
+// a missing/unreadable signature file just means "no signature", not a failure).
+// "Approver" = whoever performed the latest APPROVE in approval_log; falls back to
+// po.approver_id (the assigned approver, not necessarily who clicked approve) only when no
+// approval_log row exists at all (old records predating approval_log usage).
+func resolvePOApprovalSignature(
+	status string, approverID *int64,
+	approvedAt *time.Time, approvedByID *int64, approvedByName, approvedBySigPath, approvedBySigMime *string,
+	fallbackName, fallbackSigPath, fallbackSigMime *string,
+) *models.UserSignatureInfo {
+	if status != "APPROVED" {
+		return nil
+	}
+
+	var userID int64
+	var fullName, sigPath, sigMime string
+	if approvedByID != nil {
+		userID = *approvedByID
+		fullName = derefStr(approvedByName)
+		sigPath = derefStr(approvedBySigPath)
+		sigMime = derefStr(approvedBySigMime)
+	} else if approverID != nil {
+		userID = *approverID
+		fullName = derefStr(fallbackName)
+		sigPath = derefStr(fallbackSigPath)
+		sigMime = derefStr(fallbackSigMime)
+	}
+	if userID == 0 {
+		return nil
+	}
+
+	dataURL := loadSignatureDataURL(sigPath, sigMime)
+	if dataURL == "" {
+		return nil
+	}
+	return &models.UserSignatureInfo{
+		UserID:           userID,
+		FullName:         fullName,
+		ApprovedAt:       approvedAt,
+		SignatureDataURL: dataURL,
+	}
 }

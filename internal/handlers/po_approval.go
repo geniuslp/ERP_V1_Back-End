@@ -10,6 +10,7 @@ import (
 	"erp-api/internal/middleware"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -532,27 +533,12 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "only approved POs can be cancelled")
 	}
 
-	// Capture the not-yet-cancelled lines' pr_line_id/qty_ordered before flipping them to
-	// CANCELLED below, so the split-ordering claim each one holds against its PR line can be
-	// reverted (mirrors reconcilePRLineQty's accounting in po.go, just in the opposite direction).
-	revert := map[int64]float64{}
-	linesRows, err := tx.Query(ctx, `
-		SELECT pr_line_id, qty_ordered FROM purchase_order_line
-		WHERE po_id = $1 AND status != 'CANCELLED' AND pr_line_id IS NOT NULL`, id)
-	if err != nil {
-		log.Printf("❌ PO cancel lines fetch error: %v", err)
+	// revertPOLineClaims reads purchase_order_line WHERE status != 'CANCELLED' to find which
+	// lines still hold a claim on their PR line — must run BEFORE the lines are flipped to
+	// CANCELLED below, or every line would look already-reverted.
+	if err := revertPOLineClaims(ctx, tx, id, poPRID, userID, "PO cancelled"); err != nil {
 		return err
 	}
-	for linesRows.Next() {
-		var prLineID int64
-		var qty float64
-		if err := linesRows.Scan(&prLineID, &qty); err != nil {
-			linesRows.Close()
-			return err
-		}
-		revert[prLineID] += qty
-	}
-	linesRows.Close()
 
 	if _, err := tx.Exec(ctx,
 		`UPDATE purchase_order SET status = 'CANCELLED', updated_at = NOW(), updated_by = $1 WHERE id = $2`,
@@ -579,87 +565,119 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 		return err
 	}
 
-	if len(revert) > 0 {
-		prLineIDs := make([]int64, 0, len(revert))
-		for prLineID := range revert {
-			prLineIDs = append(prLineIDs, prLineID)
-		}
-
-		// Lock the touched PR lines before decrementing, same as reconcilePRLineQty, so a
-		// concurrent PO save against the same PR line can't race with this revert.
-		if _, err := tx.Exec(ctx,
-			`SELECT id FROM purchase_request_line WHERE id = ANY($1) FOR UPDATE`, prLineIDs,
-		); err != nil {
-			log.Printf("❌ PO cancel PR line lock error: %v", err)
-			return err
-		}
-
-		for prLineID, qty := range revert {
-			if _, err := tx.Exec(ctx,
-				`UPDATE purchase_request_line SET qty_ordered = qty_ordered - $1 WHERE id = $2`,
-				qty, prLineID,
-			); err != nil {
-				log.Printf("❌ PO cancel PR line revert error: %v", err)
-				return err
-			}
-		}
-
-		// Re-evaluate the parent PR's status with the exact same rule Create/AddLines use
-		// (po.go: allFulfilled -> FULFILLED, someOrdered -> PARTIALLY_FILLED), just now able to
-		// move DOWN as well as up since qty_ordered just decreased. If nothing is ordered on any
-		// line anymore, the PR settles back to COMPLETED — the same "ready, not yet ordered"
-		// status a PR sits in before its first PO line is ever created (see the
-		// available_for_po picker in PRApprovalHandler.List), not DRAFT: DRAFT is reserved for
-		// PRHandler.Reopen, which additionally clears qty_reserved/qty_to_order and reverses
-		// stock-deduction from Submit — none of which applies here, since cancelling a PO never
-		// touches those.
-		if poPRID != nil {
-			var currentPRStatus string
-			if err := tx.QueryRow(ctx, `SELECT status FROM purchase_request WHERE id=$1`, *poPRID).Scan(&currentPRStatus); err != nil {
-				return err
-			}
-
-			lineRows, err := tx.Query(ctx, `SELECT qty_to_order, qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
-			if err != nil {
-				return err
-			}
-			allFulfilled, someOrdered := true, false
-			for lineRows.Next() {
-				var qtyToOrder, qtyOrd float64
-				lineRows.Scan(&qtyToOrder, &qtyOrd)
-				if qtyOrd < qtyToOrder {
-					allFulfilled = false
-				}
-				if qtyOrd > 0 {
-					someOrdered = true
-				}
-			}
-			lineRows.Close()
-
-			newPRStatus := "COMPLETED"
-			if allFulfilled {
-				newPRStatus = "FULFILLED"
-			} else if someOrdered {
-				newPRStatus = "PARTIALLY_FILLED"
-			}
-
-			if newPRStatus != currentPRStatus && (currentPRStatus == "PARTIALLY_FILLED" || currentPRStatus == "FULFILLED") {
-				if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status=$1, updated_at=NOW() WHERE id=$2`, newPRStatus, *poPRID); err != nil {
-					return err
-				}
-				if _, err := tx.Exec(ctx, `
-					INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
-					VALUES ($1,$2,$3,$4,'PO cancelled')`, *poPRID, currentPRStatus, newPRStatus, userID,
-				); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
 	return c.JSON(fiber.Map{"success": true, "message": "PO cancelled successfully"})
+}
+
+// revertPOLineClaims reverses the split-ordering claim a PO's lines hold against their PR
+// lines (the accounting reconcilePRLineQty performs in po.go, in the opposite direction) and
+// re-evaluates the parent PR's status. Shared by POApprovalHandler.Cancel and POHandler.Delete
+// (soft delete) — both remove a PO's hold on PR line quantity, just via different PO lifecycle
+// events. Caller must run this BEFORE marking the PO's lines CANCELLED (this reads
+// status != 'CANCELLED' to find which lines still hold a live claim).
+func revertPOLineClaims(ctx context.Context, tx pgx.Tx, poID int64, poPRID *int64, userID int64, remarks string) error {
+	revert := map[int64]float64{}
+	linesRows, err := tx.Query(ctx, `
+		SELECT pr_line_id, qty_ordered FROM purchase_order_line
+		WHERE po_id = $1 AND status != 'CANCELLED' AND pr_line_id IS NOT NULL`, poID)
+	if err != nil {
+		log.Printf("❌ revertPOLineClaims lines fetch error: %v", err)
+		return err
+	}
+	for linesRows.Next() {
+		var prLineID int64
+		var qty float64
+		if err := linesRows.Scan(&prLineID, &qty); err != nil {
+			linesRows.Close()
+			return err
+		}
+		revert[prLineID] += qty
+	}
+	linesRows.Close()
+
+	if len(revert) == 0 {
+		return nil
+	}
+
+	prLineIDs := make([]int64, 0, len(revert))
+	for prLineID := range revert {
+		prLineIDs = append(prLineIDs, prLineID)
+	}
+
+	// Lock the touched PR lines before decrementing, same as reconcilePRLineQty, so a
+	// concurrent PO save against the same PR line can't race with this revert.
+	if _, err := tx.Exec(ctx,
+		`SELECT id FROM purchase_request_line WHERE id = ANY($1) FOR UPDATE`, prLineIDs,
+	); err != nil {
+		log.Printf("❌ revertPOLineClaims PR line lock error: %v", err)
+		return err
+	}
+
+	for prLineID, qty := range revert {
+		if _, err := tx.Exec(ctx,
+			`UPDATE purchase_request_line SET qty_ordered = qty_ordered - $1 WHERE id = $2`,
+			qty, prLineID,
+		); err != nil {
+			log.Printf("❌ revertPOLineClaims PR line revert error: %v", err)
+			return err
+		}
+	}
+
+	if poPRID == nil {
+		return nil
+	}
+
+	// Re-evaluate the parent PR's status with the exact same rule Create/AddLines use (po.go:
+	// allFulfilled -> FULFILLED, someOrdered -> PARTIALLY_FILLED), able to move DOWN as well as
+	// up since qty_ordered just decreased. If nothing is ordered on any line anymore, the PR
+	// settles back to COMPLETED — the same "ready, not yet ordered" status a PR sits in before
+	// its first PO line is ever created (see the available_for_po picker in
+	// PRApprovalHandler.List), not DRAFT: DRAFT is reserved for PRHandler.Reopen, which
+	// additionally clears qty_reserved/qty_to_order and reverses stock-deduction from Submit —
+	// none of which applies here, since removing a PO's claim never touches those.
+	var currentPRStatus string
+	if err := tx.QueryRow(ctx, `SELECT status FROM purchase_request WHERE id=$1`, *poPRID).Scan(&currentPRStatus); err != nil {
+		return err
+	}
+
+	lineRows, err := tx.Query(ctx, `SELECT qty_to_order, qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
+	if err != nil {
+		return err
+	}
+	allFulfilled, someOrdered := true, false
+	for lineRows.Next() {
+		var qtyToOrder, qtyOrd float64
+		lineRows.Scan(&qtyToOrder, &qtyOrd)
+		if qtyOrd < qtyToOrder {
+			allFulfilled = false
+		}
+		if qtyOrd > 0 {
+			someOrdered = true
+		}
+	}
+	lineRows.Close()
+
+	newPRStatus := "COMPLETED"
+	if allFulfilled {
+		newPRStatus = "FULFILLED"
+	} else if someOrdered {
+		newPRStatus = "PARTIALLY_FILLED"
+	}
+
+	if newPRStatus != currentPRStatus && (currentPRStatus == "PARTIALLY_FILLED" || currentPRStatus == "FULFILLED") {
+		if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status=$1, updated_at=NOW() WHERE id=$2`, newPRStatus, *poPRID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+			VALUES ($1,$2,$3,$4,$5)`, *poPRID, currentPRStatus, newPRStatus, userID, remarks,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

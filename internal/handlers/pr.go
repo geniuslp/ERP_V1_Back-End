@@ -422,7 +422,7 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	var orderType string
 	var projectCode *string
 	if err := h.db.QueryRow(ctx,
-		`SELECT status, pr_no, order_type, project_code FROM purchase_request WHERE id=$1`, id,
+		`SELECT status, pr_no, order_type, project_code FROM purchase_request WHERE id=$1 AND deleted_at IS NULL`, id,
 	).Scan(&currentStatus, &prNo, &orderType, &projectCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
@@ -676,7 +676,7 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 		FROM purchase_order_line pol
 		JOIN purchase_order po ON po.id = pol.po_id
 		JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
-		WHERE prl.pr_id = $1 AND po.status != 'CANCELLED' AND po.status_receive != 'RECEIVED'
+		WHERE prl.pr_id = $1 AND po.status != 'CANCELLED' AND po.status_receive != 'RECEIVED' AND po.deleted_at IS NULL
 		ORDER BY po.po_no`, id)
 	if err != nil {
 		return err
@@ -902,7 +902,7 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	}
 
 	var currentStatus, prNo, currentOrderType, currentPRType, currentJobCode string
-	if err := h.db.QueryRow(ctx, `SELECT status, pr_no, order_type, pr_type, job_code FROM purchase_request WHERE id=$1`, prID).Scan(&currentStatus, &prNo, &currentOrderType, &currentPRType, &currentJobCode); err != nil {
+	if err := h.db.QueryRow(ctx, `SELECT status, pr_no, order_type, pr_type, job_code FROM purchase_request WHERE id=$1 AND deleted_at IS NULL`, prID).Scan(&currentStatus, &prNo, &currentOrderType, &currentPRType, &currentJobCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
 	if currentStatus != "DRAFT" {
@@ -921,7 +921,7 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 			FROM purchase_order_line pol
 			JOIN purchase_order po ON po.id = pol.po_id
 			WHERE pol.pr_line_id IN (SELECT id FROM purchase_request_line WHERE pr_id = $1)
-			  AND po.status != 'CANCELLED'`, prID)
+			  AND po.status != 'CANCELLED' AND po.deleted_at IS NULL`, prID)
 		if err != nil {
 			return err
 		}
@@ -1053,6 +1053,98 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		"success": true,
 		"data":    fiber.Map{"id": prID, "no": prNo},
 	})
+}
+
+// Delete godoc
+// @Summary      Soft-delete a PR
+// @Description  Only allowed while status=DRAFT and no non-CANCELLED, non-deleted PO line references any of its lines. Sets deleted_at/deleted_by — never deletes rows, never changes status. A DRAFT PR has no stock reservation (that only happens in Submit's deductStockOnSubmit), so there is nothing to roll back here.
+// @Tags         Purchase Request
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "PR ID"
+// @Success      200  {object}  fiber.Map
+// @Failure      404  {object}  fiber.Map
+// @Failure      409  {object}  fiber.Map
+// @Router       /pr/{id} [delete]
+func (h *PRHandler) Delete(c *fiber.Ctx) error {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
+	prID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid PR id")
+	}
+
+	ctx := context.Background()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var currentStatus string
+	var alreadyDeleted bool
+	if err := tx.QueryRow(ctx,
+		`SELECT status, (deleted_at IS NOT NULL) FROM purchase_request WHERE id=$1 FOR UPDATE`, prID,
+	).Scan(&currentStatus, &alreadyDeleted); err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "PR not found")
+	}
+	if alreadyDeleted {
+		return fiber.NewError(fiber.StatusNotFound, "PR not found")
+	}
+	if currentStatus != "DRAFT" {
+		return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("ไม่สามารถลบ PR นี้ได้ เนื่องจากสถานะไม่ใช่ DRAFT (สถานะปัจจุบัน: %s)", currentStatus))
+	}
+
+	// Same blocking-PO check as Update — a DRAFT PR can still have PO lines referencing it
+	// (a PO can be created against a COMPLETED PR and later have that PR reopened back to
+	// DRAFT via Reopen). Never delete out from under a live PO link.
+	blockRows, err := tx.Query(ctx, `
+		SELECT DISTINCT po.po_no
+		FROM purchase_order_line pol
+		JOIN purchase_order po ON po.id = pol.po_id
+		WHERE pol.pr_line_id IN (SELECT id FROM purchase_request_line WHERE pr_id = $1)
+		  AND po.status != 'CANCELLED' AND po.deleted_at IS NULL`, prID)
+	if err != nil {
+		return err
+	}
+	var blockingPOs []string
+	for blockRows.Next() {
+		var poNo string
+		if err := blockRows.Scan(&poNo); err != nil {
+			blockRows.Close()
+			return err
+		}
+		blockingPOs = append(blockingPOs, poNo)
+	}
+	blockRows.Close()
+	if len(blockingPOs) > 0 {
+		return fiber.NewError(fiber.StatusConflict,
+			fmt.Sprintf("ไม่สามารถลบ PR นี้ได้ เนื่องจากมี PO ที่ยังไม่ยกเลิกผูกอยู่: %s", strings.Join(blockingPOs, ", ")))
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE purchase_request SET deleted_at=NOW(), deleted_by=$1 WHERE id=$2`,
+		claims.UserID, prID,
+	); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+		VALUES ($1,$2,$2,$3,'soft deleted')`,
+		prID, currentStatus, claims.UserID,
+	); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{"success": true, "message": "PR deleted"})
 }
 
 // GetPRLogs godoc
@@ -1206,7 +1298,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
                ON pol.pr_line_id = prl.id
               AND pol.status != 'CANCELLED'
               AND ($2::bigint IS NULL OR pol.po_id != $2)
-        LEFT JOIN purchase_order po ON po.id = pol.po_id
+        LEFT JOIN purchase_order po ON po.id = pol.po_id AND po.deleted_at IS NULL
         LEFT JOIN cost_subgroup csg  ON csg.id = prl.cost_subgroup_id
         LEFT JOIN cost_group    cg   ON cg.id = csg.group_id
         LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
@@ -1239,7 +1331,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
                 s.supplier_name,
                 po.po_no
             FROM purchase_order_line pol
-            JOIN purchase_order po ON po.id = pol.po_id
+            JOIN purchase_order po ON po.id = pol.po_id AND po.deleted_at IS NULL
             LEFT JOIN supplier s   ON s.id = po.supplier_id
             WHERE pol.mat_code = base.mat_code
               AND pol.status != 'CANCELLED'

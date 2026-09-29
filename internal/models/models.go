@@ -993,6 +993,19 @@ type PurchaseOrder struct {
 	ContactPhone  *string       `json:"contact_phone,omitempty"`
 	Lines         []POLine      `json:"lines,omitempty"`
 	Attachments   POAttachments `json:"attachments"`
+	// ApprovalSignature is populated only when Status == "APPROVED" — see POHandler.Get for the
+	// approval_log-first, po.approver_id-fallback resolution.
+	ApprovalSignature *UserSignatureInfo `json:"approval_signature"`
+}
+
+// UserSignatureInfo is the shared shape embedded into PR/PO/Memo detail responses so a print
+// page can render a signature inline without a follow-up request. ApprovedAt is left nil for a
+// "requester" signature (PR/Memo requester) — only the approver variant sets it.
+type UserSignatureInfo struct {
+	UserID           int64      `json:"user_id"`
+	FullName         string     `json:"full_name"`
+	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
+	SignatureDataURL string     `json:"signature_data_url"`
 }
 
 type POAttachments struct {
@@ -1345,6 +1358,13 @@ type Memo struct {
 	ApprovedAt      *time.Time       `json:"approved_at,omitempty"`
 	Lines           []MemoLine       `json:"lines,omitempty"`
 	Attachments     []MemoAttachment `json:"attachments,omitempty"`
+
+	// RequesterSignature is populated only when Status != "DRAFT" (same rule as PR's requester
+	// signature). ApprovalSignature is populated only when Status == "APPROVED" — see
+	// MemoHandler.getByID for the memo_status_log-first, memo.approver_id-fallback resolution
+	// (Memo approval does not write approval_log).
+	RequesterSignature *UserSignatureInfo `json:"requester_signature"`
+	ApprovalSignature  *UserSignatureInfo `json:"approval_signature"`
 }
 
 type MemoAttachment struct {

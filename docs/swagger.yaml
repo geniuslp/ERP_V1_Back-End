@@ -1662,6 +1662,8 @@ definitions:
     type: object
   models.Memo:
     properties:
+      approval_signature:
+        $ref: '#/definitions/models.UserSignatureInfo'
       approved_at:
         type: string
       approver_id:
@@ -1699,6 +1701,14 @@ definitions:
       requested_by_name:
         description: populated via JOIN (ไม่ได้เก็บใน table)
         type: string
+      requester_signature:
+        allOf:
+        - $ref: '#/definitions/models.UserSignatureInfo'
+        description: |-
+          RequesterSignature is populated only when Status != "DRAFT" (same rule as PR's requester
+          signature). ApprovalSignature is populated only when Status == "APPROVED" — see
+          MemoHandler.getByID for the memo_status_log-first, memo.approver_id-fallback resolution
+          (Memo approval does not write approval_log).
       responsible_factory:
         type: string
       site_delivery_date:
@@ -1968,6 +1978,12 @@ definitions:
     type: object
   models.PurchaseOrder:
     properties:
+      approval_signature:
+        allOf:
+        - $ref: '#/definitions/models.UserSignatureInfo'
+        description: |-
+          ApprovalSignature is populated only when Status == "APPROVED" — see POHandler.Get for the
+          approval_log-first, po.approver_id-fallback resolution.
       approver_id:
         type: integer
       attachments:
@@ -2657,6 +2673,17 @@ definitions:
         type: integer
       role_name:
         type: string
+    type: object
+  models.UserSignatureInfo:
+    properties:
+      approved_at:
+        type: string
+      full_name:
+        type: string
+      signature_data_url:
+        type: string
+      user_id:
+        type: integer
     type: object
   models.WarehouseFull:
     properties:
@@ -8591,6 +8618,39 @@ paths:
       tags:
       - Purchase Order
   /po/{id}:
+    delete:
+      description: Only allowed while status=DRAFT and nothing has been received against
+        it (status_receive=NOT_SENT and no grn/ic_po_receive_document rows). Sets
+        deleted_at/deleted_by inside a transaction; rolls back qty_ordered on every
+        PR line this PO's lines referenced and recomputes the parent PR's status (reuses
+        the exact same accounting Cancel uses), and logs both the PO and (if it changed)
+        PR status change. Never deletes rows.
+      parameters:
+      - description: PO ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a PO
+      tags:
+      - Purchase Order
     get:
       parameters:
       - description: PO ID
@@ -9450,6 +9510,38 @@ paths:
       tags:
       - Purchase Request
   /pr/{id}:
+    delete:
+      description: Only allowed while status=DRAFT and no non-CANCELLED, non-deleted
+        PO line references any of its lines. Sets deleted_at/deleted_by — never deletes
+        rows, never changes status. A DRAFT PR has no stock reservation (that only
+        happens in Submit's deductStockOnSubmit), so there is nothing to roll back
+        here.
+      parameters:
+      - description: PR ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a PR
+      tags:
+      - Purchase Request
     get:
       description: |-
         po_conversion_status is computed from purchase_request_line qty_requested vs
@@ -11546,6 +11638,96 @@ paths:
       security:
       - BearerAuth: []
       summary: Update user roles
+      tags:
+      - Users
+  /users/{id}/signature:
+    delete:
+      description: Removes the file from disk (ignored if already missing) and nulls
+        signature_path/signature_mime/signature_updated_at.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a user's signature image
+      tags:
+      - Users
+    get:
+      description: Returns the raw image bytes with the correct Content-Type. 404
+        (plain message) if the user has no signature or the file is missing on disk
+        — never 500.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - image/png
+      - image/jpeg
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get a user's signature image
+      tags:
+      - Users
+    post:
+      consumes:
+      - multipart/form-data
+      description: multipart field "file", png/jpg only (sniffed by content, not just
+        extension), max 1MB. Replaces and deletes any previous signature file for
+        this user.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Signature image (png/jpg, max 1MB)
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Upload/replace a user's signature image
       tags:
       - Users
   /users/allUser:

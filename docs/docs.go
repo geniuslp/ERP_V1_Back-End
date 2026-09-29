@@ -9155,6 +9155,50 @@ const docTemplate = `{
                         }
                     }
                 }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Only allowed while status=DRAFT and nothing has been received against it (status_receive=NOT_SENT and no grn/ic_po_receive_document rows). Sets deleted_at/deleted_by inside a transaction; rolls back qty_ordered on every PR line this PO's lines referenced and recomputes the parent PR's status (reuses the exact same accounting Cancel uses), and logs both the PO and (if it changed) PR status change. Never deletes rows.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Soft-delete a PO",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
             }
         },
         "/po/{id}/approve": {
@@ -10069,6 +10113,50 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Only allowed while status=DRAFT and no non-CANCELLED, non-deleted PO line references any of its lines. Sets deleted_at/deleted_by — never deletes rows, never changes status. A DRAFT PR has no stock reservation (that only happens in Submit's deductStockOnSubmit), so there is nothing to roll back here.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Request"
+                ],
+                "summary": "Soft-delete a PR",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PR ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -13145,6 +13233,139 @@ const docTemplate = `{
                 }
             }
         },
+        "/users/{id}/signature": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the raw image bytes with the correct Content-Type. 404 (plain message) if the user has no signature or the file is missing on disk — never 500.",
+                "produces": [
+                    "image/png",
+                    "image/jpeg"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Get a user's signature image",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "multipart field \"file\", png/jpg only (sniffed by content, not just extension), max 1MB. Replaces and deletes any previous signature file for this user.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Upload/replace a user's signature image",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "Signature image (png/jpg, max 1MB)",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes the file from disk (ignored if already missing) and nulls signature_path/signature_mime/signature_updated_at.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Delete a user's signature image",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/work-order": {
             "get": {
                 "security": [
@@ -16002,6 +16223,9 @@ const docTemplate = `{
         "models.Memo": {
             "type": "object",
             "properties": {
+                "approval_signature": {
+                    "$ref": "#/definitions/models.UserSignatureInfo"
+                },
                 "approved_at": {
                     "type": "string"
                 },
@@ -16056,6 +16280,14 @@ const docTemplate = `{
                 "requested_by_name": {
                     "description": "populated via JOIN (ไม่ได้เก็บใน table)",
                     "type": "string"
+                },
+                "requester_signature": {
+                    "description": "RequesterSignature is populated only when Status != \"DRAFT\" (same rule as PR's requester\nsignature). ApprovalSignature is populated only when Status == \"APPROVED\" — see\nMemoHandler.getByID for the memo_status_log-first, memo.approver_id-fallback resolution\n(Memo approval does not write approval_log).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.UserSignatureInfo"
+                        }
+                    ]
                 },
                 "responsible_factory": {
                     "type": "string"
@@ -16441,6 +16673,14 @@ const docTemplate = `{
         "models.PurchaseOrder": {
             "type": "object",
             "properties": {
+                "approval_signature": {
+                    "description": "ApprovalSignature is populated only when Status == \"APPROVED\" — see POHandler.Get for the\napproval_log-first, po.approver_id-fallback resolution.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.UserSignatureInfo"
+                        }
+                    ]
+                },
                 "approver_id": {
                     "type": "integer"
                 },
@@ -17461,6 +17701,23 @@ const docTemplate = `{
                 },
                 "role_name": {
                     "type": "string"
+                }
+            }
+        },
+        "models.UserSignatureInfo": {
+            "type": "object",
+            "properties": {
+                "approved_at": {
+                    "type": "string"
+                },
+                "full_name": {
+                    "type": "string"
+                },
+                "signature_data_url": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "integer"
                 }
             }
         },

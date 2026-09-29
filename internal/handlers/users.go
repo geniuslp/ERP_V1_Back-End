@@ -38,22 +38,22 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	var query string
 	switch role {
 	case "approver":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.department = 'บริหาร' AND u.is_active = true ORDER BY u.full_name`
 	case "requester":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE (u.department IN ('วิศวกรรม', 'ฝ่ายจัดซื้อ') OR u.department IS NULL)
 				 AND u.is_active = true
 				 ORDER BY u.full_name`
 	case "engineering":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.department = 'วิศวกรรม' AND u.is_active = true
 				 ORDER BY u.full_name`
 	default:
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at
+		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.is_active = true
 				 ORDER BY u.id`
@@ -68,8 +68,9 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	var items []fiber.Map
 	for rows.Next() {
 		var u models.User
+		var hasSignature bool
 		if err := rows.Scan(&u.ID, &u.Username, &u.FullName, &u.Email, &u.LocationCode,
-			&u.EmployeeCode, &u.Department, &u.DeptName, &u.DeptCode, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.EmployeeCode, &u.Department, &u.DeptName, &u.DeptCode, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &hasSignature); err != nil {
 			return err
 		}
 
@@ -95,6 +96,7 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 			"created_at":    u.CreatedAt,
 			"updated_at":    u.UpdatedAt,
 			"roles":         roleInfos,
+			"has_signature": hasSignature,
 		})
 	}
 	if items == nil {
@@ -158,21 +160,23 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	row := h.db.QueryRow(context.Background(), `
-		SELECT u.id, u.username, u.full_name, u.email, u.department, u.dept_code, d.dept_name
+		SELECT u.id, u.username, u.full_name, u.email, u.department, u.dept_code, d.dept_name,
+		       (u.signature_path IS NOT NULL) AS has_signature
 		FROM users u
 		LEFT JOIN departments d ON d.dept_code = u.dept_code
 		WHERE u.id=$1`, id)
 
 	var (
-		userID     int64
-		username   string
-		fullName   string
-		email      *string
-		department *string
-		deptCode   *string
-		deptName   *string
+		userID       int64
+		username     string
+		fullName     string
+		email        *string
+		department   *string
+		deptCode     *string
+		deptName     *string
+		hasSignature bool
 	)
-	if err := row.Scan(&userID, &username, &fullName, &email, &department, &deptCode, &deptName); err != nil {
+	if err := row.Scan(&userID, &username, &fullName, &email, &department, &deptCode, &deptName, &hasSignature); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "user not found")
 	}
 
@@ -185,14 +189,15 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
-		"id":         userID,
-		"username":   username,
-		"full_name":  fullName,
-		"email":      email,
-		"dept_code":  deptCode,
-		"dept_name":  deptName,
-		"department": department,
-		"roles":      roleInfos,
+		"id":            userID,
+		"username":      username,
+		"full_name":     fullName,
+		"email":         email,
+		"dept_code":     deptCode,
+		"dept_name":     deptName,
+		"department":    department,
+		"roles":         roleInfos,
+		"has_signature": hasSignature,
 	}})
 }
 

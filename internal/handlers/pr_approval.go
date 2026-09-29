@@ -131,7 +131,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	var total int64
 	h.db.QueryRow(context.Background(),
 		`SELECT COUNT(*) FROM purchase_request pr
-		 WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+countExtraFilters,
+		 WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+countExtraFilters,
 		statusFilter, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter,
 	).Scan(&total)
 
@@ -177,7 +177,7 @@ activepo AS (
 	FROM purchase_request_line prl
 	JOIN purchase_order_line pol ON pol.pr_line_id = prl.id
 	JOIN purchase_order po ON po.id = pol.po_id
-	WHERE po.status != 'CANCELLED'
+	WHERE po.status != 'CANCELLED' AND po.deleted_at IS NULL
 )
 SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        COALESCE(u1.full_name, '') AS requested_by,
@@ -200,7 +200,7 @@ LEFT JOIN cost_job cj ON cj.subject_id = cs.id AND cj.job_code = SUBSTRING(pr.jo
 LEFT JOIN project pj ON pj.project_code = pr.project_code
 LEFT JOIN departments d ON d.dept_code = pr.dept_code
 LEFT JOIN memo m ON m.id = pr.memo_id
-WHERE ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+selectExtraFilters+`
+WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+selectExtraFilters+`
 ORDER BY pr.created_at DESC
 LIMIT $2 OFFSET $3`,
 		statusFilter, limit, offset, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter,
@@ -278,33 +278,34 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	}
 
 	type PRDetail struct {
-		ID                 int64                `json:"id"`
-		PRNo               string               `json:"pr_no"`
-		Status             string               `json:"status"`
-		RequestedBy        string               `json:"requested_by"`
-		RequesterID        int64                `json:"requester_id"`
-		ApproverID         *int64               `json:"approver_id"`
-		ApproverName       *string              `json:"approver_name"`
-		LocationText       string               `json:"location_text"`
-		ProjectCode        *string              `json:"project_code"`
-		DeptCode           *string              `json:"dept_code,omitempty"`
-		DeptName           *string              `json:"dept_name,omitempty"` // resolved from dept_code via the departments table (dept_code UNIQUE, single-row join)
-		WarehouseCode      *string              `json:"warehouse_code"`
-		WarehouseName      *string              `json:"warehouse_name"`
-		Remarks            *string              `json:"remarks"`
-		PRDate             string               `json:"pr_date"`
-		RequiredDate       *string              `json:"required_date,omitempty"`
-		CreatedAt          string               `json:"created_at"`
-		PRType             string               `json:"pr_type"`
-		OrderType          string               `json:"order_type"`
-		JobCode            *string              `json:"job_code,omitempty"`
-		JobName            *string              `json:"job_name,omitempty"`     // resolved from cost_subject+cost_job — job_code is a plain varchar, not an FK, but conventionally composes as subject_code+cost_job.job_code (e.g. "MP" = Material + Metal Structure)
-		ProjectName        *string              `json:"project_name,omitempty"` // resolved from project_code via the project table (project_code UNIQUE, single-row join)
-		MemoID             *int64               `json:"memo_id,omitempty"`
-		MemoNo             *string              `json:"memo_no,omitempty"` // resolved from memo_id via the memo table (memo id PK, single-row join)
-		PoConversionStatus string               `json:"po_conversion_status"`
-		Lines              []PRLineItem         `json:"lines"`
-		Attachments        models.PRAttachments `json:"attachments"`
+		ID                 int64                     `json:"id"`
+		PRNo               string                    `json:"pr_no"`
+		Status             string                    `json:"status"`
+		RequestedBy        string                    `json:"requested_by"`
+		RequesterID        int64                     `json:"requester_id"`
+		ApproverID         *int64                    `json:"approver_id"`
+		ApproverName       *string                   `json:"approver_name"`
+		LocationText       string                    `json:"location_text"`
+		ProjectCode        *string                   `json:"project_code"`
+		DeptCode           *string                   `json:"dept_code,omitempty"`
+		DeptName           *string                   `json:"dept_name,omitempty"` // resolved from dept_code via the departments table (dept_code UNIQUE, single-row join)
+		WarehouseCode      *string                   `json:"warehouse_code"`
+		WarehouseName      *string                   `json:"warehouse_name"`
+		Remarks            *string                   `json:"remarks"`
+		PRDate             string                    `json:"pr_date"`
+		RequiredDate       *string                   `json:"required_date,omitempty"`
+		CreatedAt          string                    `json:"created_at"`
+		PRType             string                    `json:"pr_type"`
+		OrderType          string                    `json:"order_type"`
+		JobCode            *string                   `json:"job_code,omitempty"`
+		JobName            *string                   `json:"job_name,omitempty"`     // resolved from cost_subject+cost_job — job_code is a plain varchar, not an FK, but conventionally composes as subject_code+cost_job.job_code (e.g. "MP" = Material + Metal Structure)
+		ProjectName        *string                   `json:"project_name,omitempty"` // resolved from project_code via the project table (project_code UNIQUE, single-row join)
+		MemoID             *int64                    `json:"memo_id,omitempty"`
+		MemoNo             *string                   `json:"memo_no,omitempty"` // resolved from memo_id via the memo table (memo id PK, single-row join)
+		PoConversionStatus string                    `json:"po_conversion_status"`
+		Lines              []PRLineItem              `json:"lines"`
+		Attachments        models.PRAttachments      `json:"attachments"`
+		RequesterSignature *models.UserSignatureInfo `json:"requester_signature"`
 	}
 
 	// ── Header ──────────────────────────────────────────────────────────────
@@ -318,7 +319,8 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		           WHEN COALESCE(BOOL_AND(COALESCE(prl.qty_ordered, 0) >= prl.qty_requested), false) THEN 'FULLY_CONVERTED'
 		           WHEN COALESCE(BOOL_OR(COALESCE(prl.qty_ordered, 0) > 0), false) THEN 'PARTIALLY_CONVERTED'
 		           ELSE 'NOT_CONVERTED'
-		       END AS po_conversion_status
+		       END AS po_conversion_status,
+		       u1.signature_path, u1.signature_mime
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
 		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
@@ -328,23 +330,38 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		LEFT JOIN departments d ON d.dept_code = pr.dept_code
 		LEFT JOIN memo m ON m.id = pr.memo_id
 		LEFT JOIN purchase_request_line prl ON prl.pr_id = pr.id
-		WHERE pr.id = $1
+		WHERE pr.id = $1 AND pr.deleted_at IS NULL
 		GROUP BY pr.id, pr.pr_no, pr.status, u1.full_name, pr.requested_by, pr.location_text,
 		         pr.project_code, pr.dept_code, d.dept_name, pr.warehouse_code, w.warehouse_name, pr.remarks,
-		         pr.pr_date, pr.required_date, pr.created_at, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name, pr.memo_id, m.memo_no`, id)
+		         pr.pr_date, pr.required_date, pr.created_at, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name, pr.memo_id, m.memo_no,
+		         u1.signature_path, u1.signature_mime`, id)
 
 	var pr PRDetail
 	pr.Lines = make([]PRLineItem, 0)
 	pr.Attachments.PR = []models.PRAttachment{}
 
+	var requesterSigPath, requesterSigMime *string
 	if err := row.Scan(
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode, &pr.DeptCode, &pr.DeptName,
 		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.CreatedAt, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.JobName, &pr.ProjectName, &pr.MemoID, &pr.MemoNo,
-		&pr.PoConversionStatus,
+		&pr.PoConversionStatus, &requesterSigPath, &requesterSigMime,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
+	}
+
+	// PR has no approval flow — requester_signature is the only signature this endpoint ever
+	// shows, and only once the PR has actually left DRAFT (matches print-page expectations: a
+	// draft PR isn't a submitted document yet).
+	if pr.Status != "DRAFT" {
+		if dataURL := loadSignatureDataURL(derefStr(requesterSigPath), derefStr(requesterSigMime)); dataURL != "" {
+			pr.RequesterSignature = &models.UserSignatureInfo{
+				UserID:           pr.RequesterID,
+				FullName:         pr.RequestedBy,
+				SignatureDataURL: dataURL,
+			}
+		}
 	}
 
 	// ── Lines ────────────────────────────────────────────────────────────────

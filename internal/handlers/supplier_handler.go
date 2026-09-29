@@ -212,7 +212,7 @@ func (h *SupplierHandler) DeleteSupplier(c *fiber.Ctx) error {
 	var inUse bool
 	if err := h.db.QueryRow(ctx,
 		`SELECT EXISTS (
-			SELECT 1 FROM purchase_order WHERE supplier_id = $1
+			SELECT 1 FROM purchase_order WHERE supplier_id = $1 AND deleted_at IS NULL
 			UNION ALL
 			SELECT 1 FROM rfq WHERE supplier_id = $1
 		)`, id).Scan(&inUse); err != nil {

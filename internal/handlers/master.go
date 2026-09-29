@@ -292,6 +292,7 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 		WHERE pol.mat_code = $1
 		  AND pol.status != 'CANCELLED'
 		  AND po.status != 'CANCELLED'
+		  AND po.deleted_at IS NULL
 		  AND ($2::date IS NULL OR po.po_date >= $2::date)
 		  AND ($3::date IS NULL OR po.po_date <= $3::date)`, matCode, dateFrom, dateTo,
 	).Scan(&total); err != nil {
@@ -309,6 +310,7 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 		WHERE pol.mat_code = $1
 		  AND pol.status != 'CANCELLED'
 		  AND po.status != 'CANCELLED'
+		  AND po.deleted_at IS NULL
 		  AND ($4::date IS NULL OR po.po_date >= $4::date)
 		  AND ($5::date IS NULL OR po.po_date <= $5::date)
 		ORDER BY po.po_date DESC
@@ -396,7 +398,7 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
     LEFT JOIN LATERAL (
         SELECT pol.unit_price AS last_price
         FROM purchase_order_line pol
-        JOIN purchase_order po ON po.id = pol.po_id
+        JOIN purchase_order po ON po.id = pol.po_id AND po.deleted_at IS NULL
         WHERE pol.mat_code = mc.mat_code
           AND pol.status != 'CANCELLED'
           AND po.status IN ('APPROVED','SENT','PARTIALLY_RECEIVED','RECEIVED')

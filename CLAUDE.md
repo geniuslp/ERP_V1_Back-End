@@ -1105,3 +1105,150 @@ investigation next session, not optional.**
 All schema changes this session (`location.warehouse_code`, `project.linked_warehouse_code`,
 nullable `ic_project_movement_line.cost_subgroup_id`/`to_cost_subgroup_id`) were applied directly
 against the live DB via pgAdmin, per the standing policy — no new file under `migrations/`.
+
+---
+
+## 🧭 Session learnings (2026-09-28) — PR/PO list filters, PR edit-guard, price-history, doc cleanup
+
+No schema change this session — every item below is application code or documentation only.
+
+### 1. `GET /pr` (`PRApprovalHandler.List`, `internal/handlers/pr_approval.go`) — new filters + field
+New optional, AND-combinable query filters, all no-ops when their param is absent:
+`search` (`pr.pr_no ILIKE` OR `pr.remarks ILIKE`), `date_from`/`date_to` (on
+`pr.created_at::date`, i.e. "วันที่เปิดเอกสาร"), `job_code` (exact match on `pr.job_code`). The
+`COUNT` query and the main `SELECT` use **different parameter offsets** for these filters
+($2–$5 in `COUNT`, $4–$7 in `SELECT`, since the `SELECT` also takes `$2=limit`/`$3=offset`) —
+`total` reflects the filtered set, not the full history.
+New response field **`has_active_po_link`** (bool): true if any line of the PR is referenced by
+a `purchase_order_line` whose PO is not `CANCELLED` (computed via a CTE `activepo`, no N+1).
+
+### 2. `PRHandler.Update` (`internal/handlers/pr.go`) — root cause of the generic Thai error + new guards
+- **Root cause of "ข้อมูลที่กรอกไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง" showing for real backend errors**:
+  the frontend's shared axios interceptor (`src/services/api.ts` in `erp-frontend`,
+  `GENERIC_ERROR_MESSAGE` + `looksLikeRawDbError`) rewrites **any** `data.message`/`data.error`
+  string matching `/SQLSTATE|violates|foreign key constraint|duplicate key|null value in column|pq:/i`
+  into that one generic message, as a catch-all safety net. **Rule for every handler going
+  forward**: never let a raw Postgres error reach the client — validate and return a
+  `fiber.NewError` with plain Thai/English wording *before* the SQL statement that would fail,
+  so the real, specific message is what the user sees instead of the generic fallback.
+- `models.UpdatePRRequest`'s `validate:"required"` struct tags were **never actually enforced** —
+  nothing in the request path calls a validator against the parsed struct. Confirmed live:
+  `requested_by=0` previously raised a raw `foreign key constraint "purchase_request_requested_by_fkey"`
+  (SQLSTATE 23503), and empty `pr_date` raised `invalid input syntax for type date` (SQLSTATE
+  22007) — both hit the sanitizer above and showed as the opaque generic message. Added explicit
+  guards ahead of the SQL: `requested_by <= 0` → 400 `"requested_by is required"`; empty
+  `pr_date` → 400 `"pr_date is required"`. `dept_code` is nullable with **no FK** in the live DB
+  (confirmed: empty `dept_code` round-trips with zero error) — deliberately left optional, it was
+  never part of this bug class. `PRHandler.Create` was intentionally **not** touched — the
+  create form already enforces both fields client-side.
+- New guard, same handler, runs **before** the line-clearing `DELETE`: if any of the PR's lines
+  is referenced by a `purchase_order_line` of a non-`CANCELLED` PO, reject with 409
+  `"ไม่สามารถแก้ไข PR นี้ได้ เนื่องจากมี PO ที่ยังไม่ยกเลิกผูกอยู่: PO-xxx, PO-yyy"` (comma-joined
+  `po_no` list). Without this, the `DELETE` would fail on `purchase_order_line_pr_line_id_fkey`
+  and, prior to fix #1 above, would have shown the generic error instead of something actionable.
+
+### 3. `GET /po` (`POHandler.List`, `internal/handlers/po.go`) confirmed fields — see also #4 below
+`pr_nos` (string array — `ARRAY_AGG(DISTINCT ...)` over **both** the header link (`po.pr_id`)
+and the line link (`purchase_order_line.pr_line_id → purchase_request_line → purchase_request`),
+since nothing in the schema enforces one PO = one PR), `approved_at` and `approved_by_name`
+(`LEFT JOIN LATERAL` on `approval_log` — `doc_type='PO' AND action='APPROVE'`, latest
+`action_at`, joined to `users.full_name`). `po_date`, `expected_date`, `status`,
+`status_receive`, `job_code` are also already returned and used by the frontend.
+**`job_names` is a dead field** — declared in the response struct (`json:"job_names,omitempty"`)
+but never scanned/populated by any query in this handler; the frontend must read `job_code`
+instead, not `job_names`.
+
+### 4. `GET /master/materials/:code/price-history` (`MasterHandler.GetMaterialPriceHistory`)
+Registered under the `/master` group, so the real path is
+`/master/materials/:code/price-history`. Params: `page`, `limit` (capped at 100), `date_from`,
+`date_to` (both optional, applied identically to the `COUNT` and data queries via
+`AND ($n::date IS NULL OR po.po_date >= $n::date)` etc). Excludes `CANCELLED` PO and `CANCELLED`
+line only (no other status filtering). Ordered by `po.po_date DESC`. Row fields: `mat_code`,
+`mat_name`, `spec_name` (nullable, from `spec_size.spec_description` via
+`material_code.spec_id` — same join `pr.go`/`po.go` use for line display), `supplier_name`
+(nullable), `po_date`, `unit_price`, `po_no`. `mat_code` and `spec_name` were both added this
+session and are confirmed present in the handler's `SELECT`/scan/struct with no `omitempty`
+hiding `mat_code`.
+🔴 **Separately noted, not fixed**: there is an older, unrelated price-history query inside
+`pr.go` that filters PO rows on statuses that no longer exist on `purchase_order.status`
+(`SENT`, `PARTIALLY_RECEIVED`, `RECEIVED` — these moved to `status_receive` back in the
+2026-07-27 split, see that session's notes above). That query is stale and will silently return
+nothing useful; not touched this session, flagged for whoever picks it up next.
+
+### 5. PR status facts reconfirmed against live code
+`purchase_request.status` values: `DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED,
+CANCELLED`. Submit goes `DRAFT → COMPLETED` directly — stock check and reservation both happen
+inside the same transaction, in `PRHandler.deductStockOnSubmit` (`pr.go`). PR still has **no**
+approval flow and **no** `approved_at` column/concept (unchanged from the 2026-07-22 note).
+`PARTIALLY_FILLED`/`FULFILLED` **are** implemented, contrary to any impression they're vestigial:
+`POHandler.Create`/`AddLines` (`po.go`, ~lines 2580–2619) and `POApprovalHandler`'s PO-cancel path
+(`po_approval.go`, ~lines 607–657) both recompute the parent PR's status from
+`qty_ordered` vs `qty_to_order` across all its lines and write `pr_status_log` on change.
+`STOCK_CHECK` is confirmed **never set anywhere in the codebase** — it exists only as a listed
+value in a Swagger param description string, nothing assigns it. This is an intentional, known
+gap (implementing it would change Submit's transaction boundary), not an oversight to silently fix.
+
+### 6. Memo facts
+Statuses: `DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, CANCELLED` (unchanged).
+🔴 **Correction to a request assumption, not a backend fact**: Memo does **not** link to PO in
+this backend — there is no PO-referencing column anywhere in `memo`/`memo_line`, and no such
+field in `memo.go`'s queries. The actual FK direction is the opposite: `purchase_request.memo_id`
+links a **PR** to its originating Memo (`internal/handlers/memo.go:191`,
+`internal/models/models.go:793`). A field named `linkedPoIds` exists only in the **frontend's**
+`erp-frontend/src/types/index.ts` and `mockData.ts` — it is mock/type-only, with no backend
+support; don't build against it without a dedicated backend task first.
+Memo's list-level `approved_at` (requested this session) **is now implemented**: `GET /memo`
+(`MemoHandler.List`) returns it sourced from `memo_status_log.changed_at`, the latest row where
+`to_status = 'APPROVED'`, via `LEFT JOIN LATERAL` — not from `approval_log`, because the actual
+live approve path for Memo is the generic, config-driven `GenericApprovalHandler.decide`
+(`generic_approval.go`, routed at `PUT /approval/MEMO/:id/approve`), which only writes
+`memo.status` + `memo_status_log`, never `approval_log`. The older `MemoHandler.Approve`
+(`POST /memo/:id/approve`) is explicitly commented as superseded/kept for rollback only — don't
+source from it.
+
+### 7. `database.md` corrections confirmed by reading the actual handler code
+- `purchase_request.dept_code`: nullable, **no FK** — `database.md`'s `purchase_request` table
+  entry doesn't even list `dept_code` or `job_code` at all (both are real, actively-queried
+  columns per `pr.go`/`pr_approval.go`) — that table entry is stale/incomplete, needs a rewrite,
+  not just a one-line fix. Folded the two missing columns into `database.md` this session (see
+  below); a fuller pass over that entry is still owed.
+- `purchase_request.requested_by`: `NOT NULL`, FK `purchase_request_requested_by_fkey → users.id`
+  (already correctly documented in `database.md`).
+- `purchase_request.pr_date`: `NOT NULL` (already correctly documented).
+- `purchase_order_line.pr_line_id` has FK `purchase_order_line_pr_line_id_fkey →
+  purchase_request_line` — this is exactly what blocks clearing/deleting PR lines once a PO line
+  references them, i.e. the guard added in #2 above exists because of this FK. Example live rows
+  hitting it: `PR202609-0041` ↔ `PO-202609-0015` (`APPROVED`, `RECEIVED`), `PR202609-0029` ↔
+  `PO-202609-0003` and `PO-202609-0004`.
+
+### 8. Reusable patterns (folded into `SKILL.md` too)
+- **Optional combinable filters**: `AND ($n::type IS NULL OR col ...)` per filter; when the same
+  filter set is reused between a `COUNT` query and a paginated `SELECT`, the `$` numbering is
+  usually **not** the same between the two (the `SELECT` has extra positional params for
+  `limit`/`offset`) — write and test them as two separate template strings, don't assume they
+  line up.
+- **Latest-approval-per-document**: `LEFT JOIN LATERAL` on `approval_log`
+  (`WHERE doc_type=... AND doc_id=... AND action='APPROVE' ORDER BY action_at DESC LIMIT 1`),
+  joined again to `users` for the display name — but first confirm the doc type's live approve
+  path actually writes `approval_log` (see #6 — Memo's generic approval path does not; PO's
+  older dedicated `Approve` handler does, but the generic path may be what's actually reachable
+  depending on which routes the frontend calls).
+- **Fail fast, plain-language errors**: return a `fiber.NewError` with wording that avoids
+  `SQLSTATE`/`violates`/`foreign key constraint`/`duplicate key`/`pq:` *before* running SQL that
+  would raise those — the frontend's generic-error sanitizer (#2 above) blindly replaces any
+  matching text, discarding whatever specific information the backend tried to send.
+
+### 9. Ops notes — dev machine (Air) vs production host (Docker)
+- **Windows dev machine runs Air** (`air.exe`, live-reload watching `.go` files, building to
+  `tmp/main.exe`). If port 8080 is already held by a stale process, Air's build succeeds but the
+  new binary fails to bind (`bind: Only one usage of each socket address...`), and requests
+  silently keep hitting the **old** binary with no obvious error. Fix: find the PID via
+  `netstat -ano | findstr :8080`, kill that PID, let Air rebuild/restart. **Do not** kill
+  `com.docker.backend.exe`/`wslrelay.exe` if either shows up holding the port — that means a
+  Docker container has it, and the fix there is `docker stop <container>`, not killing the
+  Windows-side process.
+- **The production host runs Docker**, containers named `erp_api` and `erp-frontend` (list with
+  `docker ps --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"`). A code change verified working
+  against the Windows dev machine (Air) says **nothing** about whether the host is running it —
+  the host's `erp_api` container must be pulled and rebuilt there
+  (`docker compose up -d --build erp_api`) before any change is actually live in production.

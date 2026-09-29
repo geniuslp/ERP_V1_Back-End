@@ -184,6 +184,43 @@ return c.JSON(fiber.Map{
 })
 ```
 
+### Optional combinable filters (AND, no-op when absent)
+```go
+// each filter is a plain no-op via the ::type IS NULL short-circuit
+where := `
+    AND ($2::text IS NULL OR pr.pr_no ILIKE '%' || $2 || '%' OR pr.remarks ILIKE '%' || $2 || '%')
+    AND ($3::date IS NULL OR pr.created_at::date >= $3::date)
+    AND ($4::date IS NULL OR pr.created_at::date <= $4::date)
+    AND ($5::text IS NULL OR pr.job_code = $5)`
+```
+🔴 ระวัง: ถ้า filter set เดียวกันใช้ทั้ง `COUNT` query กับ paginated `SELECT`, เลข `$` มักไม่ตรงกัน
+เพราะ `SELECT` มี `$limit`/`$offset` แทรกอยู่ด้วย (เช่น count ใช้ $2-$5, select ใช้ $4-$7 เพราะ
+$2=limit, $3=offset) — เขียนเป็นสอง template string แยกกัน อย่าสมมติว่าเลขตรงกัน
+(ตัวอย่างจริง: `GET /pr`, `PRApprovalHandler.List` ใน `pr_approval.go`)
+
+### Latest-approval-per-document (LEFT JOIN LATERAL)
+```go
+LEFT JOIN LATERAL (
+    SELECT action_at, action_by
+    FROM approval_log
+    WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
+    ORDER BY action_at DESC LIMIT 1
+) al ON true
+LEFT JOIN users au ON au.id = al.action_by
+```
+⚠️ เช็คก่อนว่า approve path ของ doc_type นั้นเขียนลง `approval_log` จริง — บาง flow (เช่น Memo ผ่าน
+`GenericApprovalHandler`) เขียนแค่ `<doc>_status_log` ไม่แตะ `approval_log` เลย ถ้าใช่กรณีนี้ให้
+`LEFT JOIN LATERAL` บน `<doc>_status_log` (`WHERE to_status = 'APPROVED' ORDER BY changed_at DESC
+LIMIT 1`) แทน
+
+### Fail fast — plain-language error before the SQL that would fail
+Frontend มี interceptor (`src/services/api.ts`, `GENERIC_ERROR_MESSAGE`) ที่ rewrite ข้อความ error
+ที่ match `/SQLSTATE|violates|foreign key constraint|duplicate key|null value in column|pq:/i` ให้
+กลายเป็นข้อความทั่วไปแบบไม่มีรายละเอียด — ดังนั้น handler ต้อง validate แล้ว
+`return fiber.NewError(...)` ด้วยข้อความธรรมดาก่อนรัน SQL ที่จะพังเสมอ อย่าปล่อยให้ raw Postgres
+error หลุดไปถึง client (ตัวอย่างจริง: `PRHandler.Update` ใน `pr.go`, guard เรื่อง
+`purchase_order_line_pr_line_id_fkey` ก่อน DELETE)
+
 ### Success responses
 ```go
 // List / Get

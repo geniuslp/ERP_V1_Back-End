@@ -988,7 +988,11 @@ id           bigint        NOT NULL  PK
 po_id        bigint        NOT NULL  — FK → purchase_order.id
 line_no      integer       NOT NULL
 mat_code     varchar(20)   NOT NULL
-pr_line_id   bigint        nullable  — FK → purchase_request_line.id
+pr_line_id   bigint        nullable  — FK → purchase_request_line.id (purchase_order_line_pr_line_id_fkey)
+                 — 🔴 this FK is what blocks clearing/deleting purchase_request_line rows once a
+                   non-CANCELLED PO line references them; confirmed live 2026-09-28 with
+                   PR202609-0041 ↔ PO-202609-0015 and PR202609-0029 ↔ PO-202609-0003/0004 — see
+                   CLAUDE.md's "Session learnings (2026-09-28)" #2/#7
 qty_ordered  numeric(18,4) NOT NULL
 qty_received numeric(18,4) NOT NULL  DEFAULT 0
 unit_price   numeric(18,4) NOT NULL
@@ -1015,13 +1019,15 @@ remarks      text          nullable
 id             bigint      NOT NULL  PK
 pr_no          varchar(30) NOT NULL
 pr_date        date        NOT NULL  DEFAULT CURRENT_DATE
-requested_by   bigint      NOT NULL  — FK → users.id
+requested_by   bigint      NOT NULL  — FK → users.id (purchase_request_requested_by_fkey)
 warehouse_code varchar(20) nullable
 required_date  date        nullable
 status         varchar(20) NOT NULL  DEFAULT 'DRAFT'
 priority       varchar(20) DEFAULT 'NORMAL'  — LOW|NORMAL|HIGH|URGENT
 order_type     varchar(10) NOT NULL  DEFAULT 'stock'  — CHECK IN ('stock','cost') — 'stock' = ซื้อเข้าคลัง, 'cost' = ซื้อเข้าโครงการ (cost)
 pr_type        varchar(10) NOT NULL  DEFAULT 'PO_WO'  — CHECK IN ('PO_WO','PO_ONLY','WO_ONLY') — เก็บไว้เฉยๆ ยังไม่มีโมดูล WO จริง ไม่มี logic ต่อ
+job_code       varchar    nullable  — 🔴 added 2026-09-28, was missing from this doc entirely though it's a real, actively-queried column (pr.go/pr_approval.go); one of the 12 fixed job type codes (MP/ME/MS/MF/MG/MH/FS/FP/FB/DE/RE/G)
+dept_code      varchar(20) nullable  — 🔴 added 2026-09-28, was missing from this doc entirely; NO FK enforced live (confirmed: empty dept_code round-trips with zero DB error)
 remarks        text        nullable
 project_code   varchar(20) nullable
 memo_id        bigint      nullable  — FK → memo.id
@@ -1031,6 +1037,9 @@ updated_at     timestamp   NOT NULL  DEFAULT now()
 created_by     bigint      nullable
 updated_by     bigint      nullable
 ```
+⚠️ This entry was reconstructed handler-side (grep on `pr.go`/`pr_approval.go`), not re-verified
+column-by-column against `information_schema` — treat `job_code`'s exact varchar length as
+unconfirmed until checked live.
 
 ---
 
