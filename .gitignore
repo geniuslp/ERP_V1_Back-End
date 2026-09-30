@@ -24,6 +24,8 @@ go.work.sum
 .env
 .env.local
 .env.*
+!.env.example
+.env.uat.example
 
 # Uploads
 /uploads/

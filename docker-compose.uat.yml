@@ -1,0 +1,20 @@
+# UAT API. Runs like prod: host network, so it reaches Postgres at localhost:5432.
+# Listens on PORT from .env.uat (8081), prod keeps 8080. Host nginx proxies /erp/uat/api/ to 127.0.0.1:8081
+# Run ONLY with:  docker compose -f docker-compose.uat.yml up -d --build
+# Needs a .env.uat next to this file (NOT in git, see .env.uat.example)
+name: erp_uat_api
+
+services:
+  erp_api_uat:
+    build: .
+    image: erp-api:uat
+    container_name: erp_api_uat
+    network_mode: host                     # same as prod (no ports: mapping in host mode)
+    env_file: .env.uat                     # PORT=8081, DB erp_db_uat, own JWT secret, PUBLIC_BASE_URL
+    volumes:
+      - erp_uat_uploads:/app/uploads       # separate attachment storage from prod
+    restart: unless-stopped
+    mem_limit: 256m
+
+volumes:
+  erp_uat_uploads:
