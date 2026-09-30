@@ -7813,7 +7813,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "ค้นหา memo_no / title",
+                        "description": "ค้นหา memo_no / project_code",
                         "name": "search",
                         "in": "query"
                     },
@@ -14816,9 +14816,6 @@ const docTemplate = `{
                 "status": {
                     "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",
                     "type": "string"
-                },
-                "title": {
-                    "type": "string"
                 }
             }
         },
@@ -16299,6 +16296,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "title": {
+                    "description": "legacy: no longer collected, NULL for new memos; kept for old rows",
                     "type": "string"
                 },
                 "updated_at": {
@@ -17222,9 +17220,6 @@ const docTemplate = `{
                 },
                 "status": {
                     "description": "\"DRAFT\" | \"PENDING_APPROVAL\" — defaults to DRAFT",
-                    "type": "string"
-                },
-                "title": {
                     "type": "string"
                 }
             }

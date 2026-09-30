@@ -698,7 +698,7 @@ unit_id, cost_subgroup_id, is_active, created_at, updated_at, created_by, update
 ```
 id           bigint      NOT NULL  PK
 memo_no      varchar(30) NOT NULL
-title        varchar(200)NOT NULL
+title        varchar(200)nullable  — legacy: ยกเลิกการใช้งาน (2026-09-30) UI ไม่เก็บแล้ว, memo ใหม่ = NULL, แถวเก่ายังมีค่าเดิม
 project_code varchar(20) nullable
 requested_by bigint      NOT NULL  — FK → users.id
 department   varchar(100)nullable

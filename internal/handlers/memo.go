@@ -188,7 +188,7 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 // @Tags         Memo
 // @Security     BearerAuth
 // @Produce      json
-// @Param        search       query  string  false  "ค้นหา memo_no / title"
+// @Param        search       query  string  false  "ค้นหา memo_no / project_code"
 // @Param        project_code query  string  false  "กรอง project"
 // @Param        date_from    query  string  false  "วันที่เริ่ม (YYYY-MM-DD)"
 // @Param        date_to      query  string  false  "วันที่สิ้นสุด (YYYY-MM-DD)"
@@ -220,7 +220,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 	i := 1
 
 	if f.Search != "" {
-		where += fmt.Sprintf(" AND (m.memo_no ILIKE $%d OR m.title ILIKE $%d)", i, i)
+		where += fmt.Sprintf(" AND (m.memo_no ILIKE $%d OR m.project_code ILIKE $%d)", i, i)
 		args = append(args, "%"+f.Search+"%")
 		i++
 	}
@@ -381,9 +381,6 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.Title == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "title is required")
-	}
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least 1 line is required")
 	}
@@ -457,12 +454,12 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	var memoID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO public.memo
-		    (memo_no, title, project_code, requested_by, approver_id,
+		    (memo_no, project_code, requested_by, approver_id,
 		     department, delivery_location, site_delivery_date, responsible_factory,
 		     note, status, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
 		RETURNING id`,
-		memoNo, req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
+		memoNo, req.ProjectCode, req.RequestedBy, req.ApproverID,
 		req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
 		req.Note, status, claims.UserID,
 	).Scan(&memoID)
@@ -549,9 +546,6 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if req.Title == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "title is required")
-	}
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least 1 line is required")
 	}
@@ -598,11 +592,11 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 
 	result, err := tx.Exec(ctx, `
 		UPDATE public.memo
-		SET title=$1, project_code=$2, requested_by=$3, approver_id=$4,
-		    department=$5, delivery_location=$6, site_delivery_date=$7, responsible_factory=$8,
-		    note=$9, updated_by=$10, updated_at=NOW()
-		WHERE id=$11`,
-		req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
+		SET project_code=$1, requested_by=$2, approver_id=$3,
+		    department=$4, delivery_location=$5, site_delivery_date=$6, responsible_factory=$7,
+		    note=$8, updated_by=$9, updated_at=NOW()
+		WHERE id=$10`,
+		req.ProjectCode, req.RequestedBy, req.ApproverID,
 		req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
 		req.Note, claims.UserID, id,
 	)

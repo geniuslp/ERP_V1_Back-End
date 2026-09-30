@@ -1337,7 +1337,7 @@ type PaginatedResponse struct {
 type Memo struct {
 	ID                 int64     `json:"id"`
 	MemoNo             string    `json:"memo_no"`
-	Title              string    `json:"title"`
+	Title              *string   `json:"title,omitempty"` // legacy: no longer collected, NULL for new memos; kept for old rows
 	ProjectCode        *string   `json:"project_code"`
 	RequestedBy        int64     `json:"requested_by"`
 	ApproverID         *int64    `json:"approver_id"`
@@ -1398,7 +1398,6 @@ type MemoLine struct {
 
 type CreateMemoRequest struct {
 	MemoNo             string            `json:"memo_no"`
-	Title              string            `json:"title"`
 	ProjectCode        *string           `json:"project_code"`
 	RequestedBy        int64             `json:"requested_by"`
 	ApproverID         *int64            `json:"approver_id"`

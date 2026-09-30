@@ -689,8 +689,6 @@ definitions:
       status:
         description: '"DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT'
         type: string
-      title:
-        type: string
     type: object
   models.CreatePOLine:
     properties:
@@ -1716,6 +1714,8 @@ definitions:
       status:
         type: string
       title:
+        description: 'legacy: no longer collected, NULL for new memos; kept for old
+          rows'
         type: string
       updated_at:
         type: string
@@ -2346,8 +2346,6 @@ definitions:
         type: string
       status:
         description: '"DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT'
-        type: string
-      title:
         type: string
     type: object
   models.UpdatePOLineRequest:
@@ -8005,7 +8003,7 @@ paths:
   /memo:
     get:
       parameters:
-      - description: ค้นหา memo_no / title
+      - description: ค้นหา memo_no / project_code
         in: query
         name: search
         type: string

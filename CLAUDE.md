@@ -1252,3 +1252,16 @@ source from it.
   against the Windows dev machine (Air) says **nothing** about whether the host is running it —
   the host's `erp_api` container must be pulled and rebuilt there
   (`docker compose up -d --build erp_api`) before any change is actually live in production.
+
+---
+
+## 🧭 Session learnings (2026-09-30) — Memo `title` retired
+
+`memo.title` is no longer collected. The column stays (now nullable; `DROP NOT NULL` was applied
+manually in pgAdmin, no migration file) so old rows keep their value. `models.Memo.Title` is
+`*string` with `omitempty`; `CreateMemoRequest`/`UpdateMemoRequest` no longer have a `Title` field
+(a `title` key in a request body is simply ignored). `MemoHandler.Create`/`Update` no longer
+validate or write it — new memos get `NULL`. `GET /memo?search=` now matches `memo_no` OR
+`project_code` (previously `memo_no` OR `title`). Anything that needs a display label for a memo
+should use `memo_no`, never `title`. `PurchaseRequest.MemoTitle` (`models.go`) is a dead field —
+declared, never populated by any query; don't build on it.
