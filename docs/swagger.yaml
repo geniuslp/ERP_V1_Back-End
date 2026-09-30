@@ -2413,6 +2413,10 @@ definitions:
         type: integer
       required_date:
         type: string
+      status:
+        description: '"DRAFT" (default) | "COMPLETED" — COMPLETED runs the same completion
+          logic as POST /pr/{id}/submit'
+        type: string
       warehouse_code:
         type: string
     required:
@@ -9778,10 +9782,12 @@ paths:
         those states manually first. Reverses any stock
         deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
         ref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an
-        offsetting 'IN' transaction, then sets status back to DRAFT. Relies on the
-        confirmed rule that a PR never has duplicate mat_code across its own lines, so
-        reversing by ref_doc_id=pr_id alone (without a pr_line_id column on
-        stock_transaction) is unambiguous.
+        offsetting 'IN' transaction, then sets status back to DRAFT. For cost PRs it also
+        reverses the project credit: per pr_line_id it nets the ref_type='PR' rows of
+        ic_project_cost_item_transaction and, if the net is > 0, subtracts it from
+        ic_project_cost_item.qty_on_hand (409 if the project no longer holds that much)
+        and writes a negative 'PR' row. Idempotent: a net of 0 writes nothing. Nothing
+        is deleted. project_stock is not involved.
       parameters:
       - description: PR ID
         in: path

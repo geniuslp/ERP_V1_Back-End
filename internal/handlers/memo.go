@@ -12,7 +12,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"erp-api/internal/middleware"
@@ -567,7 +566,8 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 	ctx := context.Background()
 
 	var currentStatus string
-	if err := h.db.QueryRow(ctx, `SELECT status FROM public.memo WHERE id=$1`, id).Scan(&currentStatus); err != nil {
+	var oldApproverID *int64
+	if err := h.db.QueryRow(ctx, `SELECT status, approver_id FROM public.memo WHERE id=$1`, id).Scan(&currentStatus, &oldApproverID); err != nil {
 		if err == pgx.ErrNoRows {
 			return fiber.NewError(fiber.StatusNotFound, "memo not found")
 		}
@@ -577,41 +577,61 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "cannot edit memo in this status")
 	}
 
+	// Only a *changed* approver is validated against the eligible pool, so re-saving an
+	// unchanged memo isn't blocked if the existing approver has since lost eligibility.
+	approverChanged := oldApproverID == nil || *oldApproverID != *req.ApproverID
+	if approverChanged {
+		ok, err := isEligibleApproverPick(ctx, h.db, "MEMO", *req.ApproverID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fiber.NewError(fiber.StatusBadRequest, "the selected approver is not eligible to approve memos")
+		}
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	var result pgconn.CommandTag
-	if currentStatus == "PENDING_APPROVAL" {
-		result, err = tx.Exec(ctx, `
-			UPDATE public.memo
-			SET title=$1, project_code=$2, requested_by=$3,
-			    department=$4, delivery_location=$5, site_delivery_date=$6, responsible_factory=$7,
-			    note=$8, updated_by=$9, updated_at=NOW()
-			WHERE id=$10`,
-			req.Title, req.ProjectCode, req.RequestedBy,
-			req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
-			req.Note, claims.UserID, id,
-		)
-	} else {
-		result, err = tx.Exec(ctx, `
-			UPDATE public.memo
-			SET title=$1, project_code=$2, requested_by=$3, approver_id=$4,
-			    department=$5, delivery_location=$6, site_delivery_date=$7, responsible_factory=$8,
-			    note=$9, updated_by=$10, updated_at=NOW()
-			WHERE id=$11`,
-			req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
-			req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
-			req.Note, claims.UserID, id,
-		)
-	}
+	result, err := tx.Exec(ctx, `
+		UPDATE public.memo
+		SET title=$1, project_code=$2, requested_by=$3, approver_id=$4,
+		    department=$5, delivery_location=$6, site_delivery_date=$7, responsible_factory=$8,
+		    note=$9, updated_by=$10, updated_at=NOW()
+		WHERE id=$11`,
+		req.Title, req.ProjectCode, req.RequestedBy, req.ApproverID,
+		req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
+		req.Note, claims.UserID, id,
+	)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() == 0 {
 		return fiber.NewError(fiber.StatusNotFound, "memo not found")
+	}
+
+	// Approver swapped while awaiting approval: the open approval_request also carries the
+	// assignee (assigned_to, read by /approvals/pending), so move it, and leave a same-status
+	// audit row. The only memo_status_log readers filter to_status='APPROVED', so it is inert there.
+	if currentStatus == "PENDING_APPROVAL" && approverChanged {
+		if _, err = tx.Exec(ctx, `
+			UPDATE public.approval_request SET assigned_to=$1, updated_at=NOW()
+			WHERE doc_type='MEMO' AND doc_id=$2 AND status='PENDING'`, *req.ApproverID, id); err != nil {
+			return err
+		}
+		oldLabel := "none"
+		if oldApproverID != nil {
+			oldLabel = fmt.Sprintf("user %d", *oldApproverID)
+		}
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO public.memo_status_log (memo_id, from_status, to_status, changed_by, remarks)
+			VALUES ($1,'PENDING_APPROVAL','PENDING_APPROVAL',$2,$3)`,
+			id, claims.UserID, fmt.Sprintf("approver changed: %s -> user %d", oldLabel, *req.ApproverID)); err != nil {
+			return err
+		}
 	}
 
 	if _, err = tx.Exec(ctx, `DELETE FROM public.memo_line WHERE memo_id=$1`, id); err != nil {

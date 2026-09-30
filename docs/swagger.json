@@ -10384,7 +10384,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet \"closed\" — closed means\nstatus='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already\nserved its purpose and no longer needs to block PR edits). The system does not\nauto-cancel/auto-close anything; the user must get the referencing PO(s) to one of\nthose states manually first. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an\noffsetting 'IN' transaction, then sets status back to DRAFT. Relies on the\nconfirmed rule that a PR never has duplicate mat_code across its own lines, so\nreversing by ref_doc_id=pr_id alone (without a pr_line_id column on\nstock_transaction) is unambiguous.",
+                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet \"closed\" — closed means\nstatus='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already\nserved its purpose and no longer needs to block PR edits). The system does not\nauto-cancel/auto-close anything; the user must get the referencing PO(s) to one of\nthose states manually first. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an\noffsetting 'IN' transaction, then sets status back to DRAFT. For cost PRs it also\nreverses the project credit: per pr_line_id it nets the ref_type='PR' rows of\nic_project_cost_item_transaction and, if the net is \u003e 0, subtracts it from\nic_project_cost_item.qty_on_hand (409 if the project no longer holds that much)\nand writes a negative 'PR' row. Idempotent: a net of 0 writes nothing. Nothing\nis deleted. project_stock is not involved.",
                 "produces": [
                     "application/json"
                 ],
@@ -17316,6 +17316,10 @@
                     "type": "integer"
                 },
                 "required_date": {
+                    "type": "string"
+                },
+                "status": {
+                    "description": "\"DRAFT\" (default) | \"COMPLETED\" — COMPLETED runs the same completion logic as POST /pr/{id}/submit",
                     "type": "string"
                 },
                 "warehouse_code": {

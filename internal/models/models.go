@@ -920,6 +920,7 @@ type UpdatePRRequest struct {
 	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost"
 	PRType        string         `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY"
 	JobCode       string         `json:"job_code,omitempty"`   // required overall — omit to keep the PR's current value, see PRHandler.Update
+	Status        string         `json:"status,omitempty"`     // "DRAFT" (default) | "COMPLETED" — COMPLETED runs the same completion logic as POST /pr/{id}/submit
 	Remarks       *string        `json:"remarks,omitempty"`
 	Lines         []UpdatePRLine `json:"lines" validate:"required,min=1"`
 }
@@ -1850,7 +1851,7 @@ type IcProjectMovementDetail struct {
 	RequestedByName string    `json:"requested_by_name"`
 	Status          string    `json:"status"`
 	Remarks         *string   `json:"remarks"`
-	CreatedAt       time.Time `json:"created_at"`
+	CreatedAt       string    `json:"created_at"` // TO_CHAR ISO-8601 with +07:00 offset
 }
 
 type IcAvailableMaterial struct {
@@ -1905,7 +1906,7 @@ type IcProjectMovementListItem struct {
 	JobCode         string    `json:"job_code"`
 	JobName         string    `json:"job_name"`
 	RequestedByName string    `json:"requested_by_name"`
-	CreatedAt       time.Time `json:"created_at"`
+	CreatedAt       string    `json:"created_at"` // TO_CHAR ISO-8601 with +07:00 offset
 }
 
 type IcProjectCostTransaction struct {
@@ -1924,7 +1925,7 @@ type IcProjectCostTransaction struct {
 	CostName       string    `json:"cost_name"`
 	RefNo          *string   `json:"ref_no"`
 	CreatedByName  string    `json:"created_by_name"`
-	CreatedAt      time.Time `json:"created_at"`
+	CreatedAt      string    `json:"created_at"` // TO_CHAR ISO-8601 with +07:00 offset
 }
 
 type IcProjectCostTransactionFilter struct {

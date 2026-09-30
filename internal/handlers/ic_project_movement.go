@@ -253,7 +253,7 @@ func (h *IcProjectMovementHandler) GetMovement(c *fiber.Ctx) error {
 	var d models.IcProjectMovementDetail
 	err = h.db.QueryRow(context.Background(), `
 		SELECT m.id, m.doc_no, m.doc_type, m.doc_date::text, m.project_code, p.project_name,
-		       m.job_code, m.requested_by, u.full_name, m.status, m.remarks, m.created_at
+		       m.job_code, m.requested_by, u.full_name, m.status, m.remarks, TO_CHAR(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		FROM ic_project_movement m
 		JOIN project p ON p.project_code = m.project_code
 		JOIN users u ON u.id = m.requested_by
@@ -300,7 +300,7 @@ func (h *IcProjectMovementHandler) ListMovements(c *fiber.Ctx) error {
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT m.id, m.doc_no, m.doc_type, m.doc_date::text, m.status, m.job_code, u.full_name, m.created_at
+		SELECT m.id, m.doc_no, m.doc_type, m.doc_date::text, m.status, m.job_code, u.full_name, TO_CHAR(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		FROM ic_project_movement m
 		JOIN users u ON u.id = m.requested_by
 		WHERE m.project_code = $1
@@ -343,7 +343,7 @@ type linkedStockRow struct {
 	Unit      *string
 	Qty       float64
 	UnitCost  float64
-	UpdatedAt time.Time
+	UpdatedAt string // Bangkok wall-clock with explicit +07:00 (stock_item.updated_at is timestamp without tz)
 	// Cost hierarchy resolved from material_code.cost_subgroup_id (same chain as GET /stock/items).
 	CostSubgroupID int64
 	CostCode       string
@@ -373,7 +373,7 @@ func queryLinkedWarehouseStock(ctx context.Context, db *pgxpool.Pool, matNameID 
 		SELECT si.id, si.mat_code,
 		       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), si.item_name, si.mat_code),
 		       COALESCE(u.unit_name, si.unit),
-		       si.qty, si.unit_cost, si.updated_at,
+		       si.qty, si.unit_cost, TO_CHAR(si.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"'),
 		       COALESCE(mc.cost_subgroup_id, 0),
 		       COALESCE(csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code, ''),
 		       COALESCE(csg.subgroup_name, '')
@@ -1374,7 +1374,7 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 		       csg.subgroup_name,
 		       CASE WHEN t.ref_type = 'PO' THEN po.po_no ELSE m.doc_no END,
 		       COALESCE(u.full_name, ''),
-		       t.created_at
+		       TO_CHAR(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		%s
 		WHERE %s
 		ORDER BY t.txn_date DESC, t.id DESC
@@ -1478,7 +1478,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 		       ici.cost_subgroup_id,
 		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code,
 		       COALESCE(u.unit_name, ici.unit),
-		       ici.qty_on_hand, ici.last_unit_cost, ici.updated_at
+		       ici.qty_on_hand, ici.last_unit_cost, TO_CHAR(ici.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		FROM ic_project_cost_item ici
 		JOIN material_code mc      ON mc.mat_code = ici.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
@@ -1504,7 +1504,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 		Unit           *string   `json:"unit"`
 		QtyOnHand      float64   `json:"qty_on_hand"`
 		LastUnitCost   float64   `json:"last_unit_cost"`
-		UpdatedAt      time.Time `json:"updated_at"`
+		UpdatedAt      string    `json:"updated_at"`
 	}
 	result := []stockRow{}
 	for rows.Next() {

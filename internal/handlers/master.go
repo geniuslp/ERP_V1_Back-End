@@ -1110,6 +1110,35 @@ func (h *MasterHandler) ListRoles(c *fiber.Ctx) error {
 
 // ─── Eligible Approvers ────────────────────────────────────────────────────────
 
+// eligibleApproverCond is the single definition of "user u may be picked as approver for
+// doc_type $1": active user AND (holds an approver role in approval_config OR is an extra
+// approver in approval_delegation). Shared by ListEligibleApprovers and isEligibleApproverPick.
+const eligibleApproverCond = `u.is_active = true
+	  AND (
+		u.id IN (
+			SELECT ur.user_id
+			FROM approval_config ac
+			JOIN user_roles ur ON ur.role_id = ac.approver_role_id
+			JOIN roles r ON r.id = ac.approver_role_id AND r.is_active = true
+			WHERE ac.doc_type = $1 AND ac.is_active = true
+		)
+		OR u.id IN (
+			SELECT ad.user_id FROM approval_delegation ad
+			WHERE ad.doc_type = $1 OR ad.doc_type IS NULL
+		)
+	  )`
+
+// isEligibleApproverPick reports whether userID is in the pool ListEligibleApprovers returns
+// for docType, i.e. is a valid choice for a document's approver_id field.
+func isEligibleApproverPick(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, docType string, userID int64) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users u WHERE u.id = $2 AND `+eligibleApproverCond+`)`,
+		docType, userID).Scan(&ok)
+	return ok, err
+}
+
 // ListEligibleApprovers godoc
 // @Summary      List users eligible to approve a given doc_type
 // @Description  Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's "ผู้อนุมัติ" field) so only users actually eligible to approve that doc_type are offered.
@@ -1130,20 +1159,7 @@ func (h *MasterHandler) ListEligibleApprovers(c *fiber.Ctx) error {
 		SELECT DISTINCT u.id, u.full_name, u.dept_code, d.dept_name
 		FROM users u
 		LEFT JOIN departments d ON d.dept_code = u.dept_code
-		WHERE u.is_active = true
-		  AND (
-			u.id IN (
-				SELECT ur.user_id
-				FROM approval_config ac
-				JOIN user_roles ur ON ur.role_id = ac.approver_role_id
-				JOIN roles r ON r.id = ac.approver_role_id AND r.is_active = true
-				WHERE ac.doc_type = $1 AND ac.is_active = true
-			)
-			OR u.id IN (
-				SELECT ad.user_id FROM approval_delegation ad
-				WHERE ad.doc_type = $1 OR ad.doc_type IS NULL
-			)
-		  )
+		WHERE `+eligibleApproverCond+`
 		ORDER BY u.full_name`, docType)
 	if err != nil {
 		return err

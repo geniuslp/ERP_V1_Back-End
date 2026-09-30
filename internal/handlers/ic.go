@@ -1375,12 +1375,23 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 
 	// order_type == 'stock': scoped query first — stock_transaction.receive_document_id now
 	// exists and is written on every new receive (icReceiveToStock).
+	// unit_price/cost_code are resolved from purchase_order_line, matched by (po_id, mat_code) —
+	// stock_transaction has no po_line_id column, so mat_code is the only available link back to
+	// the specific line. Safe today (no PO has duplicate mat_code across its lines, verified
+	// 2026-09-29), but would pick an arbitrary line's price if that ever changes; adding a
+	// po_line_id column to stock_transaction would remove the ambiguity if it becomes a problem.
 	scopedRows, err := h.db.Query(ctx, `
-		SELECT NULL::text AS cost_code, si.mat_code, si.item_name, u.unit_name, 0::numeric AS unit_price, st.qty
+		SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
+		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
 		LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
 		LEFT JOIN unit u ON mc.unit_id = u.id
+		LEFT JOIN purchase_order_line pol ON pol.po_id = st.ref_doc_id AND pol.mat_code = si.mat_code
+		LEFT JOIN cost_subgroup cs ON pol.cost_subgroup_id = cs.id
+		LEFT JOIN cost_group    cg ON cg.id = cs.group_id
+		LEFT JOIN cost_job      cj ON cj.id = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
 		WHERE st.receive_document_id = $1 AND st.txn_type = 'IN'
 		ORDER BY st.id`, docID)
 	if err != nil {
@@ -1410,11 +1421,17 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	// Nothing linked to this document specifically — fall back to this PO's still-unlinked
 	// (receive_document_id IS NULL) rows only, never rows already linked to a different document.
 	rows, err := h.db.Query(ctx, `
-		SELECT NULL::text AS cost_code, si.mat_code, si.item_name, u.unit_name, 0::numeric AS unit_price, st.qty
+		SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
+		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
 		LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
 		LEFT JOIN unit u ON mc.unit_id = u.id
+		LEFT JOIN purchase_order_line pol ON pol.po_id = st.ref_doc_id AND pol.mat_code = si.mat_code
+		LEFT JOIN cost_subgroup cs ON pol.cost_subgroup_id = cs.id
+		LEFT JOIN cost_group    cg ON cg.id = cs.group_id
+		LEFT JOIN cost_job      cj ON cj.id = cg.job_id
+		LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
 		WHERE st.ref_doc_type = 'PO' AND st.ref_doc_id = $1 AND st.txn_type = 'IN' AND st.receive_document_id IS NULL
 		ORDER BY st.id`, poID)
 	if err != nil {

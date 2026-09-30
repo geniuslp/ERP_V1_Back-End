@@ -225,6 +225,13 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
+	if req.Status == "" {
+		req.Status = "DRAFT"
+	}
+	if req.Status != "DRAFT" && req.Status != "COMPLETED" {
+		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or COMPLETED")
+	}
+
 	if req.OrderType == "" {
 		req.OrderType = "stock"
 	}
@@ -295,8 +302,17 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 
 	// pr_no is now reserved up front via GET /pr/reserve-number (nextval('pr_seq')), so no
 	// retry-on-collision loop is needed here anymore — the sequence guarantees uniqueness.
+	if req.Status == "COMPLETED" && req.OrderType == "cost" && req.ProjectCode == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
+	}
+	var actorID int64
+	if claims := middleware.GetClaims(c); claims != nil {
+		actorID = claims.UserID
+	} else {
+		actorID = req.CreatedBy
+	}
 	prNo := req.PRNo
-	prID, err := h.createPRTx(context.Background(), prNo, req)
+	prID, err := h.createPRTx(context.Background(), prNo, req, actorID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "purchase_request_pr_no_key" {
@@ -314,7 +330,7 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 // createPRTx runs one attempt of the PR header+lines+attachments insert inside its own
 // transaction, using prNo as the pr_no. Returns the pgconn duplicate-key error unwrapped so the
 // caller can decide whether to retry with a freshly generated number.
-func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.CreatePRRequest) (int64, error) {
+func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.CreatePRRequest, actorID int64) (int64, error) {
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -330,7 +346,7 @@ func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.Crea
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now(),$15,$15)
 		RETURNING id`,
 		prNo, req.PRDate, req.RequestedBy, req.LocationText, req.WarehouseCode,
-		req.RequiredDate, req.ProjectCode, req.DeptCode, req.Status, req.OrderType, req.PRType, req.JobCode, req.Remarks, req.MemoID, req.CreatedBy,
+		req.RequiredDate, req.ProjectCode, req.DeptCode, "DRAFT", req.OrderType, req.PRType, req.JobCode, req.Remarks, req.MemoID, req.CreatedBy,
 	).Scan(&prID)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -367,6 +383,16 @@ func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.Crea
 			prID, att.FileName, att.FilePath, att.FileSize, att.FileType, req.CreatedBy,
 		); err != nil {
 			return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to insert attachment: "+err.Error())
+		}
+	}
+
+	// 4. Client asked for COMPLETED: same side effects as POST /pr/{id}/submit, same tx.
+	if req.Status == "COMPLETED" {
+		if err := validateNoMixedDeductStock(ctx, tx, prID); err != nil {
+			return 0, err
+		}
+		if err := h.completePRTx(ctx, tx, prID, prNo, req.OrderType, req.ProjectCode, "DRAFT", actorID, "created as COMPLETED"); err != nil {
+			return 0, err
 		}
 	}
 
@@ -433,68 +459,16 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
 
-	// Reopen's reversal query finds prior deductions by ref_doc_id + mat_code only (no
-	// pr_line_id column on stock_transaction), so it can't distinguish two lines with the
-	// same mat_code but different deduct_stock settings. Reject that combination up front.
-	{
-		deductByMatCode := make(map[string]bool)
-		mixed := make(map[string]bool)
-		rows, err := h.db.Query(ctx, `SELECT mat_code, deduct_stock FROM purchase_request_line WHERE pr_id=$1`, id)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var matCode string
-			var deductStock bool
-			if err := rows.Scan(&matCode, &deductStock); err != nil {
-				rows.Close()
-				return err
-			}
-			if prev, seen := deductByMatCode[matCode]; seen {
-				if prev != deductStock {
-					mixed[matCode] = true
-				}
-			} else {
-				deductByMatCode[matCode] = deductStock
-			}
-		}
-		rows.Close()
-		if len(mixed) > 0 {
-			matCodes := make([]string, 0, len(mixed))
-			for mc := range mixed {
-				matCodes = append(matCodes, mc)
-			}
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
-				"mixed deduct_stock settings aren't supported for duplicate mat_code within one PR (mat_code: %s) — "+
-					"Reopen's stock reversal is keyed by mat_code, not by line, so it cannot tell which line's deduction to reverse",
-				strings.Join(matCodes, ", ")))
-		}
-	}
-
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	if err := h.deductStockOnSubmit(ctx, tx, id, orderType, projectCode, claims.UserID); err != nil {
+	if err := validateNoMixedDeductStock(ctx, tx, id); err != nil {
 		return err
 	}
-
-	if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status='COMPLETED', updated_at=NOW() WHERE id=$1`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
-		VALUES ($1,$2,'COMPLETED',$3,'submitted')`, id, currentStatus, claims.UserID,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
-		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
-		id, claims.UserID, fmt.Sprintf(`{"pr_no":"%s","status":"COMPLETED"}`, prNo),
-	); err != nil {
+	if err := h.completePRTx(ctx, tx, id, prNo, orderType, projectCode, currentStatus, claims.UserID, "submitted"); err != nil {
 		return err
 	}
 
@@ -504,35 +478,106 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "PR status changed to COMPLETED"})
 }
 
+// pgQuerier is satisfied by both *pgxpool.Pool and pgx.Tx.
+type pgQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// validateNoMixedDeductStock: Reopen's reversal query finds prior deductions by ref_doc_id +
+// mat_code only (no pr_line_id column on stock_transaction), so it can't distinguish two lines
+// with the same mat_code but different deduct_stock settings. Reject that combination up front.
+func validateNoMixedDeductStock(ctx context.Context, q pgQuerier, prID int64) error {
+	deductByMatCode := make(map[string]bool)
+	mixed := make(map[string]bool)
+	rows, err := q.Query(ctx, `SELECT mat_code, deduct_stock FROM purchase_request_line WHERE pr_id=$1`, prID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var matCode string
+		var deductStock bool
+		if err := rows.Scan(&matCode, &deductStock); err != nil {
+			rows.Close()
+			return err
+		}
+		if prev, seen := deductByMatCode[matCode]; seen {
+			if prev != deductStock {
+				mixed[matCode] = true
+			}
+		} else {
+			deductByMatCode[matCode] = deductStock
+		}
+	}
+	rows.Close()
+	if len(mixed) > 0 {
+		matCodes := make([]string, 0, len(mixed))
+		for mc := range mixed {
+			matCodes = append(matCodes, mc)
+		}
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
+			"mixed deduct_stock settings aren't supported for duplicate mat_code within one PR (mat_code: %s) — "+
+				"Reopen's stock reversal is keyed by mat_code, not by line, so it cannot tell which line's deduction to reverse",
+			strings.Join(matCodes, ", ")))
+	}
+	return nil
+}
+
+// completePRTx is the shared "PR becomes COMPLETED" step used by Submit and by Create (when the
+// client asks for COMPLETED directly): stock deduction/reservation, status flip, pr_status_log
+// and erp_audit_log — all inside the caller's tx.
+func (h *PRHandler) completePRTx(ctx context.Context, tx pgx.Tx, prID int64, prNo, orderType string, projectCode *string, fromStatus string, userID int64, remarks string) error {
+	if err := h.deductStockOnSubmit(ctx, tx, prID, orderType, projectCode, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status='COMPLETED', updated_at=NOW() WHERE id=$1`, prID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+		VALUES ($1,$2,'COMPLETED',$3,$4)`, prID, fromStatus, userID, remarks,
+	); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
+		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
+		prID, userID, fmt.Sprintf(`{"pr_no":"%s","status":"COMPLETED"}`, prNo),
+	)
+	return err
+}
+
 // deductStockOnSubmit implements the "auto-split from available stock" rule for PR
 // submission: for every line, whatever is currently on hand in stock_item is reserved
 // immediately (first-come-first-served, no blocking), and the remainder is routed to
 // qty_to_order for later procurement via PO. qty_reserved and qty_to_order are persisted
 // on purchase_request_line so downstream PO-line creation knows how much is still
-// orderable. For order_type='cost' PRs, the reserved qty is also mirrored into
-// project_stock via addToProjectStock, matching how Requisition/StockTransfer track
-// project-level usage. All writes happen inside the caller's tx so a failure anywhere
+// orderable. For order_type='cost' PRs, the reserved qty is also credited to the project's
+// ic_project_cost_item via creditProjectCostItem (upsert + lock, ref_type='PR' transaction
+// row with pr_id/pr_line_id; unit cost from pickPRUnitCost) — it no longer touches
+// project_stock. A reserved cost line without a cost_subgroup_id is rejected with a 400
+// naming the material. All writes happen inside the caller's tx so a failure anywhere
 // rolls back PR completion too.
 // Lines with deduct_stock=false skip stock_item/stock_transaction entirely — qty_reserved
 // is forced to 0 and qty_to_order to qty_requested, routing the whole line to PO.
 func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int64, orderType string, projectCode *string, userID int64) error {
 	rows, err := tx.Query(ctx, `
-		SELECT id, mat_code, qty_requested, deduct_stock
+		SELECT id, mat_code, qty_requested, deduct_stock, cost_subgroup_id
 		FROM purchase_request_line
 		WHERE pr_id = $1`, prID)
 	if err != nil {
 		return err
 	}
 	type line struct {
-		ID           int64
-		MatCode      string
-		QtyRequested float64
-		DeductStock  bool
+		ID             int64
+		MatCode        string
+		QtyRequested   float64
+		DeductStock    bool
+		CostSubgroupID *int64
 	}
 	var lines []line
 	for rows.Next() {
 		var l line
-		if err := rows.Scan(&l.ID, &l.MatCode, &l.QtyRequested, &l.DeductStock); err != nil {
+		if err := rows.Scan(&l.ID, &l.MatCode, &l.QtyRequested, &l.DeductStock, &l.CostSubgroupID); err != nil {
 			rows.Close()
 			return err
 		}
@@ -586,6 +631,10 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 			continue
 		}
 
+		if orderType == "cost" && projectCode != nil && l.CostSubgroupID == nil {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("วัสดุ %s ยังไม่ได้ระบุรหัสต้นทุน (cost code) กรุณาระบุก่อนยืนยัน PR", l.MatCode))
+		}
+
 		if _, err := tx.Exec(ctx,
 			`UPDATE stock_item SET qty = qty - $1, updated_at = NOW() WHERE id = $2`,
 			qtyReserved, itemID,
@@ -611,12 +660,189 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 		}
 
 		if orderType == "cost" && projectCode != nil {
-			if err := addToProjectStock(ctx, tx, *projectCode, l.MatCode, unit, qtyReserved); err != nil {
+			unitCost, err := pickPRUnitCost(ctx, tx, itemID, l.MatCode)
+			if err != nil {
+				return err
+			}
+			if err := creditProjectCostItem(ctx, tx, *projectCode, l.MatCode, *l.CostSubgroupID, prID, l.ID, qtyReserved, unitCost, userID); err != nil {
 				return err
 			}
 		}
 	}
 
+	return nil
+}
+
+// pickPRUnitCost: the unit cost recorded when PR-fulfilled stock is credited to a project —
+// stock_item.unit_cost if > 0, else the latest non-cancelled PO line price for the mat_code
+// (same "real price" rule as the materials picker's last_price), else 0.
+func pickPRUnitCost(ctx context.Context, tx pgx.Tx, itemID int64, matCode string) (float64, error) {
+	var unitCost float64
+	if err := tx.QueryRow(ctx, `SELECT unit_cost FROM stock_item WHERE id = $1`, itemID).Scan(&unitCost); err != nil {
+		return 0, err
+	}
+	if unitCost > 0 {
+		return unitCost, nil
+	}
+	err := tx.QueryRow(ctx, `
+		SELECT pol.unit_price
+		FROM purchase_order_line pol
+		JOIN purchase_order po ON po.id = pol.po_id AND po.deleted_at IS NULL
+		WHERE pol.mat_code = $1 AND pol.status != 'CANCELLED' AND po.status != 'CANCELLED' AND pol.unit_price > 0
+		ORDER BY po.po_date DESC, pol.id DESC
+		LIMIT 1`, matCode).Scan(&unitCost)
+	if err == pgx.ErrNoRows {
+		return 0, nil
+	}
+	return unitCost, err
+}
+
+// creditProjectCostItem credits stock taken from the warehouse for a cost PR line to the
+// project's ic_project_cost_item (same upsert/lock pattern as ic_project_movement's
+// warehouse->project TRANSFER) and records a ref_type='PR' transaction row. last_unit_cost is
+// never overwritten with 0.
+func creditProjectCostItem(ctx context.Context, tx pgx.Tx, projectCode, matCode string, costSubgroupID, prID, prLineID int64, qty, unitCost float64, userID int64) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO ic_project_cost_item (project_code, mat_code, cost_subgroup_id, item_name, unit, qty_on_hand, last_unit_cost)
+		SELECT $1, mc.mat_code, $3,
+		       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), mc.mat_code),
+		       u.unit_name, 0, 0
+		FROM material_code mc
+		LEFT JOIN mat_name mn  ON mc.mat_name_id = mn.id
+		LEFT JOIN spec_size sp ON mc.spec_id = sp.id
+		LEFT JOIN unit u       ON mc.unit_id = u.id
+		WHERE mc.mat_code = $2
+		ON CONFLICT (project_code, mat_code, cost_subgroup_id) DO NOTHING`,
+		projectCode, matCode, costSubgroupID,
+	); err != nil {
+		return err
+	}
+	var itemID int64
+	var before float64
+	if err := tx.QueryRow(ctx, `
+		SELECT id, qty_on_hand FROM ic_project_cost_item
+		WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3 FOR UPDATE`,
+		projectCode, matCode, costSubgroupID,
+	).Scan(&itemID, &before); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("วัสดุ %s ไม่พบในข้อมูลวัสดุ ไม่สามารถบันทึกเข้าโครงการได้", matCode))
+	}
+	after := before + qty
+	if _, err := tx.Exec(ctx, `
+		UPDATE ic_project_cost_item
+		SET qty_on_hand = $1, last_unit_cost = CASE WHEN $2::numeric > 0 THEN $2::numeric ELSE last_unit_cost END, updated_at = NOW()
+		WHERE id = $3`, after, unitCost, itemID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO ic_project_cost_item_transaction
+		    (project_cost_item_id, qty, qty_before, qty_after, unit_cost, remarks, ref_type, pr_id, pr_line_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, 'PR fulfilled from stock', 'PR', $6, $7, $8)`,
+		itemID, qty, before, after, unitCost, prID, prLineID, userID)
+	return err
+}
+
+// reversePRStockTx undoes what deductStockOnSubmit did for a PR, inside the caller's tx:
+//  1. cost PRs: per pr_line_id, net the ref_type='PR' rows of ic_project_cost_item_transaction;
+//     if net > 0 the project must still hold that much (else 409), then subtract it and write a
+//     negative PR row. Net 0 (already reversed) writes nothing, so calling it twice is a no-op.
+//  2. restore stock_item.qty from the unreversed stock_transaction OUT rows, add offsetting IN rows
+//     and stamp reversed_at on the OUT rows.
+//
+// Nothing is ever deleted; a failure returns an error and the caller's tx rolls everything back.
+func reversePRStockTx(ctx context.Context, tx pgx.Tx, prID, userID int64) error {
+	costRows, err := tx.Query(ctx, `
+		SELECT t.pr_line_id, t.project_cost_item_id, ici.mat_code, SUM(t.qty),
+		       (ARRAY_AGG(t.unit_cost ORDER BY t.id DESC))[1]
+		FROM ic_project_cost_item_transaction t
+		JOIN ic_project_cost_item ici ON ici.id = t.project_cost_item_id
+		WHERE t.ref_type = 'PR' AND t.pr_id = $1
+		GROUP BY t.pr_line_id, t.project_cost_item_id, ici.mat_code
+		HAVING SUM(t.qty) > 0
+		ORDER BY t.pr_line_id`, prID)
+	if err != nil {
+		return err
+	}
+	type costRev struct {
+		PRLineID, ItemID int64
+		MatCode          string
+		Net, UnitCost    float64
+	}
+	var costRevs []costRev
+	for costRows.Next() {
+		var r costRev
+		if err := costRows.Scan(&r.PRLineID, &r.ItemID, &r.MatCode, &r.Net, &r.UnitCost); err != nil {
+			costRows.Close()
+			return err
+		}
+		costRevs = append(costRevs, r)
+	}
+	costRows.Close()
+	for _, r := range costRevs {
+		var before float64
+		if err := tx.QueryRow(ctx, `SELECT qty_on_hand FROM ic_project_cost_item WHERE id = $1 FOR UPDATE`, r.ItemID).Scan(&before); err != nil {
+			return err
+		}
+		if before < r.Net {
+			return fiber.NewError(fiber.StatusConflict, fmt.Sprintf(
+				"ไม่สามารถแก้ไขได้ เนื่องจากโครงการใช้/ย้ายวัสดุ %s ไปแล้ว (คงเหลือ %.4f จากที่ต้องคืน %.4f) กรุณาติดต่อผู้ดูแลระบบ",
+				r.MatCode, before, r.Net))
+		}
+		after := before - r.Net
+		if _, err := tx.Exec(ctx, `UPDATE ic_project_cost_item SET qty_on_hand = $1, updated_at = NOW() WHERE id = $2`, after, r.ItemID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ic_project_cost_item_transaction
+			    (project_cost_item_id, qty, qty_before, qty_after, unit_cost, remarks, ref_type, pr_id, pr_line_id, created_by)
+			VALUES ($1, $2, $3, $4, $5, 'reverse PR stock fulfilment (reopen)', 'PR', $6, $7, $8)`,
+			r.ItemID, -r.Net, before, after, r.UnitCost, prID, r.PRLineID, userID); err != nil {
+			return err
+		}
+	}
+
+	issueRows, err := tx.Query(ctx, `
+		SELECT st.id, st.item_id, st.qty
+		FROM stock_transaction st
+		WHERE st.ref_doc_type = 'PR' AND st.ref_doc_id = $1 AND st.txn_type = 'OUT' AND st.reversed_at IS NULL
+		FOR UPDATE OF st`, prID)
+	if err != nil {
+		return err
+	}
+	type issuedQty struct {
+		TxnID, ItemID int64
+		Qty           float64
+	}
+	var issued []issuedQty
+	for issueRows.Next() {
+		var q issuedQty
+		if err := issueRows.Scan(&q.TxnID, &q.ItemID, &q.Qty); err != nil {
+			issueRows.Close()
+			return err
+		}
+		issued = append(issued, q)
+	}
+	issueRows.Close()
+	for _, q := range issued {
+		if _, err := tx.Exec(ctx, `UPDATE stock_item SET qty = qty + $1, updated_at = NOW() WHERE id = $2`, q.Qty, q.ItemID); err != nil {
+			return err
+		}
+		txnNo, err := generateTxnNo(ctx, tx)
+		if err != nil {
+			return err
+		}
+		// 'IN' (constraint-legal), mirrors the submit-side 'OUT'.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO stock_transaction
+			    (txn_no, txn_type, item_id, qty, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
+			VALUES ($1,'IN',$2,$3,'PR',$4,'คืน stock จากการ reopen PR',CURRENT_DATE,$5)`,
+			txnNo, q.ItemID, q.Qty, prID, userID); err != nil {
+			return err
+		}
+		// Mark the OUT row consumed so a later Reopen doesn't re-reverse it.
+		if _, err := tx.Exec(ctx, `UPDATE stock_transaction SET reversed_at = NOW() WHERE id = $1`, q.TxnID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -630,10 +856,12 @@ func (h *PRHandler) deductStockOnSubmit(ctx context.Context, tx pgx.Tx, prID int
 // @Description  those states manually first. Reverses any stock
 // @Description  deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
 // @Description  ref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an
-// @Description  offsetting 'IN' transaction, then sets status back to DRAFT. Relies on the
-// @Description  confirmed rule that a PR never has duplicate mat_code across its own lines, so
-// @Description  reversing by ref_doc_id=pr_id alone (without a pr_line_id column on
-// @Description  stock_transaction) is unambiguous.
+// @Description  offsetting 'IN' transaction, then sets status back to DRAFT. For cost PRs it also
+// @Description  reverses the project credit: per pr_line_id it nets the ref_type='PR' rows of
+// @Description  ic_project_cost_item_transaction and, if the net is > 0, subtracts it from
+// @Description  ic_project_cost_item.qty_on_hand (409 if the project no longer holds that much)
+// @Description  and writes a negative 'PR' row. Idempotent: a net of 0 writes nothing. Nothing
+// @Description  is deleted. project_stock is not involved.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
@@ -696,78 +924,8 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 			"กรุณายกเลิก PO ต่อไปนี้ก่อนแก้ไข PR: %s", strings.Join(blockingPONos, ", ")))
 	}
 
-	// FOR UPDATE here is belt-and-suspenders: the purchase_request row lock acquired above
-	// already serializes concurrent Reopen calls for this PR (a second Reopen blocks until
-	// the first commits, then re-reads status='DRAFT' and is rejected), so this select can't
-	// actually race in practice. Locking these rows too costs nothing and guards against any
-	// future code path that reverses stock_transaction rows without first locking the PR.
-	issueRows, err := tx.Query(ctx, `
-		SELECT st.id, st.item_id, st.qty, si.mat_code
-		FROM stock_transaction st
-		JOIN stock_item si ON si.id = st.item_id
-		WHERE st.ref_doc_type = 'PR' AND st.ref_doc_id = $1 AND st.txn_type = $2 AND st.reversed_at IS NULL
-		FOR UPDATE OF st`, id, "OUT")
-	if err != nil {
+	if err := reversePRStockTx(ctx, tx, id, userID); err != nil {
 		return err
-	}
-	type issuedQty struct {
-		TxnID   int64
-		ItemID  int64
-		Qty     float64
-		MatCode string
-	}
-	var issued []issuedQty
-	for issueRows.Next() {
-		var q issuedQty
-		if err := issueRows.Scan(&q.TxnID, &q.ItemID, &q.Qty, &q.MatCode); err != nil {
-			issueRows.Close()
-			return err
-		}
-		issued = append(issued, q)
-	}
-	issueRows.Close()
-
-	for _, q := range issued {
-		if _, err := tx.Exec(ctx,
-			`UPDATE stock_item SET qty = qty + $1, updated_at = NOW() WHERE id = $2`,
-			q.Qty, q.ItemID,
-		); err != nil {
-			return err
-		}
-
-		if orderType == "cost" && projectCode != nil {
-			if err := deductProjectStock(ctx, tx, *projectCode, q.MatCode, q.Qty); err != nil {
-				if fe, ok := err.(*fiber.Error); ok {
-					return fiber.NewError(fiber.StatusConflict,
-						"ไม่สามารถแก้ไขได้ เนื่องจากโครงการใช้วัสดุนี้ไปแล้ว กรุณาติดต่อผู้ดูแลระบบ ("+fe.Message+")")
-				}
-				return err
-			}
-		}
-
-		txnNo, err := generateTxnNo(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO stock_transaction
-			    (txn_no, txn_type, item_id, qty, ref_doc_type, ref_doc_id, remarks, txn_date, created_by)
-			VALUES ($1,$2,$3,$4,'PR',$5,'คืน stock จากการ reopen PR',CURRENT_DATE,$6)`,
-			// 'IN', not TxnTypeReturn ("RETURN") — same constraint mismatch as the
-			// submit-side 'OUT' fix above; mirrors it as the reversal direction.
-			txnNo, "IN", q.ItemID, q.Qty, id, userID,
-		); err != nil {
-			return err
-		}
-
-		// Mark the OUT row consumed so a future Reopen (after another submit→reopen cycle)
-		// doesn't re-reverse it — this was the root cause of the double/triple-reversal bug.
-		if _, err := tx.Exec(ctx,
-			`UPDATE stock_transaction SET reversed_at = NOW() WHERE id = $1`,
-			q.TxnID,
-		); err != nil {
-			return err
-		}
 	}
 
 	if _, err := tx.Exec(ctx,
@@ -853,6 +1011,12 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	}
 	if strings.TrimSpace(req.PRDate) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_date is required")
+	}
+	if req.Status == "" {
+		req.Status = "DRAFT"
+	}
+	if req.Status != "DRAFT" && req.Status != "COMPLETED" {
+		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or COMPLETED")
 	}
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least one line required")
@@ -986,6 +1150,10 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 
+	if req.Status == "COMPLETED" && orderType == "cost" && (req.ProjectCode == nil || strings.TrimSpace(*req.ProjectCode) == "") {
+		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -1043,6 +1211,17 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		prID, claims.UserID, fmt.Sprintf(`{"pr_no":"%s","action":"edit","status":"DRAFT"}`, prNo),
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "audit log error: "+err.Error())
+	}
+
+	// Client asked for COMPLETED: same completion path as Submit/Create, same tx — any failure
+	// rolls back the whole edit (deferred Rollback) and surfaces as an error, never a 200 with a DRAFT PR.
+	if req.Status == "COMPLETED" {
+		if err := validateNoMixedDeductStock(ctx, tx, prID); err != nil {
+			return err
+		}
+		if err := h.completePRTx(ctx, tx, prID, prNo, orderType, req.ProjectCode, "DRAFT", claims.UserID, "confirmed via edit"); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
