@@ -876,7 +876,7 @@ type PRLinesWithPOStatusResponse struct {
 }
 
 type CreatePRRequest struct {
-	PRNo          string                 `json:"pr_no" validate:"required"`
+	PRNo          string                 `json:"pr_no"` // ignored — pr_no is generated server-side at save time
 	PRDate        string                 `json:"pr_date" validate:"required"`
 	RequestedBy   int64                  `json:"requested_by" validate:"required"`
 	LocationText  string                 `json:"location_text" validate:"required"`
@@ -1053,7 +1053,7 @@ type POLine struct {
 }
 
 type CreatePORequest struct {
-	PONo          string  `json:"po_no"` // ignored — Create always generates po_no server-side; kept so old clients sending it still parse
+	PONo          string  `json:"po_no"` // ignored — po_no is always generated server-side at save time
 	SupplierID    int64   `json:"supplier_id" validate:"required"`
 	PRID          *int64  `json:"pr_id,omitempty"`
 	RFQID         *int64  `json:"rfq_id,omitempty"`

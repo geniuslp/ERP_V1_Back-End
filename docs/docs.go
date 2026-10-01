@@ -2471,7 +2471,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with \"this receive document has already been received — create a new receive document\" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_cost_item/ic_project_cost_item_transaction (order_type='cost', tagging each new transaction row with this receive_document_id), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.",
+                "description": "One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with \"this receive document has already been received — create a new receive document\" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_receipt_pool/ic_project_receipt_pool_transaction (order_type='cost', RECEIVE row tagged with this receive_document_id; ic_project_cost_item is only credited later by a movement ISSUE/TRANSFER), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2593,7 +2593,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or ic_project_cost_item/ic_project_cost_item_transaction (order_type='cost'), and recomputes purchase_order.status_receive. Does not touch receive_no.",
+                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3364,7 +3364,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Reads ic_project_cost_item (the destination-side balance table) for this project, joined to material_code for the display name (mat_name + spec_description, same pattern as available-materials) and to the 4-level cost code hierarchy. only_with_stock defaults to true (qty_on_hand \u003e 0); pass only_with_stock=false to also see zero-balance rows. job_code (e.g. \"MP\") uses the same decomposition as available-materials (cost_subject.subject_code = first character, cost_job.job_code = the rest). search matches mat_code or the composed mat_name (case-insensitive). Note this is the cost-item balance only — received-but-not-yet-issued quantity lives in ic_project_receipt_pool and is not included here.",
+                "description": "Reads ic_project_cost_item (the destination-side balance table) for this project, joined to material_code for the display name (mat_name + spec_description, same pattern as available-materials) and to the 4-level cost code hierarchy. only_with_stock defaults to true (qty_on_hand \u003e 0); pass only_with_stock=false to also see zero-balance rows. job_code (e.g. \"MP\") uses the same decomposition as available-materials (cost_subject.subject_code = first character, cost_job.job_code = the rest). search matches mat_code or the composed mat_name (case-insensitive). Note this is the cost-item balance only — received-but-not-yet-issued quantity lives in ic_project_receipt_pool and is not included here.\nDefault ordering: most recently updated first (updated_at DESC, id DESC); for warehouse-linked projects, stock_item.updated_at DESC, id DESC.",
                 "produces": [
                     "application/json"
                 ],
@@ -4064,6 +4064,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "scope=oh returns only active OH/General subgroups (cost_subject.subject_code = 'OH') — the only cost codes allowed on asset_equipment / office_equipment / asset_tool PR/PO lines. Rows carry subgroup_id (id), subgroup_code, subgroup_name and the 4-level cost_code, ordered by cost_code. Never identify OH by job_code 'G' alone — it also exists under subjects L, M, S.",
                 "produces": [
                     "application/json"
                 ],
@@ -4071,9 +4072,23 @@ const docTemplate = `{
                     "CostCode"
                 ],
                 "summary": "Full joined cost-code list with computed cost_code string",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "oh = only OH/General active subgroups",
+                        "name": "scope",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -7869,7 +7884,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "รองรับ delivery_location (สถานที่ส่งของ), site_delivery_date (กำหนดส่งของหน้างาน), responsible_factory (โรงงานที่รับผิดชอบ) เป็น field เสริมคู่กับ department",
+                "description": "รองรับ delivery_location (สถานที่ส่งของ), site_delivery_date (กำหนดส่งของหน้างาน), responsible_factory (โรงงานที่รับผิดชอบ) เป็น field เสริมคู่กับ department\nmemo_no is generated server-side at save time (memo_number_counter, inside the create transaction, MEM-YYMM-NNNN); there is no reserve endpoint. Response data is the full memo including id and memo_no.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7896,31 +7911,6 @@ const docTemplate = `{
                         "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/models.Memo"
-                        }
-                    }
-                }
-            }
-        },
-        "/memo/reserve-number": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Atomically increments memo_number_counter for the current year_month (YYYYMM) and formats it immediately as the real memo_no (MEM-\u003cYYMM\u003e-NNNN), same display format as before. Unlike the old memo_seq-based version, this resets to 0001 at the start of each new year_month instead of climbing forever. The number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The frontend calls this once when the create-memo page opens, then submits the returned memo_no as part of POST /memo.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Memo"
-                ],
-                "summary": "Reserve the next Memo number (consumes memo_number_counter, resets monthly)",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -8711,7 +8701,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request. job_code is required overall — if omitted and pr_id is set, it's auto-filled from the source PR's job_code (an explicit job_code in the body always wins). lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are optional free text, unvalidated.",
+                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request. job_code is required overall — if omitted and pr_id is set, it's auto-filled from the source PR's job_code (an explicit job_code in the body always wins). lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are optional free text, unvalidated.\npo_no is generated server-side at save time (po_number_counter, inside the create transaction); any po_no in the body is ignored. Response data includes po_id and po_no (PO-YYYYMM-NNNN).",
                 "consumes": [
                     "application/json"
                 ],
@@ -8891,31 +8881,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/po/next-number": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Read-only preview of the next po_no, computed the same way as POST /po's real generation. This is NOT reserved — it's not written or locked anywhere, so two users previewing at the same time may see the same value; only whoever actually saves first gets it, since POST /po recomputes fresh inside its own transaction at save time. Purely cosmetic for the create-page hint.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Purchase Order"
-                ],
-                "summary": "Preview the next PO number",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    }
-                }
-            }
-        },
         "/po/pr-lines/{pr_id}": {
             "get": {
                 "security": [
@@ -8992,31 +8957,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.PaginatedResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/po/reserve-number": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Returns what the next po_no would be for the current year_month (YYYYMM), WITHOUT incrementing po_number_counter. This is a best-effort, non-binding preview for the create-PO form only: two users opening the form at the same time may see the same number, and the number may already be taken by submit time. POST /po ignores any po_no in the request body and always generates the authoritative number inside its own transaction — display the po_no returned by POST /po after success, not this preview.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Purchase Order"
-                ],
-                "summary": "Preview the next PO number (peeks at po_number_counter, does NOT consume it)",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -9907,6 +9847,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "stock | cost | asset_equipment | office_equipment | asset_tool",
+                        "name": "order_type",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "default": 1,
                         "description": "page",
@@ -9936,7 +9882,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.",
+                "description": "job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.\npr_no is generated server-side at save time (pr_number_counter, inside the create transaction); any pr_no in the body is ignored. Response data: {\"id\": \u003cint\u003e, \"pr_no\": \"PRYYYYMM-NNNN\"}.",
                 "consumes": [
                     "application/json"
                 ],
@@ -9967,56 +9913,6 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    }
-                }
-            }
-        },
-        "/pr/next-number": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Returns the next available PR number for the current month: PR\u003cYYYYMM\u003e-\u003c4-digit sequence\u003e, e.g. PR202608-0001. Sequence resets to 0001 each new month.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Purchase Request"
-                ],
-                "summary": "Get next PR number",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    }
-                }
-            }
-        },
-        "/pr/reserve-number": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Atomically increments pr_number_counter for the current year_month (YYYYMM) and formats it immediately as the real pr_no. Unlike the old pr_seq-based version, this resets to 0001 at the start of each new year_month instead of climbing forever. The number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The frontend calls this once when the create-PR page opens, then submits the returned pr_no as part of POST /pr.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Purchase Request"
-                ],
-                "summary": "Reserve the next PR number (consumes pr_number_counter, resets monthly)",
-                "responses": {
-                    "200": {
-                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -14911,7 +14807,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "po_no": {
-                    "description": "ignored — Create always generates po_no server-side; kept so old clients sending it still parse",
+                    "description": "ignored — po_no is always generated server-side at save time",
                     "type": "string"
                 },
                 "pr_id": {
@@ -14998,7 +14894,6 @@ const docTemplate = `{
                 "lines",
                 "location_text",
                 "pr_date",
-                "pr_no",
                 "requested_by"
             ],
             "properties": {
@@ -15039,6 +14934,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "pr_no": {
+                    "description": "ignored — pr_no is generated server-side at save time",
                     "type": "string"
                 },
                 "pr_type": {

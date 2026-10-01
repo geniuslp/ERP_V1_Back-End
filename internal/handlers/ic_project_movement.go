@@ -1319,7 +1319,9 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 	}
 	offset := (page - 1) * size
 
-	where := []string{"ici.project_code = $1"}
+	// asset/office PO types never belong in IC (po join below is a LEFT JOIN, so MOVEMENT/PR rows
+	// with no po_id are unaffected)
+	where := []string{"ici.project_code = $1", "(t.po_id IS NULL OR po.order_type IN ('stock','cost'))"}
 	args := []interface{}{projectCode}
 	i := 2
 
@@ -1419,6 +1421,7 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 // @Param        job_code        query  string  false  "Filter by job code (e.g. MP)"
 // @Param        search          query  string  false  "Match mat_code or mat_name"
 // @Param        only_with_stock query  bool    false  "Only rows with qty_on_hand > 0 (default true)"
+// @Description  Default ordering: most recently updated first (updated_at DESC, id DESC); for warehouse-linked projects, stock_item.updated_at DESC, id DESC.
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
 // @Failure      500  {object}  fiber.Map
@@ -1445,6 +1448,13 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
+		// newest first (shared queryLinkedWarehouseStock keeps its mat_code order for the picker)
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].UpdatedAt != items[j].UpdatedAt {
+				return items[i].UpdatedAt > items[j].UpdatedAt
+			}
+			return items[i].ItemID > items[j].ItemID
+		})
 		result := make([]fiber.Map, 0, len(items))
 		for _, it := range items {
 			result = append(result, fiber.Map{
@@ -1489,7 +1499,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 		JOIN cost_job cj           ON cj.id = cg.job_id
 		JOIN cost_subject csub     ON csub.id = cj.subject_id
 		WHERE %s
-		ORDER BY mc.mat_code, ici.cost_subgroup_id`, strings.Join(where, " AND ")), args...)
+		ORDER BY ici.updated_at DESC, ici.id DESC`, strings.Join(where, " AND ")), args...)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}

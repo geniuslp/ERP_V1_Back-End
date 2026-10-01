@@ -51,6 +51,7 @@ func (h *GoodsReceiptHandler) SearchApprovedPO(c *fiber.Ctx) error {
 		LEFT JOIN project pj ON pj.project_code = po.project_code
 		WHERE po.po_no ILIKE '%' || $1 || '%'
 		  AND po.status = 'APPROVED'
+		  AND po.order_type IN ('stock', 'cost')
 		  AND po.status_receive IN ('NOT_SENT', 'SENT', 'PARTIALLY_RECEIVED')
 		ORDER BY po.po_date DESC, po.po_no ASC`, poNo)
 	if err != nil {
@@ -161,11 +162,14 @@ func (h *GoodsReceiptHandler) Receive(c *fiber.Ctx) error {
 
 	ctx := context.Background()
 
-	var poStatus, poStatusReceive string
+	var poStatus, poStatusReceive, poOrderType string
 	var poLocationCode, poWarehouseCode *string
 	var supplierID *int64
-	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, location_code, warehouse_code, supplier_id FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus, &poStatusReceive, &poLocationCode, &poWarehouseCode, &supplierID); err != nil {
+	if err := h.db.QueryRow(ctx, `SELECT status, status_receive, location_code, warehouse_code, supplier_id, order_type FROM purchase_order WHERE id=$1`, req.POID).Scan(&poStatus, &poStatusReceive, &poLocationCode, &poWarehouseCode, &supplierID, &poOrderType); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
+	}
+	if IsAssetOrOfficeType(poOrderType) {
+		return fiber.NewError(fiber.StatusBadRequest, "PO ประเภทนี้ไม่มีขั้นตอนรับของเข้าคลัง")
 	}
 	if poStatus != "APPROVED" {
 		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved, current status: "+poStatus)

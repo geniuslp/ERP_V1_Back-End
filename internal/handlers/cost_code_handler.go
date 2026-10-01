@@ -459,13 +459,24 @@ const costCodeFullQuery = `
 
 // ListFull godoc
 // @Summary      Full joined cost-code list with computed cost_code string
+// @Description  scope=oh returns only active OH/General subgroups (cost_subject.subject_code = 'OH') — the only cost codes allowed on asset_equipment / office_equipment / asset_tool PR/PO lines. Rows carry subgroup_id (id), subgroup_code, subgroup_name and the 4-level cost_code, ordered by cost_code. Never identify OH by job_code 'G' alone — it also exists under subjects L, M, S.
 // @Tags         CostCode
 // @Security     BearerAuth
 // @Produce      json
+// @Param        scope  query  string  false  "oh = only OH/General active subgroups"
 // @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
 // @Router       /master/cost-code/full [get]
 func (h *CostCodeHandler) ListFull(c *fiber.Ctx) error {
-	rows, err := h.db.Query(context.Background(), costCodeFullQuery+` ORDER BY cost_code`)
+	query := costCodeFullQuery + ` ORDER BY cost_code`
+	switch scope := c.Query("scope"); scope {
+	case "":
+	case "oh":
+		query = costCodeFullQuery + ` WHERE sub.subject_code = 'OH' AND sg.is_active ORDER BY cost_code`
+	default:
+		return fiber.NewError(fiber.StatusBadRequest, "scope ต้องเป็น oh หรือไม่ระบุ")
+	}
+	rows, err := h.db.Query(context.Background(), query)
 	if err != nil {
 		return err
 	}

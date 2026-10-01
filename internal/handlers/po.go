@@ -158,6 +158,7 @@ func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poL
 // @Param        status    query  string  false  "status filter — comma-separated for multiple, e.g. PENDING_APPROVAL,PENDING_REAPPROVAL"
 // @Param        supplier  query  string  false  "supplier_id filter"
 // @Param        my        query  bool    false  "when true, only POs created by the current user"
+// @Param        order_type query string  false  "filter: stock | cost | asset_equipment | office_equipment | asset_tool"
 // @Param        page      query  int     false  "page"  default(1)
 // @Param        page_size query  int     false  "page_size (alias: limit)"  default(20)
 // @Param        limit     query  int     false  "alias for page_size — used if page_size is not sent"
@@ -201,6 +202,14 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 			args = append(args, statuses)
 			conditions = append(conditions, fmt.Sprintf("po.status = ANY($%d)", len(args)))
 		}
+	}
+
+	if v := strings.TrimSpace(c.Query("order_type")); v != "" {
+		if err := validateOrderType(v); err != nil {
+			return err
+		}
+		args = append(args, v)
+		conditions = append(conditions, fmt.Sprintf("po.order_type = $%d", len(args)))
 	}
 
 	var where string
@@ -913,6 +922,7 @@ func resolveLineCostSubgroupID(explicitCostSubgroupID, prLineID *int64, prLineCo
 // @Param        body  body      models.CreatePORequest  true  "PO data"
 // @Success      201   {object}  fiber.Map
 // @Failure      400   {object}  fiber.Map
+// @Description  po_no is generated server-side at save time (po_number_counter, inside the create transaction); any po_no in the body is ignored. Response data includes po_id and po_no (PO-YYYYMM-NNNN).
 // @Router       /po [post]
 func (h *POHandler) Create(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
@@ -990,8 +1000,8 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if req.OrderType == "" {
 		req.OrderType = "stock"
 	}
-	if req.OrderType != "stock" && req.OrderType != "cost" {
-		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	if err := validateOrderType(req.OrderType); err != nil {
+		return err
 	}
 	if req.OrderType == "cost" && (req.PRID == nil || *req.PRID == 0) {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_id is required when order_type is 'cost'")
@@ -1047,6 +1057,10 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if jobCode == nil || strings.TrimSpace(*jobCode) == "" {
 		jobCode = prJobCode
 	}
+	if (jobCode == nil || strings.TrimSpace(*jobCode) == "") && IsAssetOrOfficeType(effectiveOrderType) {
+		def := DefaultAssetJobCode
+		jobCode = &def
+	}
 	if jobCode == nil || strings.TrimSpace(*jobCode) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "job_code is required (provide it explicitly or link a pr_id with a job_code set)")
 	}
@@ -1054,18 +1068,22 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	// create/edit time, so this is mostly a no-op guard there; it matters for the client-
 	// override path with no pr_id, where an explicit job_code + project_code combination has
 	// never been checked against project.job_codes[] before.
-	if err := validateJobCodeForProject(ctx, h.db, *jobCode, projectCode); err != nil {
+	// Asset/office types: only the fixed 12-value list applies, not project.job_codes[].
+	if IsAssetOrOfficeType(effectiveOrderType) {
+		if err := ValidateAssetJobCode(*jobCode); err != nil {
+			return err
+		}
+	} else if err := validateJobCodeForProject(ctx, h.db, *jobCode, projectCode); err != nil {
 		return err
 	}
 
-	// po_no is now reserved up front via GET /po/reserve-number (po_number_counter, monthly
-	// reset), so no retry-on-collision loop is needed here anymore — the counter's per-month
-	// UPSERT guarantees uniqueness within a given year_month.
+	// po_no is generated inside createPOTx (po_number_counter, monthly reset, same transaction as
+	// the INSERT); any client-sent po_no is ignored.
 	poID, poNo, approvalID, totalAmount, vatAmount, netAmount, err := h.createPOTx(ctx, claims.UserID, req, status, warehouseCode, projectCode, jobCode, requestedBy, prLineCostSubgroup)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "po_no") {
-			return fiber.NewError(fiber.StatusConflict, "po_no already used — call reserve-number again")
+			return fiber.NewError(fiber.StatusConflict, "เลขที่เอกสาร PO ซ้ำ กรุณาลองบันทึกอีกครั้ง")
 		}
 		return err
 	}
@@ -1090,23 +1108,18 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 	}
 	defer tx.Rollback(ctx)
 
-	// po_no is generated HERE, inside the same transaction as the purchase_order INSERT, and
-	// req.PONo (the number previewed via GET /po/reserve-number when the form opened) is
-	// deliberately ignored — a form left open can hold a number that is stale by submit time.
-	// The counter row is locked until commit, so there is no gap between "get number" and "use
-	// number", and a rolled-back create doesn't consume a number. The exists-check guards against
-	// the counter lagging behind po_no values inserted outside this flow.
-	ym := time.Now().Format("200601")
+	// po_no is generated HERE, inside the same transaction as the purchase_order INSERT, and any
+	// client-sent req.PONo is ignored. The counter row is locked until commit, so there is no gap
+	// between "get number" and "use number", and a rolled-back create doesn't consume a number.
+	// The exists-check (max 20 attempts) is a safety net against the counter lagging behind po_no
+	// values inserted outside this flow.
+	now := bangkokNow()
 	for attempt := 0; attempt < 20; attempt++ {
-		var seq int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO po_number_counter (year_month, last_seq) VALUES ($1, 1)
-			ON CONFLICT (year_month) DO UPDATE SET last_seq = po_number_counter.last_seq + 1
-			RETURNING last_seq`, ym,
-		).Scan(&seq); err != nil {
+		seq, err := nextMonthlyNumber(ctx, tx, "po_number_counter", now)
+		if err != nil {
 			return 0, "", nil, 0, 0, 0, err
 		}
-		poNo = fmt.Sprintf("PO-%s-%04d", ym, seq)
+		poNo = formatPONo(now, seq)
 		var taken bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM purchase_order WHERE po_no = $1)`, poNo).Scan(&taken); err != nil {
 			return 0, "", nil, 0, 0, 0, err
@@ -1210,6 +1223,11 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 		}
 		lc := calcs[i]
 		costSubgroupID := resolveLineCostSubgroupID(line.CostSubgroupID, line.PRLineID, prLineCostSubgroup)
+		if IsAssetOrOfficeType(req.OrderType) {
+			if err := requireOHCostSubgroup(ctx, tx, costSubgroupID, fmt.Sprintf("lines[%d]", i)); err != nil {
+				return 0, "", nil, 0, 0, 0, err
+			}
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO purchase_order_line
 			  (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type,
@@ -1535,8 +1553,8 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	if orderType == "" {
 		orderType = currentOrderType
 	}
-	if orderType != "stock" && orderType != "cost" {
-		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	if err := validateOrderType(orderType); err != nil {
+		return err
 	}
 	if orderType == "cost" && (req.PRID == nil || *req.PRID == 0) {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_id is required when order_type is 'cost'")
@@ -1570,7 +1588,12 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	}
 	// Same project-aware guard as Create — mostly a no-op when inherited from a PR (already
 	// validated there), matters for the explicit job_code + project_code override path.
-	if err := validateJobCodeForProject(ctx, h.db, *jobCode, projectCode); err != nil {
+	// Asset/office types: only the fixed 12-value list applies, not project.job_codes[].
+	if IsAssetOrOfficeType(orderType) {
+		if err := ValidateAssetJobCode(*jobCode); err != nil {
+			return err
+		}
+	} else if err := validateJobCodeForProject(ctx, h.db, *jobCode, projectCode); err != nil {
 		return err
 	}
 
@@ -1693,6 +1716,11 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		}
 		lc := calcs[i]
 		costSubgroupID := resolveLineCostSubgroupID(line.CostSubgroupID, line.PRLineID, prLineCostSubgroup)
+		if IsAssetOrOfficeType(orderType) {
+			if err := requireOHCostSubgroup(ctx, tx, costSubgroupID, fmt.Sprintf("lines[%d]", i)); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO purchase_order_line
 			  (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type,
@@ -1783,60 +1811,6 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		data["approval_request_id"] = *approvalID
 	}
 	return c.JSON(fiber.Map{"success": true, "data": data})
-}
-
-// NextPONumber godoc
-// @Summary      Preview the next PO number
-// @Description  Read-only preview of the next po_no, computed the same way as POST /po's real generation. This is NOT reserved — it's not written or locked anywhere, so two users previewing at the same time may see the same value; only whoever actually saves first gets it, since POST /po recomputes fresh inside its own transaction at save time. Purely cosmetic for the create-page hint.
-// @Tags         Purchase Order
-// @Security     BearerAuth
-// @Produce      json
-// @Success      200  {object}  fiber.Map
-// @Router       /po/next-number [get]
-func (h *POHandler) NextPONumber(c *fiber.Ctx) error {
-	now := time.Now()
-	prefix := fmt.Sprintf("PO-%d%02d-", now.Year(), int(now.Month()))
-
-	var lastNo string
-	err := h.db.QueryRow(context.Background(), `
-		SELECT po_no FROM purchase_order
-		WHERE po_no LIKE $1 AND status NOT IN ('CANCELLED')
-		ORDER BY po_no DESC LIMIT 1`, prefix+"%").Scan(&lastNo)
-
-	seq := 1
-	if err == nil {
-		parts := strings.Split(lastNo, "-")
-		if n, convErr := strconv.Atoi(parts[len(parts)-1]); convErr == nil {
-			seq = n + 1
-		}
-	} else if err != pgx.ErrNoRows {
-		return err
-	}
-
-	return c.JSON(fiber.Map{
-		"success": true,
-		"data":    fiber.Map{"next_number": fmt.Sprintf("%s%04d", prefix, seq)},
-	})
-}
-
-// ReservePONumber godoc
-// @Summary      Preview the next PO number (peeks at po_number_counter, does NOT consume it)
-// @Description  Returns what the next po_no would be for the current year_month (YYYYMM), WITHOUT incrementing po_number_counter. This is a best-effort, non-binding preview for the create-PO form only: two users opening the form at the same time may see the same number, and the number may already be taken by submit time. POST /po ignores any po_no in the request body and always generates the authoritative number inside its own transaction — display the po_no returned by POST /po after success, not this preview.
-// @Tags         Purchase Order
-// @Security     BearerAuth
-// @Produce      json
-// @Success      200  {object}  fiber.Map
-// @Router       /po/reserve-number [get]
-func (h *POHandler) ReservePONumber(c *fiber.Ctx) error {
-	ym := time.Now().Format("200601")
-	var last int64
-	err := h.db.QueryRow(context.Background(),
-		`SELECT last_seq FROM po_number_counter WHERE year_month = $1`, ym).Scan(&last)
-	if err != nil && err != pgx.ErrNoRows {
-		return err
-	}
-	poNo := fmt.Sprintf("PO-%s-%04d", ym, last+1)
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"po_no": poNo}})
 }
 
 // ApprovePO godoc
@@ -2302,6 +2276,11 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		d := decisions[i]
 
 		costSubgroupID := resolveLineCostSubgroupID(line.CostSubgroupID, line.PRLineID, prLineCostSubgroup)
+		if IsAssetOrOfficeType(orderType) {
+			if err := requireOHCostSubgroup(ctx, tx, costSubgroupID, fmt.Sprintf("lines[%d]", i)); err != nil {
+				return err
+			}
+		}
 
 		if d.isNew {
 			if _, err := tx.Exec(ctx, `
@@ -2427,11 +2406,15 @@ func (h *POHandler) Send(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
 	id := c.Params("id")
 
-	var currentStatus, currentStatusReceive string
+	var currentStatus, currentStatusReceive, sendOrderType string
 	if err := h.db.QueryRow(context.Background(),
-		`SELECT status, status_receive FROM purchase_order WHERE id=$1`, id,
-	).Scan(&currentStatus, &currentStatusReceive); err != nil {
+		`SELECT status, status_receive, order_type FROM purchase_order WHERE id=$1`, id,
+	).Scan(&currentStatus, &currentStatusReceive, &sendOrderType); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
+	}
+	if IsAssetOrOfficeType(sendOrderType) {
+		// status_receive tracks goods receiving, which these types don't have — stays NOT_SENT.
+		return fiber.NewError(fiber.StatusBadRequest, "PO ประเภทนี้ไม่มีขั้นตอนรับของ จึงไม่ใช้สถานะส่ง/รับ (status_receive คงเป็น NOT_SENT)")
 	}
 	if currentStatus != "APPROVED" {
 		return fiber.NewError(fiber.StatusBadRequest, "PO must be approved before sending")
@@ -2525,7 +2508,8 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 	defer tx.Rollback(ctx)
 
 	var poPRID *int64
-	if err := tx.QueryRow(ctx, `SELECT pr_id FROM purchase_order WHERE id=$1`, poID).Scan(&poPRID); err != nil {
+	var poOrderType string
+	if err := tx.QueryRow(ctx, `SELECT pr_id, order_type FROM purchase_order WHERE id=$1`, poID).Scan(&poPRID, &poOrderType); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 
@@ -2582,6 +2566,11 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 			discType = "pct"
 		}
 		costSubgroupID := resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		if IsAssetOrOfficeType(poOrderType) {
+			if err := requireOHCostSubgroup(ctx, tx, costSubgroupID, fmt.Sprintf("lines[%d]", i)); err != nil {
+				return err
+			}
+		}
 		var lineID int64
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO purchase_order_line (po_id, line_no, mat_code, pr_line_id, qty_ordered, unit_price, disc_type, description, remarks, status, cost_subgroup_id)
@@ -3173,6 +3162,7 @@ func (h *POHandler) GetReceivablePOs(c *fiber.Ctx) error {
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
 		WHERE po.status = 'APPROVED'
+		  AND po.order_type IN ('stock', 'cost')
 		  AND po.status_receive IN ('NOT_SENT', 'SENT', 'PARTIALLY_RECEIVED')
 		  AND EXISTS (
 		      SELECT 1 FROM purchase_order_line pol

@@ -225,7 +225,7 @@ func (h *ICHandler) ListProjectPOs(c *fiber.Ctx) error {
 	size := min(c.QueryInt("page_size", 20), 100)
 	offset := (page - 1) * size
 
-	where := []string{"po.project_code = $1", "po.status = 'APPROVED'"}
+	where := []string{"po.project_code = $1", "po.status = 'APPROVED'", "po.order_type IN ('stock','cost')"}
 	args := []interface{}{projectCode}
 	idx := 2
 
@@ -337,7 +337,7 @@ func (h *ICHandler) POSearchOptions(c *fiber.Ctx) error {
 	options := []ICSearchOption{}
 
 	prRows, err := h.db.Query(ctx,
-		`SELECT id, pr_no FROM purchase_request WHERE project_code = $1 ORDER BY pr_no`, projectCode)
+		`SELECT id, pr_no FROM purchase_request WHERE project_code = $1 AND order_type IN ('stock','cost') ORDER BY pr_no`, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list PRs: "+err.Error())
 	}
@@ -353,7 +353,7 @@ func (h *ICHandler) POSearchOptions(c *fiber.Ctx) error {
 	prRows.Close()
 
 	poRows, err := h.db.Query(ctx,
-		`SELECT id, po_no FROM purchase_order WHERE project_code = $1 ORDER BY po_no`, projectCode)
+		`SELECT id, po_no FROM purchase_order WHERE project_code = $1 AND status = 'APPROVED' AND order_type IN ('stock','cost') ORDER BY po_no`, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list POs: "+err.Error())
 	}
@@ -1093,7 +1093,7 @@ type icSubmitReceiveLinesRequest struct {
 
 // SubmitReceiveLines godoc
 // @Summary      Submit this round's PO line-item receiving (stock or cost destination)
-// @Description  One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with "this receive document has already been received — create a new receive document" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_cost_item/ic_project_cost_item_transaction (order_type='cost', tagging each new transaction row with this receive_document_id), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.
+// @Description  One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with "this receive document has already been received — create a new receive document" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_receipt_pool/ic_project_receipt_pool_transaction (order_type='cost', RECEIVE row tagged with this receive_document_id; ic_project_cost_item is only credited later by a movement ISSUE/TRANSFER), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.
 // @Tags         IC
 // @Security     BearerAuth
 // @Accept       json
@@ -1593,7 +1593,7 @@ func (h *ICHandler) ListReturnPOs(c *fiber.Ctx) error {
 	size := min(c.QueryInt("page_size", 20), 100)
 	offset := (page - 1) * size
 
-	where := []string{"po.project_code = $1", "po.status = 'APPROVED'", "po.status_receive IN ('PARTIALLY_RECEIVED','RECEIVED')"}
+	where := []string{"po.project_code = $1", "po.status = 'APPROVED'", "po.order_type IN ('stock','cost')", "po.status_receive IN ('PARTIALLY_RECEIVED','RECEIVED')"}
 	args := []interface{}{projectCode}
 	idx := 2
 
@@ -1786,7 +1786,7 @@ type icSubmitReturnLinesRequest struct {
 
 // SubmitReturnLines godoc
 // @Summary      Submit this round's PO line-item return (stock or cost source)
-// @Description  One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or ic_project_cost_item/ic_project_cost_item_transaction (order_type='cost'), and recomputes purchase_order.status_receive. Does not touch receive_no.
+// @Description  One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no.
 // @Tags         IC
 // @Security     BearerAuth
 // @Accept       json
@@ -1996,39 +1996,87 @@ func icReturnFromStock(ctx context.Context, tx pgx.Tx, matCode string, lineNo in
 	return nil
 }
 
-// icReturnFromProjectCost posts a PO-line return by subtracting from
-// ic_project_cost_item/ic_project_cost_item_transaction. Never auto-creates the cost item row —
-// a return implies the item must already exist from a prior receive.
+// icReturnFromProjectCost posts a cost-PO supplier return. Cost receives land in
+// ic_project_receipt_pool (see icReceiveToProjectCost), so the return deducts from the pool's
+// available balance (qty_received - qty_issued) first — by lowering qty_received, which keeps
+// qty_issued <= qty_received — and only the remainder, if any, from the matching
+// ic_project_cost_item (goods already issued/transferred into the project). Locks pool then cost
+// item (same order as movement submit). Never auto-creates either row; if the combined balance is
+// short it returns a Thai 400 with both available quantities and nothing is written.
 func icReturnFromProjectCost(ctx context.Context, tx pgx.Tx, projectCode, matCode string, costSubgroupID int64, returnQty, unitPrice float64, poID, poLineID, userID int64, remarks *string) error {
+	var poolID int64
+	var poolAvail float64
+	hasPool := true
+	if err := tx.QueryRow(ctx, `
+		SELECT id, qty_received - qty_issued FROM ic_project_receipt_pool
+		WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3 FOR UPDATE`,
+		projectCode, matCode, costSubgroupID,
+	).Scan(&poolID, &poolAvail); err != nil {
+		if err != pgx.ErrNoRows {
+			return err
+		}
+		hasPool = false
+		poolAvail = 0
+	}
+
 	var costItemID int64
-	var qtyBefore float64
+	var itemQty float64
+	hasItem := true
 	if err := tx.QueryRow(ctx, `
 		SELECT id, qty_on_hand FROM ic_project_cost_item
 		WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3 FOR UPDATE`,
 		projectCode, matCode, costSubgroupID,
-	).Scan(&costItemID, &qtyBefore); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("mat_code %s: no ic_project_cost_item row for project %s / cost_subgroup_id %d — cannot return an item that was never received", matCode, projectCode, costSubgroupID))
-	}
-	if returnQty > qtyBefore {
-		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("mat_code %s: return_qty %.4f exceeds available qty_on_hand %.4f", matCode, returnQty, qtyBefore))
-	}
-
-	qtyAfter := qtyBefore - returnQty
-	if _, err := tx.Exec(ctx, `
-		UPDATE ic_project_cost_item SET qty_on_hand = $1, updated_at = NOW() WHERE id = $2`,
-		qtyAfter, costItemID,
-	); err != nil {
-		return fmt.Errorf("mat_code %s: failed to update ic_project_cost_item: %w", matCode, err)
+	).Scan(&costItemID, &itemQty); err != nil {
+		if err != pgx.ErrNoRows {
+			return err
+		}
+		hasItem = false
+		itemQty = 0
 	}
 
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO ic_project_cost_item_transaction (project_cost_item_id, po_id, po_line_id, qty, qty_before, qty_after, unit_cost, remarks, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		costItemID, poID, poLineID, -returnQty, qtyBefore, qtyAfter, unitPrice, remarks, userID,
-	); err != nil {
-		return fmt.Errorf("mat_code %s: failed to insert ic_project_cost_item_transaction: %w", matCode, err)
+	if returnQty > poolAvail+itemQty {
+		return fiber.NewError(fiber.StatusBadRequest,
+			fmt.Sprintf("mat_code %s: คืนได้ไม่เกินยอดคงเหลือ — ยอดที่ยังไม่ได้เบิก/โอน (receipt pool) %.4f + ยอดคงเหลือในโครงการ (cost item) %.4f = %.4f แต่ขอคืน %.4f",
+				matCode, poolAvail, itemQty, poolAvail+itemQty, returnQty))
+	}
+
+	fromPool := returnQty
+	if fromPool > poolAvail {
+		fromPool = poolAvail
+	}
+	fromItem := returnQty - fromPool
+
+	if fromPool > 0 && hasPool {
+		if _, err := tx.Exec(ctx, `
+			UPDATE ic_project_receipt_pool SET qty_received = qty_received - $1, updated_at = NOW() WHERE id = $2`,
+			fromPool, poolID,
+		); err != nil {
+			return fmt.Errorf("mat_code %s: failed to update ic_project_receipt_pool: %w", matCode, err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ic_project_receipt_pool_transaction (receipt_pool_id, txn_type, qty, ref_type, po_id, po_line_id, created_by)
+			VALUES ($1, 'RETURN', $2, 'PO', $3, $4, $5)`,
+			poolID, -fromPool, poID, poLineID, userID,
+		); err != nil {
+			return fmt.Errorf("mat_code %s: failed to insert ic_project_receipt_pool_transaction: %w", matCode, err)
+		}
+	}
+
+	if fromItem > 0 && hasItem {
+		qtyAfter := itemQty - fromItem
+		if _, err := tx.Exec(ctx, `
+			UPDATE ic_project_cost_item SET qty_on_hand = $1, updated_at = NOW() WHERE id = $2`,
+			qtyAfter, costItemID,
+		); err != nil {
+			return fmt.Errorf("mat_code %s: failed to update ic_project_cost_item: %w", matCode, err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ic_project_cost_item_transaction (project_cost_item_id, po_id, po_line_id, qty, qty_before, qty_after, unit_cost, remarks, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			costItemID, poID, poLineID, -fromItem, itemQty, qtyAfter, unitPrice, remarks, userID,
+		); err != nil {
+			return fmt.Errorf("mat_code %s: failed to insert ic_project_cost_item_transaction: %w", matCode, err)
+		}
 	}
 
 	return nil

@@ -118,7 +118,7 @@
 - `borrow_type` — `'BORROW'` = ขอยืม/เบิก, `'RETURN'` = คืน
 - `borrow_line.mat_type` — `'RETURNABLE'` = ต้องคืน, `'CONSUMABLE'` = ไม่ต้องคืน
 - `grn` มี `quality_status`, `confirmed_by`, `delivery_note` — ใช้ schema นี้ ไม่ใช่ inventory table
-- `purchase_request.order_type` — `'stock'` = ซื้อเข้าคลัง (warehouse), `'cost'` = ซื้อเข้าโครงการ (project cost) — คนละความหมายกับ `pr_type`
+- `purchase_request.order_type` — varchar(30), CHECK `'stock'|'cost'|'asset_equipment'|'office_equipment'|'asset_tool'`. `'stock'` = ซื้อเข้าคลัง, `'cost'` = ซื้อเข้าโครงการ; อีก 3 ค่า (asset_equipment/office_equipment/asset_tool) = ซื้อทรัพย์สิน/อุปกรณ์สำนักงาน/เครื่องมือ — ไม่มีขั้นตอนรับของ ไม่เข้า IC, cost code ผูกกับ OH/General เท่านั้น — คนละความหมายกับ `pr_type`
 - `work_order` (WO) เป็นเอกสารแยกจาก `purchase_order` (PO) — ใช้จ้างผู้รับเหมาช่วง
   ไม่มี FK เชื่อมกับ `purchase_request`/`purchase_order`
 - 🔴 work_order line items mirror โครงสร้างของ `purchase_order_line` เกือบทั้งหมด (ยกเว้น
@@ -141,7 +141,7 @@
   ไม่ใช้แล้ว เก็บไว้เฉยๆ อย่าเพิ่ม routing ใหม่ในนี้
 - 🔴 **`po_seq` (sequence เดิมของ po_no) ถูกยกเลิกแล้ว — แทนที่ด้วย [po_number_counter](#po_number_counter)**
   (monthly-reset counter, pattern เดียวกับ pr_no/memo_no) ยืนยันจากโค้ด `internal/handlers/po.go`
-  (`GET /po/reserve-number` เขียนลง `po_number_counter` โดยตรง ไม่มีการเรียก `nextval('po_seq')`
+  (`createPOTx` เขียนลง `po_number_counter` โดยตรง ไม่มีการเรียก `nextval('po_seq')`
   เหลืออยู่ในโค้ดปัจจุบันแล้ว) — **ยังไม่ได้ยืนยันด้วย query `information_schema` ตรงๆ ว่า sequence
   object `po_seq` เองถูก DROP ออกจาก DB จริงหรือแค่เลิกใช้งาน** เช็ค `information_schema.sequences`
   ก่อนอ้างว่า object นี้หายไปจริง
@@ -866,10 +866,10 @@ id, po_id, edited_by, reason (NOT NULL), edited_at
 ---
 
 ### po_number_counter
-> 🆕 2026-09-21 — แทนที่ `po_seq` เดิม (ดู Important Notes ด้านบน) generate `po_no` แบบ
-> monthly-reset เหมือน pattern ที่ pr_no/memo_no ใช้อยู่แล้ว รีเซ็ตเป็น 0001 ทุกครั้งที่ขึ้น
-> `year_month` ใหม่ ใช้ผ่าน `GET /po/reserve-number` — frontend เรียกครั้งเดียวตอนเปิดหน้าสร้าง PO
-> แล้ว consume counter ทันที (เลขไม่ reuse แม้สร้าง PO ไม่สำเร็จ — เว้นช่องเลขได้ ถือว่าปกติ)
+> 🔄 2026-10-01 — `po_no` (และ `pr_no` → `pr_number_counter`, `memo_no` → `memo_number_counter`, โครงสร้างเหมือนกัน) generate
+> **ตอนบันทึกเท่านั้น** ภายใน transaction เดียวกับ INSERT header ผ่าน `nextMonthlyNumber` (`internal/handlers/doc_number.go`,
+> UPSERT ... RETURNING `last_seq`, เวลา Asia/Bangkok) บันทึกไม่สำเร็จ = rollback counter ไม่เกิดช่องเลขใหม่ ไม่มี reserve ฝั่ง client แล้ว
+> (endpoint `reserve-number` / `next-number` ของ PR, PO และ memo ถูกลบแล้วทั้งหมด) รูปแบบ: `PRYYYYMM-NNNN`, `PO-YYYYMM-NNNN`, `MEM-YYMM-NNNN`.
 ```
 year_month varchar(6) NOT NULL  PK  — 'YYYYMM'
 last_seq   integer    NOT NULL  DEFAULT 0
@@ -952,7 +952,7 @@ status           varchar(30)   NOT NULL  DEFAULT 'DRAFT'
                  — สถานะอนุมัติเท่านั้น: DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|PENDING_REAPPROVAL|CANCELLED
 status_receive   varchar(20)   NOT NULL  DEFAULT 'NOT_SENT'
                  — สถานะรับของ แยกจาก status: NOT_SENT|SENT|PARTIALLY_RECEIVED|RECEIVED
-order_type       varchar(10)   NOT NULL  DEFAULT 'stock'  — CHECK ('stock'|'cost'), เหมือน purchase_request.order_type
+order_type       varchar(30)   NOT NULL  DEFAULT 'stock'  — CHECK ('stock'|'cost'|'asset_equipment'|'office_equipment'|'asset_tool'), เหมือน purchase_request.order_type
 job_code         varchar(20)   NOT NULL  — required เสมอ, auto-fill จาก pr.job_code ถ้าไม่ส่งมาและมี pr_id
 payment_terms    varchar(100)  nullable
 delivery_address text          nullable
@@ -1024,7 +1024,7 @@ warehouse_code varchar(20) nullable
 required_date  date        nullable
 status         varchar(20) NOT NULL  DEFAULT 'DRAFT'
 priority       varchar(20) DEFAULT 'NORMAL'  — LOW|NORMAL|HIGH|URGENT
-order_type     varchar(10) NOT NULL  DEFAULT 'stock'  — CHECK IN ('stock','cost') — 'stock' = ซื้อเข้าคลัง, 'cost' = ซื้อเข้าโครงการ (cost)
+order_type     varchar(30) NOT NULL  DEFAULT 'stock'  — CHECK IN ('stock','cost','asset_equipment','office_equipment','asset_tool') — 'stock' = ซื้อเข้าคลัง, 'cost' = ซื้อเข้าโครงการ (cost)
 pr_type        varchar(10) NOT NULL  DEFAULT 'PO_WO'  — CHECK IN ('PO_WO','PO_ONLY','WO_ONLY') — เก็บไว้เฉยๆ ยังไม่มีโมดูล WO จริง ไม่มี logic ต่อ
 job_code       varchar    nullable  — 🔴 added 2026-09-28, was missing from this doc entirely though it's a real, actively-queried column (pr.go/pr_approval.go); one of the 12 fixed job type codes (MP/ME/MS/MF/MG/MH/FS/FP/FB/DE/RE/G)
 dept_code      varchar(20) nullable  — 🔴 added 2026-09-28, was missing from this doc entirely; NO FK enforced live (confirmed: empty dept_code round-trips with zero DB error)
@@ -1678,3 +1678,13 @@ ORDER BY row_count ASC, t.table_name;
 ```
 
 ผลที่ได้ row_count = 0 ให้พิจารณา DROP ทีละตัว ระวัง FK constraint ก่อน DROP ทุกครั้ง
+---
+
+### 🆕 2026-10-01 — ic_project_receipt_pool (cost receive target) and the cost return rule
+- `ic_project_receipt_pool` (`project_code`, `mat_code`, `cost_subgroup_id`, `qty_received`, `qty_issued`, `last_unit_cost`, …):
+  where an **order_type='cost' PO receive** posts. Available = `qty_received - qty_issued`; CHECK `qty_issued <= qty_received`.
+  Not `ic_project_cost_item` — that is credited later by movement ISSUE/TRANSFER (or PR submit).
+- `ic_project_receipt_pool_transaction.txn_type` CHECK: `'RECEIVE' | 'ISSUE_OUT' | 'RETURN'` (RETURN = supplier return, negative qty,
+  `ref_type='PO'`, `po_id`/`po_line_id` set). No qty_before/qty_after columns.
+- Cost return deducts from the pool's available balance first (lowers `qty_received`), then the remainder from
+  `ic_project_cost_item.qty_on_hand` (logged in `ic_project_cost_item_transaction` with `ref_type='PO'`).

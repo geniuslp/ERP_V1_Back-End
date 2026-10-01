@@ -187,14 +187,12 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 // @Param        body  body      models.CreatePRRequest  true  "PR data"
 // @Success      201   {object}  fiber.Map
 // @Failure      400   {object}  fiber.Map
+// @Description  pr_no is generated server-side at save time (pr_number_counter, inside the create transaction); any pr_no in the body is ignored. Response data: {"id": <int>, "pr_no": "PRYYYYMM-NNNN"}.
 // @Router       /pr [post]
 func (h *PRHandler) Create(c *fiber.Ctx) error {
 	var req models.CreatePRRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
-	}
-	if req.PRNo == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "document number is required, call reserve-number first")
 	}
 	if req.LocationText == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "location_text is required")
@@ -235,8 +233,15 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	if req.OrderType == "" {
 		req.OrderType = "stock"
 	}
-	if req.OrderType != "stock" && req.OrderType != "cost" {
-		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	if err := validateOrderType(req.OrderType); err != nil {
+		return err
+	}
+	if IsAssetOrOfficeType(req.OrderType) {
+		for i, line := range req.Lines {
+			if err := requireOHCostSubgroup(context.Background(), h.db, line.CostSubgroupID, fmt.Sprintf("lines[%d]", i)); err != nil {
+				return err
+			}
+		}
 	}
 
 	// order_type='stock' no longer accepts warehouse_code directly from the client — it's
@@ -269,11 +274,22 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_type must be 'PO_WO', 'PO_ONLY', or 'WO_ONLY'")
 	}
 
-	if strings.TrimSpace(req.JobCode) == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "job_code is required")
-	}
-	if err := validateJobCodeForProject(context.Background(), h.db, req.JobCode, req.ProjectCode); err != nil {
-		return err
+	if IsAssetOrOfficeType(req.OrderType) {
+		// Asset/office types: project/warehouse optional, job_code defaults to the General/OH
+		// job and need not be one of the project's job_codes[].
+		if strings.TrimSpace(req.JobCode) == "" {
+			req.JobCode = DefaultAssetJobCode
+		}
+		if err := ValidateAssetJobCode(req.JobCode); err != nil {
+			return err
+		}
+	} else {
+		if strings.TrimSpace(req.JobCode) == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "job_code is required")
+		}
+		if err := validateJobCodeForProject(context.Background(), h.db, req.JobCode, req.ProjectCode); err != nil {
+			return err
+		}
 	}
 
 	if req.MemoID != nil {
@@ -300,7 +316,7 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		}
 	}
 
-	// pr_no is now reserved up front via GET /pr/reserve-number (nextval('pr_seq')), so no
+	// pr_no is generated inside createPRTx (pr_number_counter), so no
 	// retry-on-collision loop is needed here anymore — the sequence guarantees uniqueness.
 	if req.Status == "COMPLETED" && req.OrderType == "cost" && req.ProjectCode == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
@@ -311,12 +327,11 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	} else {
 		actorID = req.CreatedBy
 	}
-	prNo := req.PRNo
-	prID, err := h.createPRTx(context.Background(), prNo, req, actorID)
+	prID, prNo, err := h.createPRTx(context.Background(), req, actorID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "purchase_request_pr_no_key" {
-			return fiber.NewError(fiber.StatusConflict, "pr_no already used — call reserve-number again")
+			return fiber.NewError(fiber.StatusConflict, "เลขที่เอกสาร PR ซ้ำ กรุณาลองบันทึกอีกครั้ง")
 		}
 		return err
 	}
@@ -327,15 +342,23 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	})
 }
 
-// createPRTx runs one attempt of the PR header+lines+attachments insert inside its own
-// transaction, using prNo as the pr_no. Returns the pgconn duplicate-key error unwrapped so the
-// caller can decide whether to retry with a freshly generated number.
-func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.CreatePRRequest, actorID int64) (int64, error) {
+// createPRTx runs the PR header+lines+attachments insert inside its own transaction. The pr_no is
+// allocated here from pr_number_counter immediately before the header INSERT (so the counter row
+// lock is held as briefly as possible and rolls back with the transaction); any client-sent pr_no
+// is ignored. Returns the pgconn duplicate-key error unwrapped.
+func (h *PRHandler) createPRTx(ctx context.Context, req models.CreatePRRequest, actorID int64) (int64, string, error) {
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer tx.Rollback(ctx)
+
+	now := bangkokNow()
+	seq, err := nextMonthlyNumber(ctx, tx, "pr_number_counter", now)
+	if err != nil {
+		return 0, "", err
+	}
+	prNo := formatPRNo(now, seq)
 
 	// 1. Insert PR header
 	var prID int64
@@ -351,9 +374,9 @@ func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.Crea
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return 0, pgErr
+			return 0, "", pgErr
 		}
-		return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
+		return 0, "", fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
 	}
 
 	// 2. Insert lines
@@ -362,12 +385,15 @@ func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.Crea
 		if line.DeductStock != nil {
 			deductStock = *line.DeductStock
 		}
+		if IsAssetOrOfficeType(req.OrderType) {
+			deductStock = false // never reserve/deduct warehouse stock for asset/office types
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks)
 			VALUES ($1,$2,$3,$4,'OPEN',$5,$6,$7)`,
 			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock, line.Remarks,
 		); err != nil {
-			return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
+			return 0, "", fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
 		}
 	}
 
@@ -375,55 +401,31 @@ func (h *PRHandler) createPRTx(ctx context.Context, prNo string, req models.Crea
 	// file is actually on disk before creating a row that references it (see fileurl.go).
 	for _, att := range req.Attachments {
 		if _, err := os.Stat(toRelativeDiskPath(att.FilePath)); err != nil {
-			return 0, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
+			return 0, "", fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO pr_attachment (pr_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at)
 			VALUES ($1,$2,$3,$4,$5,$6,now())`,
 			prID, att.FileName, att.FilePath, att.FileSize, att.FileType, req.CreatedBy,
 		); err != nil {
-			return 0, fiber.NewError(fiber.StatusInternalServerError, "failed to insert attachment: "+err.Error())
+			return 0, "", fiber.NewError(fiber.StatusInternalServerError, "failed to insert attachment: "+err.Error())
 		}
 	}
 
 	// 4. Client asked for COMPLETED: same side effects as POST /pr/{id}/submit, same tx.
 	if req.Status == "COMPLETED" {
 		if err := validateNoMixedDeductStock(ctx, tx, prID); err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		if err := h.completePRTx(ctx, tx, prID, prNo, req.OrderType, req.ProjectCode, "DRAFT", actorID, "created as COMPLETED"); err != nil {
-			return 0, err
+			return 0, "", err
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return prID, nil
-}
-
-// ReservePRNumber godoc
-// @Summary      Reserve the next PR number (consumes pr_number_counter, resets monthly)
-// @Description  Atomically increments pr_number_counter for the current year_month (YYYYMM) and formats it immediately as the real pr_no. Unlike the old pr_seq-based version, this resets to 0001 at the start of each new year_month instead of climbing forever. The number is reserved right away and is never reused, even if the create is abandoned (a gap is expected and fine). The frontend calls this once when the create-PR page opens, then submits the returned pr_no as part of POST /pr.
-// @Tags         Purchase Request
-// @Security     BearerAuth
-// @Produce      json
-// @Success      200  {object}  fiber.Map
-// @Router       /pr/reserve-number [get]
-func (h *PRHandler) ReservePRNumber(c *fiber.Ctx) error {
-	now := time.Now()
-	ym := now.Format("200601")
-	var seq int64
-	if err := h.db.QueryRow(context.Background(), `
-		INSERT INTO pr_number_counter (year_month, last_seq) VALUES ($1, 1)
-		ON CONFLICT (year_month) DO UPDATE SET last_seq = pr_number_counter.last_seq + 1
-		RETURNING last_seq`, ym,
-	).Scan(&seq); err != nil {
-		return err
-	}
-	prefix := fmt.Sprintf("PR%04d%02d", now.Year(), int(now.Month()))
-	prNo := fmt.Sprintf("%s-%04d", prefix, seq)
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"pr_no": prNo}})
+	return prID, prNo, nil
 }
 
 // SubmitPR godoc
@@ -1109,8 +1111,15 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	if orderType == "" {
 		orderType = currentOrderType
 	}
-	if orderType != "stock" && orderType != "cost" {
-		return fiber.NewError(fiber.StatusBadRequest, "order_type must be 'stock' or 'cost'")
+	if err := validateOrderType(orderType); err != nil {
+		return err
+	}
+	if IsAssetOrOfficeType(orderType) {
+		for i, l := range req.Lines {
+			if err := requireOHCostSubgroup(ctx, h.db, l.CostSubgroupID, fmt.Sprintf("lines[%d]", i)); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Same server-side derivation as Create: for order_type='stock', warehouse_code comes
@@ -1146,7 +1155,14 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	if jobCode == "" {
 		jobCode = currentJobCode
 	}
-	if err := validateJobCodeForProject(ctx, h.db, jobCode, req.ProjectCode); err != nil {
+	if IsAssetOrOfficeType(orderType) {
+		if strings.TrimSpace(jobCode) == "" {
+			jobCode = DefaultAssetJobCode
+		}
+		if err := ValidateAssetJobCode(jobCode); err != nil {
+			return err
+		}
+	} else if err := validateJobCodeForProject(ctx, h.db, jobCode, req.ProjectCode); err != nil {
 		return err
 	}
 
@@ -1192,6 +1208,9 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		deductStock := true
 		if line.DeductStock != nil {
 			deductStock = *line.DeductStock
+		}
+		if IsAssetOrOfficeType(orderType) {
+			deductStock = false // never reserve/deduct warehouse stock for asset/office types
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks)
@@ -1360,43 +1379,6 @@ func (h *PRHandler) GetLogs(c *fiber.Ctx) error {
 		logs = append(logs, l)
 	}
 	return c.JSON(fiber.Map{"success": true, "data": logs})
-}
-
-// NextNumber godoc
-// @Summary      Get next PR number
-// @Description  Returns the next available PR number for the current month: PR<YYYYMM>-<4-digit sequence>, e.g. PR202608-0001. Sequence resets to 0001 each new month.
-// @Tags         Purchase Request
-// @Security     BearerAuth
-// @Produce      json
-// @Success      200  {object}  fiber.Map
-// @Router       /pr/next-number [get]
-func (h *PRHandler) NextNumber(c *fiber.Ctx) error {
-	now := time.Now()
-	prefix := fmt.Sprintf("PR%04d%02d", now.Year(), int(now.Month()))
-	pattern := prefix + "-%"
-
-	var lastNo string
-	err := h.db.QueryRow(context.Background(), `
-		SELECT pr_no FROM purchase_request
-		WHERE pr_no LIKE $1
-		  AND status NOT IN ('CANCELLED')
-		ORDER BY pr_no DESC
-		LIMIT 1`, pattern).Scan(&lastNo)
-
-	var next string
-	if err != nil {
-		// No existing row this month → start at 0001
-		next = fmt.Sprintf("%s-0001", prefix)
-	} else {
-		parts := strings.Split(lastNo, "-")
-		seq, _ := strconv.Atoi(parts[len(parts)-1])
-		next = fmt.Sprintf("%s-%04d", prefix, seq+1)
-	}
-
-	return c.JSON(fiber.Map{
-		"success": true,
-		"data":    fiber.Map{"next_number": next},
-	})
 }
 
 // LinesWithPOStatus godoc

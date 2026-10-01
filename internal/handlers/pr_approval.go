@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"strings"
 
 	"erp-api/internal/models"
 
@@ -53,6 +54,7 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 // @Param        date_from         query  string  false  "filter by created_at >= this date (YYYY-MM-DD)"
 // @Param        date_to           query  string  false  "filter by created_at <= this date (YYYY-MM-DD)"
 // @Param        job_code          query  string  false  "exact match on pr.job_code"
+// @Param        order_type        query  string  false  "stock | cost | asset_equipment | office_equipment | asset_tool"
 // @Param        page              query  int     false  "page"   default(1)
 // @Param        limit             query  int     false  "limit"  default(20)
 // @Success      200  {object}  fiber.Map
@@ -88,6 +90,13 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	if jobCode != "" {
 		jobCodeFilter = &jobCode
 	}
+	var orderTypeFilter *string
+	if ot := strings.TrimSpace(c.Query("order_type")); ot != "" {
+		if err := validateOrderType(ot); err != nil {
+			return err
+		}
+		orderTypeFilter = &ot
+	}
 
 	// Combinable AND filters, each a no-op when its param is absent (NULL check short-circuits).
 	// Used with two different parameter offsets: $2-$5 in the count query (no limit/offset there),
@@ -96,12 +105,14 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		AND ($2::text IS NULL OR pr.pr_no ILIKE '%' || $2 || '%' OR pr.remarks ILIKE '%' || $2 || '%')
 		AND ($3::date IS NULL OR pr.created_at::date >= $3::date)
 		AND ($4::date IS NULL OR pr.created_at::date <= $4::date)
-		AND ($5::text IS NULL OR pr.job_code = $5)`
+		AND ($5::text IS NULL OR pr.job_code = $5)
+		AND ($6::text IS NULL OR pr.order_type = $6)`
 	selectExtraFilters := `
 		AND ($4::text IS NULL OR pr.pr_no ILIKE '%' || $4 || '%' OR pr.remarks ILIKE '%' || $4 || '%')
 		AND ($5::date IS NULL OR pr.created_at::date >= $5::date)
 		AND ($6::date IS NULL OR pr.created_at::date <= $6::date)
-		AND ($7::text IS NULL OR pr.job_code = $7)`
+		AND ($7::text IS NULL OR pr.job_code = $7)
+		AND ($8::text IS NULL OR pr.order_type = $8)`
 
 	// available_for_po forces status=COMPLETED (PR's only "usable" terminal status) and adds a
 	// live EXISTS check: at least one line whose referenced-qty sum, from non-cancelled
@@ -132,7 +143,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	h.db.QueryRow(context.Background(),
 		`SELECT COUNT(*) FROM purchase_request pr
 		 WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+countExtraFilters,
-		statusFilter, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter,
+		statusFilter, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter, orderTypeFilter,
 	).Scan(&total)
 
 	type PRListItem struct {
@@ -147,10 +158,11 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		Remarks            *string `json:"remarks"`
 		PRDate             string  `json:"pr_date"`
 		PRType             string  `json:"pr_type"`
+		OrderType          string  `json:"order_type"`
 		JobCode            *string `json:"job_code,omitempty"`
 		JobName            *string `json:"job_name,omitempty"`
 		ProjectName        *string `json:"project_name,omitempty"`
-		DeptName           *string `json:"dept_name,omitempty"`
+		DeptName          *string `json:"dept_name,omitempty"`
 		MemoID             *int64  `json:"memo_id,omitempty"`
 		MemoNo             *string `json:"memo_no,omitempty"`
 		RequiredDate       *string `json:"required_date,omitempty"`
@@ -183,7 +195,7 @@ SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        COALESCE(u1.full_name, '') AS requested_by,
        NULL::text                 AS approver_name,
        pr.location_text, pr.project_code, pr.dept_code, pr.remarks,
-       pr.pr_date::text, pr.pr_type, pr.job_code, cj.job_name, pj.project_name,
+       pr.pr_date::text, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name,
        d.dept_name, pr.memo_id, m.memo_no, pr.required_date::text, pr.created_at::text,
        CASE
            WHEN COALESCE(pc.all_full, false) THEN 'FULLY_CONVERTED'
@@ -203,7 +215,7 @@ LEFT JOIN memo m ON m.id = pr.memo_id
 WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+selectExtraFilters+`
 ORDER BY pr.created_at DESC
 LIMIT $2 OFFSET $3`,
-		statusFilter, limit, offset, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter,
+		statusFilter, limit, offset, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter, orderTypeFilter,
 	)
 	if err != nil {
 		return err
@@ -214,7 +226,7 @@ LIMIT $2 OFFSET $3`,
 	for rows.Next() {
 		var item PRListItem
 		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
-			&item.LocationText, &item.ProjectCode, &item.DeptCode, &item.Remarks, &item.PRDate, &item.PRType, &item.JobCode,
+			&item.LocationText, &item.ProjectCode, &item.DeptCode, &item.Remarks, &item.PRDate, &item.PRType, &item.OrderType, &item.JobCode,
 			&item.JobName, &item.ProjectName, &item.DeptName, &item.MemoID, &item.MemoNo, &item.RequiredDate, &item.CreatedAt,
 			&item.PoConversionStatus, &item.HasActivePOLink)
 		items = append(items, item)

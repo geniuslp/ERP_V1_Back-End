@@ -925,16 +925,15 @@ While testing the IC flow end-to-end against freshly-created POs, found the PO c
 already expected/accepted it correctly). Flagged and fixed on the frontend side; noted here only
 because it was found and fixed during this session's testing pass, not because it's a backend change.
 
-### 3. Fixed: PO numbering — non-resetting sequence → monthly-resetting counter
-`po_no` generation previously drew from a plain, never-reset sequence — inconsistent with every
-other document type in this codebase (`pr_no`, `memo_no`, etc.), which all reset monthly. Replaced
-with [po_number_counter](database.md#po_number_counter) (`year_month` PK, `last_seq`), consumed via
-`GET /po/reserve-number` (`internal/handlers/po.go`): the frontend calls this once when the
-create-PO page opens, the counter is incremented and consumed immediately (not just previewed), and
-the returned `po_no` is submitted as part of `POST /po`. A gap in the sequence (from an abandoned
-create) is expected and fine, same as the existing PR/Memo numbering behavior. See
-[po_number_counter](database.md#po_number_counter) and the `po_seq`-dropped note in database.md's
-Important Notes for the current, only-code-verified state of the old sequence object itself.
+### 3. PO numbering — save-time, monthly-resetting counter (UPDATED 2026-10-01)
+`po_no`, `pr_no` and `memo_no` are generated ONLY at save time, inside the same DB transaction as the
+header INSERT, via `nextMonthlyNumber` (`internal/handlers/doc_number.go`: UPSERT into
+`po_number_counter` / `pr_number_counter` / `memo_number_counter` ... RETURNING `last_seq`, table name
+whitelisted). A failed save rolls the counter back (no new gaps). The client no longer reserves or sends a
+number — any `pr_no`/`po_no` in the body is ignored; the create response returns the generated number.
+`GET /pr|po/reserve-number` and `GET /pr|po/next-number` (and `/memo/reserve-number`) were REMOVED (2026-10-01);
+the create response is the only source of the number. See
+"Session learnings (2026-10-01) — save-time numbering" at the end of this file.
 
 ### 4. Fixed: CostCode display was showing the wrong (non-unique) field
 `purchase_order_line.cost_subgroup_id` display was resolving to just `cost_subgroup.subgroup_code`
@@ -1265,3 +1264,68 @@ validate or write it — new memos get `NULL`. `GET /memo?search=` now matches `
 `project_code` (previously `memo_no` OR `title`). Anything that needs a display label for a memo
 should use `memo_no`, never `title`. `PurchaseRequest.MemoTitle` (`models.go`) is a dead field —
 declared, never populated by any query; don't build on it.
+
+---
+
+## 🧭 Session learnings (2026-10-01) — new order_type values: asset_equipment / office_equipment / asset_tool
+
+- `purchase_request.order_type` / `purchase_order.order_type` are `varchar(30)`, CHECK allows
+  `stock, cost, asset_equipment, office_equipment, asset_tool` (applied via pgAdmin, no migration file).
+  The 3 new types have **no goods-receiving** and **never appear in IC**.
+- **Helpers** live in `internal/handlers/order_type.go`: `AllowedOrderTypes`, `IsValidOrderType`,
+  `IsAssetOrOfficeType`, `validateOrderType`, `requireOHCostSubgroup`, `DefaultAssetJobCode`, and
+  `ICHandler.RequireICPO` (route middleware). PR/PO Create/Update validate via these — don't re-hardcode `'stock'|'cost'`.
+- **New-type rules (gated on `IsAssetOrOfficeType` only)**: project_code/warehouse_code optional; no
+  `pr_id` needed; `job_code` defaults to `'G'` and is checked only against the 12 DB-CHECK values via `ValidateAssetJobCode` (not
+  `project.job_codes[]`); every PR/PO line (create, update, PO add-lines, PO edit-approved) must have a
+  `cost_subgroup_id` under `cost_subject.subject_code='OH'`; PR lines force `deduct_stock=false` (no stock reservation).
+- 🔴 **job_code vs cost code**: the live DB CHECK on `purchase_request/purchase_order.job_code` allows exactly
+  MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, **G**. Asset/office types default to `G` (`DefaultAssetJobCode`,
+  validated by `ValidateAssetJobCode`). `OH` is ONLY the `cost_subject.subject_code` for the cost-code rule — never a job_code.
+  `JobTypes` in `job_type.go` wrongly lists `OH` (012) instead of `G`; left untouched for stock/cost (so they still accept `OH`,
+  which the DB rejects, and reject `G`) — fix that list as a separate task. `GET /pr` `job_name` joins via
+  `LEFT(job_code,1)`/`SUBSTRING(job_code FROM 2)` with LEFT JOINs, so it is null for `G` (row is kept).
+- **IC bypass**: `/ic/pos/:poId/*` routes run `RequireICPO` → 400 Thai error for non-stock/cost POs before any
+  write. IC PO lists/search options, return list, and cost-transactions filter `order_type IN ('stock','cost')`.
+  `GoodsReceiptHandler.Receive` and the GRN PO search / `GET /po/receivable` also exclude the 3 types.
+- **status_receive** stays `NOT_SENT` for the new types (`POST /po/:id/send` rejects them). PO approval is unchanged.
+- **OH picker**: `GET /master/cost-code/full?scope=oh` (existing `ListFull` extended; active OH subgroups only,
+  ordered by 4-level `cost_code`; fields `subgroup_id`, `subgroup_code`, `subgroup_name`, `cost_code`).
+- `GET /pr` and `GET /po` accept `order_type` filter (validated against the 5 values); `GET /pr` now also returns `order_type`.
+
+---
+
+## 🧭 Session learnings (2026-10-01, cont'd) — cost receive/return use the receipt pool
+
+- ⚠️ The 2026-09-21 note above is stale on this point: since commit `5e95b9f` a **cost PO receive**
+  (`SubmitReceiveLines` → `icReceiveToProjectCost`) posts to `ic_project_receipt_pool` (`qty_received += n`)
+  + `ic_project_receipt_pool_transaction` (`RECEIVE`), **not** `ic_project_cost_item`. `ic_project_cost_item`
+  is credited only by a movement ISSUE/TRANSFER (pool `qty_issued += n`, `ISSUE_OUT`) or PR submit.
+  Pool available balance = `qty_received - qty_issued`; CHECK `qty_issued <= qty_received`.
+- `ic_project_receipt_pool_transaction.txn_type` CHECK now allows `RECEIVE`, `ISSUE_OUT`, `RETURN`
+  (extended in pgAdmin, no migration file). The table has no qty_before/qty_after columns.
+- **Cost return rule** (`icReturnFromProjectCost`, `ic.go`): lock pool then cost item (`FOR UPDATE`); deduct
+  `min(return, pool available)` from the pool by lowering `qty_received` (`RETURN` row, negative qty, po_id/po_line_id);
+  remainder from `ic_project_cost_item.qty_on_hand` (`ic_project_cost_item_transaction`, ref_type `PO`); if the sum
+  is short → Thai 400 with both available qtys, nothing written. Pool is per project+mat+cost code, shared across POs.
+  Known gap: `ListReturnLines`/`ListReturnPOs` still show `qty_received` as max returnable, which can exceed pool+cost-item.
+  Stock-type return and all receive code are unchanged.
+
+---
+
+## 🧭 Session learnings (2026-10-01, cont'd) — save-time numbering for PR / PO / Memo
+
+- **Helper**: `internal/handlers/doc_number.go` — `nextMonthlyNumber(ctx, tx, counterTable, now)` (UPSERT on the
+  create tx; `counterTable` must be in the `monthlyCounterTables` whitelist), 
+  `bangkokNow()` (Asia/Bangkok, fixed +07:00 fallback), `formatPRNo` (`PRYYYYMM-NNNN`), `formatPONo`
+  (`PO-YYYYMM-NNNN`), `formatMemoNo` (`MEM-YYMM-NNNN`). Counter key is always `YYYYMM` of Bangkok time.
+- **Where**: `PRHandler.createPRTx` (allocates right before the header INSERT, returns `(prID, prNo, err)`),
+  `POHandler.createPOTx` (keeps the 20-attempt exists-check safety net), `MemoHandler.Create`.
+  The counter row stays locked until commit, so same-type creates in a month serialize — keep long work
+  out of these transactions' early part.
+- **Client numbers ignored**: `CreatePRRequest.PRNo` (no longer `validate:"required"`) and `CreatePORequest.PONo`
+  still bind but are never used; Update/Reopen/Submit never write `pr_no`/`po_no`.
+- **Create responses**: PR `data:{id, pr_no}`; PO `data:{po_id, po_no, status, total_amount, vat_amount, net_amount[, approval_request_id]}`;
+  Memo `data:` full memo (includes `id`, `memo_no`).
+- **Removed (2026-10-01)**: `GET /pr/reserve-number`, `GET /po/reserve-number`, `GET /pr/next-number`, `GET /po/next-number`  (`ReservePRNumber`, `ReservePONumber`, `NextNumber`, `NextPONumber`) and the `peekMonthlyNumber` helper, along with `ReserveMemoNumber`. Frontend must not call them (404).
+- Not changed (separate follow-up): `ic.go` / `ic_project_movement.go` still use their own inline `por_number_counter` UPSERT.
