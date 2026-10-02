@@ -139,14 +139,40 @@ func (h *IcProjectMovementHandler) CreateMovement(c *fiber.Ctx) error {
 	}
 	req.ProjectCode = projectCode
 
+	claims := middleware.GetClaims(c)
+	ctx := context.Background()
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	defer tx.Rollback(ctx)
+
+	newID, docNo, err := h.insertMovementHeader(ctx, tx, req, claims.UserID)
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": newID, "doc_no": docNo}})
+}
+
+// insertMovementHeader validates the header (doc_type, job_code assigned to the project,
+// requested_by), generates doc_no from the monthly counter and inserts the DRAFT row, all on the
+// caller's transaction. Shared by CreateMovement and the single-save SubmitMovementNew.
+// req.ProjectCode must already be set. Returns plain *fiber.Error values.
+func (h *IcProjectMovementHandler) insertMovementHeader(ctx context.Context, tx pgx.Tx, req models.CreateIcProjectMovementRequest, userID int64) (int64, string, error) {
 	if req.DocType != "ISSUE" && req.DocType != "TRANSFER" {
-		return fiber.NewError(fiber.StatusBadRequest, "doc_type must be ISSUE or TRANSFER")
+		return 0, "", fiber.NewError(fiber.StatusBadRequest, "doc_type must be ISSUE or TRANSFER")
 	}
 	if req.JobCode == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "job_code is required")
+		return 0, "", fiber.NewError(fiber.StatusBadRequest, "job_code is required")
 	}
 	if req.RequestedBy == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "requested_by is required")
+		return 0, "", fiber.NewError(fiber.StatusBadRequest, "requested_by is required")
 	}
 
 	docDate := req.DocDate
@@ -154,12 +180,10 @@ func (h *IcProjectMovementHandler) CreateMovement(c *fiber.Ctx) error {
 		docDate = time.Now().Format("2006-01-02")
 	}
 
-	ctx := context.Background()
-
 	// Re-fetch project.job_codes server-side — never trust the frontend's list alone.
-	assignedJobCodes, err := fetchProjectJobCodes(ctx, h.db, projectCode)
+	assignedJobCodes, err := fetchProjectJobCodes(ctx, h.db, req.ProjectCode)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return 0, "", fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	assigned := false
 	for _, jc := range assignedJobCodes {
@@ -169,21 +193,13 @@ func (h *IcProjectMovementHandler) CreateMovement(c *fiber.Ctx) error {
 		}
 	}
 	if !assigned {
-		return fiber.NewError(fiber.StatusBadRequest, "job_code not assigned to this project")
+		return 0, "", fiber.NewError(fiber.StatusBadRequest, "job_code not assigned to this project")
 	}
-
-	claims := middleware.GetClaims(c)
 
 	prefix := "PIS"
 	if req.DocType == "TRANSFER" {
 		prefix = "PTR"
 	}
-
-	tx, err := h.db.Begin(ctx)
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-	}
-	defer tx.Rollback(ctx)
 
 	ym := time.Now().Format("200601")
 	var seq int64
@@ -192,7 +208,7 @@ func (h *IcProjectMovementHandler) CreateMovement(c *fiber.Ctx) error {
 		ON CONFLICT (year_month) DO UPDATE SET last_seq = por_number_counter.last_seq + 1
 		RETURNING last_seq`, ym,
 	).Scan(&seq); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return 0, "", fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	docNo := fmt.Sprintf("%s-%s-%04d", prefix, ym, seq)
 
@@ -203,17 +219,12 @@ func (h *IcProjectMovementHandler) CreateMovement(c *fiber.Ctx) error {
 		VALUES
 		    ($1, $2, $3, $4, $5, $6, $7, 'DRAFT', $8, NOW(), NOW())
 		RETURNING id`,
-		docNo, req.DocType, docDate, req.ProjectCode, req.JobCode, req.RequestedBy, req.Remarks, claims.UserID,
+		docNo, req.DocType, docDate, req.ProjectCode, req.JobCode, req.RequestedBy, req.Remarks, userID,
 	).Scan(&newID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return 0, "", fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-	}
-
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": newID, "doc_no": docNo}})
+	return newID, docNo, nil
 }
 
 // jobNameForCode resolves a display label for a project-movement job_code against the fixed
@@ -428,6 +439,14 @@ func nullableID(v int64) interface{} {
 	return v
 }
 
+func errLinkedToLinked(msg string) error {
+	return &middleware.CodedError{Status: fiber.StatusBadRequest, Code: "LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED", Message: msg}
+}
+
+func errLinkedIssueErr() error {
+	return &middleware.CodedError{Status: fiber.StatusBadRequest, Code: "LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED", Message: errLinkedIssue}
+}
+
 const errLinkedIssue = "this project has no receipt pool; use TRANSFER for warehouse-linked projects"
 
 // ListAvailableMaterials godoc
@@ -460,13 +479,66 @@ func (h *IcProjectMovementHandler) ListAvailableMaterials(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "movement not found")
 	}
 
+	return h.availableMaterials(c, projectCode, docType)
+}
+
+// ListAvailableMaterialsNoMovement godoc
+// @Summary      List available materials before a movement document exists (single-save flow)
+// @Description  Same branching and response shape as GET .../movements/{id}/available-materials, but takes doc_type and job_code from the query instead of an existing movement. doc_type (ISSUE|TRANSFER) and job_code are both required; job_code must be in project.job_codes (400 otherwise). A warehouse-linked source project with doc_type=ISSUE returns 400 with code LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED.
+// @Tags         IC Project Movement
+// @Security     BearerAuth
+// @Produce      json
+// @Param        projectCode  path   string  true   "source project.project_code"
+// @Param        doc_type     query  string  true   "ISSUE or TRANSFER"
+// @Param        job_code     query  string  true   "job_code assigned to the project (e.g. MP)"
+// @Param        subgroup_id  query  int     false  "cost_subgroup.id filter"
+// @Param        mat_name_id  query  int     false  "mat_name.id filter"
+// @Param        q            query  string  false  "search mat_code / mat_name / spec"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      500  {object}  fiber.Map
+// @Router       /ic/projects/{projectCode}/movements/available-materials [get]
+func (h *IcProjectMovementHandler) ListAvailableMaterialsNoMovement(c *fiber.Ctx) error {
+	projectCode := c.Params("projectCode")
+	if projectCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "projectCode is required")
+	}
+	docType := c.Query("doc_type")
+	if docType != "ISSUE" && docType != "TRANSFER" {
+		return fiber.NewError(fiber.StatusBadRequest, "doc_type must be ISSUE or TRANSFER")
+	}
+	jobCode := strings.TrimSpace(c.Query("job_code"))
+	if jobCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "job_code is required")
+	}
+	assignedJobCodes, err := fetchProjectJobCodes(context.Background(), h.db, projectCode)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	assigned := false
+	for _, jc := range assignedJobCodes {
+		if jc == jobCode {
+			assigned = true
+			break
+		}
+	}
+	if !assigned {
+		return fiber.NewError(fiber.StatusBadRequest, "job_code not assigned to this project")
+	}
+	return h.availableMaterials(c, projectCode, docType)
+}
+
+// availableMaterials is the shared body of both available-materials routes: it branches on the
+// project's linked_warehouse_code and docType and reads subgroup_id/mat_name_id/q/job_code from
+// the query string.
+func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode, docType string) error {
 	linkedWH, err := linkedWarehouseCode(context.Background(), h.db, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	if linkedWH != "" {
 		if docType == "ISSUE" {
-			return fiber.NewError(fiber.StatusBadRequest, errLinkedIssue)
+			return errLinkedIssueErr()
 		}
 		// Warehouse-linked TRANSFER source: flat stock_item.qty per mat_code (global, no
 		// per-warehouse breakdown).
@@ -645,7 +717,7 @@ func (h *IcProjectMovementHandler) AddMovementLine(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	if linkedWH != "" && docType == "ISSUE" {
-		return fiber.NewError(fiber.StatusBadRequest, errLinkedIssue)
+		return errLinkedIssueErr()
 	}
 	if linkedWH == "" && req.CostSubgroupID == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "cost_subgroup_id is required")
@@ -672,7 +744,7 @@ func (h *IcProjectMovementHandler) AddMovementLine(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, "to_cost_subgroup_id is required for a TRANSFER line")
 		}
 		if linkedWH != "" && dstLinked != "" {
-			return fiber.NewError(fiber.StatusBadRequest, "both source and destination are warehouse-linked; use Stock Transfer instead")
+			return errLinkedToLinked("both source and destination are warehouse-linked; use Stock Transfer instead")
 		}
 	}
 
@@ -844,6 +916,98 @@ func (h *IcProjectMovementHandler) SubmitMovement(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// Optional bundled lines: when the body carries a "lines" array, it replaces whatever DRAFT
+	// lines were staged before, inside this same transaction. Parsed lazily so a malformed body
+	// is still reported after the movement lookup/status checks, as before.
+	parseLines := func() ([]models.CreateIcProjectMovementLineRequest, error) {
+		var body struct {
+			Lines []models.CreateIcProjectMovementLineRequest `json:"lines"`
+		}
+		if len(c.Body()) > 0 {
+			if err := c.BodyParser(&body); err != nil {
+				return nil, fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+			}
+		}
+		return body.Lines, nil
+	}
+
+	if err := h.postMovementTx(c, ctx, tx, projectCode, movementID, parseLines); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": movementID, "status": "POSTED"}})
+}
+
+// SubmitMovementNew godoc
+// @Summary      Create + submit an IC Project Movement in one request (single-save flow)
+// @Description  For when the document does not exist yet. ONE DB transaction: creates the header (same validation and doc_no generation as POST .../movements, status DRAFT), inserts the lines, then runs the exact same submit logic as POST .../movements/{id}/submit (lock, re-validate qty against on-hand/pool, deduct, credit, status POSTED). Any failure rolls back everything including the header — no orphan DRAFT. project_code in the header is taken from the path. Error codes (e.g. LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED, LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED) are identical to the id-based endpoints. lines is required and must be non-empty.
+// @Tags         IC Project Movement
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        projectCode  path  string  true  "movement's own project.project_code"
+// @Param        body         body  object  true  "{\"header\": CreateIcProjectMovementRequest, \"lines\": [CreateIcProjectMovementLineRequest]}"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Failure      500  {object}  fiber.Map
+// @Router       /ic/projects/{projectCode}/movements/submit [post]
+func (h *IcProjectMovementHandler) SubmitMovementNew(c *fiber.Ctx) error {
+	projectCode := c.Params("projectCode")
+	if projectCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "projectCode is required")
+	}
+	var body struct {
+		Header *models.CreateIcProjectMovementRequest      `json:"header"`
+		Lines  []models.CreateIcProjectMovementLineRequest `json:"lines"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if body.Header == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "header is required")
+	}
+	if len(body.Lines) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "movement has no line items")
+	}
+	body.Header.ProjectCode = projectCode
+
+	claims := middleware.GetClaims(c)
+	ctx := context.Background()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	defer tx.Rollback(ctx)
+
+	movementID, docNo, err := h.insertMovementHeader(ctx, tx, *body.Header, claims.UserID)
+	if err != nil {
+		return err
+	}
+
+	lines := body.Lines
+	if err := h.postMovementTx(c, ctx, tx, projectCode, movementID, func() ([]models.CreateIcProjectMovementLineRequest, error) {
+		return lines, nil
+	}); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": movementID, "doc_no": docNo, "status": "POSTED"}})
+}
+
+// postMovementTx is the shared submit core: lock the movement, optionally replace its lines with
+// the ones returned by loadLines, then lock/validate/deduct/credit and mark it POSTED — all on
+// the caller's transaction, which the caller commits (or rolls back on any returned error).
+func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Context, tx pgx.Tx, projectCode string, movementID int64,
+	loadLines func() ([]models.CreateIcProjectMovementLineRequest, error)) error {
+	var err error
 	var movementProjectCode, docType, status string
 	err = tx.QueryRow(ctx, `
 		SELECT project_code, doc_type, status FROM ic_project_movement WHERE id = $1 FOR UPDATE`, movementID,
@@ -864,30 +1028,26 @@ func (h *IcProjectMovementHandler) SubmitMovement(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "movement status is not DRAFT")
 	}
 
-	// Optional bundled lines: when the body carries a "lines" array, it replaces whatever DRAFT
-	// lines were staged before, inside this same transaction (source qty is re-validated under
-	// lock further below, so nothing extra is checked here beyond shape/destination).
-	var body struct {
-		Lines []models.CreateIcProjectMovementLineRequest `json:"lines"`
-	}
-	if len(c.Body()) > 0 {
-		if err := c.BodyParser(&body); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
-		}
+	// Bundled lines replace whatever DRAFT lines were staged before, inside this same
+	// transaction (source qty is re-validated under lock further below, so nothing extra is
+	// checked here beyond shape/destination).
+	bodyLines, err := loadLines()
+	if err != nil {
+		return err
 	}
 	linkedWH, err := linkedWarehouseCode(ctx, tx, movementProjectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	if linkedWH != "" && docType == "ISSUE" {
-		return fiber.NewError(fiber.StatusBadRequest, errLinkedIssue)
+		return errLinkedIssueErr()
 	}
-	if len(body.Lines) > 0 {
+	if len(bodyLines) > 0 {
 		claims := middleware.GetClaims(c)
 		if _, err := tx.Exec(ctx, `DELETE FROM ic_project_movement_line WHERE movement_id = $1`, movementID); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
-		for i, ln := range body.Lines {
+		for i, ln := range bodyLines {
 			if ln.MatCode == "" || ln.Qty <= 0 || (linkedWH == "" && ln.CostSubgroupID == 0) {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("line[%d]: mat_code, cost_subgroup_id, qty are required", i+1))
 			}
@@ -908,7 +1068,7 @@ func (h *IcProjectMovementHandler) SubmitMovement(c *fiber.Ctx) error {
 					return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("line[%d]: to_cost_subgroup_id is required for TRANSFER", i+1))
 				}
 				if linkedWH != "" && dl != "" {
-					return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("line[%d]: both source and destination are warehouse-linked; use Stock Transfer instead", i+1))
+					return errLinkedToLinked(fmt.Sprintf("line[%d]: both source and destination are warehouse-linked; use Stock Transfer instead", i+1))
 				}
 				var exists bool
 				if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code = $1)`, ln.ToProjectCode).Scan(&exists); err != nil {
@@ -1058,7 +1218,7 @@ func (h *IcProjectMovementHandler) SubmitMovement(c *fiber.Ctx) error {
 			}
 			dstWH = w
 			if linkedWH != "" && dstWH != "" {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: both source and destination are warehouse-linked; use Stock Transfer instead", l.MatCode))
+				return errLinkedToLinked(fmt.Sprintf("%s: both source and destination are warehouse-linked; use Stock Transfer instead", l.MatCode))
 			}
 		}
 		if dstWH == "" {
@@ -1273,11 +1433,7 @@ func (h *IcProjectMovementHandler) SubmitMovement(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-	}
-
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": movementID, "status": "POSTED"}})
+	return nil
 }
 
 // ─── Cost transaction history ───────────────────────────────────────────────

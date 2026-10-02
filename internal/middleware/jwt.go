@@ -80,15 +80,33 @@ func ErrorHandler(c *fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
 	msg := "internal server error"
 
-	if e, ok := err.(*fiber.Error); ok {
+	var errCode string
+	if ce, ok := err.(*CodedError); ok {
+		code = ce.Status
+		msg = ce.Message
+		errCode = ce.Code
+	} else if e, ok := err.(*fiber.Error); ok {
 		code = e.Code
 		msg = e.Message
 	}
 
 	log.Printf("❌ ErrorHandler: %d %s | path: %s | err: %v", code, msg, c.Path(), err)
 
-	return c.Status(code).JSON(fiber.Map{
+	body := fiber.Map{
 		"success": false,
 		"error":   msg,
-	})
+	}
+	if errCode != "" {
+		body["code"] = errCode
+	}
+	return c.Status(code).JSON(body)
 }
+
+// CodedError is an HTTP error carrying a stable machine-readable code in the JSON body.
+type CodedError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *CodedError) Error() string { return e.Message }

@@ -68,6 +68,21 @@ definitions:
       temp_delivery_no:
         type: string
     type: object
+  handlers.SubmitReceiveDocumentRequest:
+    properties:
+      exchange_rate:
+        type: number
+      remarks:
+        type: string
+      tax_invoice_date:
+        type: string
+      tax_invoice_no:
+        type: string
+      temp_delivery_date:
+        type: string
+      temp_delivery_no:
+        type: string
+    type: object
   handlers.UpdateGroupReq:
     properties:
       group_name:
@@ -117,6 +132,8 @@ definitions:
     type: object
   handlers.icSubmitReceiveLinesRequest:
     properties:
+      header:
+        $ref: '#/definitions/handlers.SubmitReceiveDocumentRequest'
       lines:
         items:
           $ref: '#/definitions/handlers.icSubmitReceiveLineInput'
@@ -4419,10 +4436,10 @@ paths:
         name: poId
         required: true
         type: integer
-      - description: ic_po_receive_document.id (must belong to this PO)
+      - description: ic_po_receive_document.id (optional; if given must belong to
+          this PO)
         in: query
         name: receive_document_id
-        required: true
         type: integer
       produces:
       - application/json
@@ -5079,6 +5096,107 @@ paths:
       security:
       - BearerAuth: []
       summary: Submit (confirm/post) an IC Project Movement
+      tags:
+      - IC Project Movement
+  /ic/projects/{projectCode}/movements/available-materials:
+    get:
+      description: Same branching and response shape as GET .../movements/{id}/available-materials,
+        but takes doc_type and job_code from the query instead of an existing movement.
+        doc_type (ISSUE|TRANSFER) and job_code are both required; job_code must be
+        in project.job_codes (400 otherwise). A warehouse-linked source project with
+        doc_type=ISSUE returns 400 with code LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED.
+      parameters:
+      - description: source project.project_code
+        in: path
+        name: projectCode
+        required: true
+        type: string
+      - description: ISSUE or TRANSFER
+        in: query
+        name: doc_type
+        required: true
+        type: string
+      - description: job_code assigned to the project (e.g. MP)
+        in: query
+        name: job_code
+        required: true
+        type: string
+      - description: cost_subgroup.id filter
+        in: query
+        name: subgroup_id
+        type: integer
+      - description: mat_name.id filter
+        in: query
+        name: mat_name_id
+        type: integer
+      - description: search mat_code / mat_name / spec
+        in: query
+        name: q
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List available materials before a movement document exists (single-save
+        flow)
+      tags:
+      - IC Project Movement
+  /ic/projects/{projectCode}/movements/submit:
+    post:
+      consumes:
+      - application/json
+      description: 'For when the document does not exist yet. ONE DB transaction:
+        creates the header (same validation and doc_no generation as POST .../movements,
+        status DRAFT), inserts the lines, then runs the exact same submit logic as
+        POST .../movements/{id}/submit (lock, re-validate qty against on-hand/pool,
+        deduct, credit, status POSTED). Any failure rolls back everything including
+        the header — no orphan DRAFT. project_code in the header is taken from the
+        path. Error codes (e.g. LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED, LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED)
+        are identical to the id-based endpoints. lines is required and must be non-empty.'
+      parameters:
+      - description: movement's own project.project_code
+        in: path
+        name: projectCode
+        required: true
+        type: string
+      - description: '{\'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create + submit an IC Project Movement in one request (single-save
+        flow)
       tags:
       - IC Project Movement
   /ic/projects/{projectCode}/stock:

@@ -508,21 +508,9 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	req.TaxInvoiceNo = strings.TrimSpace(req.TaxInvoiceNo)
-	req.TaxInvoiceDate = strings.TrimSpace(req.TaxInvoiceDate)
-	// tax_invoice_no/date are optional (a document may carry only temp_delivery_no/date, or
-	// neither yet) — empty values are stored as NULL, not ''. A non-empty date must still parse.
-	var taxInvoiceNo *string
-	if req.TaxInvoiceNo != "" {
-		taxInvoiceNo = &req.TaxInvoiceNo
-	}
-	var taxInvoiceDate *time.Time
-	if req.TaxInvoiceDate != "" {
-		t, err := time.Parse("2006-01-02", req.TaxInvoiceDate)
-		if err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, "tax_invoice_date must be in YYYY-MM-DD format")
-		}
-		taxInvoiceDate = &t
+	taxInvoiceNo, taxInvoiceDate, err := parseReceiveDocumentHeader(&req)
+	if err != nil {
+		return err
 	}
 
 	var supplierID *int64
@@ -545,27 +533,7 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "this PO has nothing left to receive")
 	}
 
-	var paymentTerms *string
-	if supplierID != nil {
-		h.db.QueryRow(ctx, `SELECT payment_terms FROM supplier WHERE id = $1`, *supplierID).Scan(&paymentTerms)
-	}
-	creditDays := parsePaymentTermsDays(paymentTerms)
-
-	// due_date = the business date this row is created on (Asia/Bangkok), not tax_invoice_date —
-	// computed once here and never recomputed on later partial-receive rounds (nothing else
-	// writes ic_po_receive_document.due_date).
-	loc, err := time.LoadLocation("Asia/Bangkok")
-	if err != nil {
-		loc = time.FixedZone("Asia/Bangkok", 7*60*60)
-	}
-	now := time.Now().In(loc)
-	creationDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-
-	var dueDate *time.Time
-	if creditDays != nil {
-		dd := creationDate.AddDate(0, 0, *creditDays)
-		dueDate = &dd
-	}
+	creditDays, dueDate := receiveDocumentCredit(ctx, h.db, supplierID)
 
 	// Many documents per PO are now allowed, but empty (never-submitted) drafts must not stack —
 	// only reject if an existing document for this PO still has no receive_no.
@@ -583,8 +551,73 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 		createdBy = &uid
 	}
 
+	d, err := insertReceiveDocument(ctx, h.db, poID, taxInvoiceNo, taxInvoiceDate, &req, creditDays, dueDate, createdBy)
+	if err != nil {
+		// po_id is no longer unique on this table (many documents per PO), so a duplicate-key
+		// error here can only come from the partial unique index on receive_no — which this
+		// INSERT never sets (always NULL at creation) — so this is a genuine unexpected failure.
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to submit receive document: "+err.Error())
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": d})
+}
+
+// parseReceiveDocumentHeader trims and validates the header fields shared by
+// POST /receive-document and the inline `header` of POST /receive-lines/submit.
+// tax_invoice_no/date are optional (a document may carry only temp_delivery_no/date, or
+// neither yet) — empty values are stored as NULL, not ''. A non-empty date must still parse.
+func parseReceiveDocumentHeader(req *SubmitReceiveDocumentRequest) (*string, *time.Time, error) {
+	req.TaxInvoiceNo = strings.TrimSpace(req.TaxInvoiceNo)
+	req.TaxInvoiceDate = strings.TrimSpace(req.TaxInvoiceDate)
+	var taxInvoiceNo *string
+	if req.TaxInvoiceNo != "" {
+		taxInvoiceNo = &req.TaxInvoiceNo
+	}
+	var taxInvoiceDate *time.Time
+	if req.TaxInvoiceDate != "" {
+		t, err := time.Parse("2006-01-02", req.TaxInvoiceDate)
+		if err != nil {
+			return nil, nil, fiber.NewError(fiber.StatusBadRequest, "tax_invoice_date must be in YYYY-MM-DD format")
+		}
+		taxInvoiceDate = &t
+	}
+	return taxInvoiceNo, taxInvoiceDate, nil
+}
+
+// receiveDocumentCredit derives credit_days from the supplier's payment_terms and due_date =
+// the business date the row is created on (Asia/Bangkok) + credit_days — not tax_invoice_date.
+// Computed once at creation and never recomputed on later rounds.
+func receiveDocumentCredit(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+}, supplierID *int64) (*int, *time.Time) {
+	var paymentTerms *string
+	if supplierID != nil {
+		q.QueryRow(ctx, `SELECT payment_terms FROM supplier WHERE id = $1`, *supplierID).Scan(&paymentTerms)
+	}
+	creditDays := parsePaymentTermsDays(paymentTerms)
+
+	loc, err := time.LoadLocation("Asia/Bangkok")
+	if err != nil {
+		loc = time.FixedZone("Asia/Bangkok", 7*60*60)
+	}
+	now := time.Now().In(loc)
+	creationDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	var dueDate *time.Time
+	if creditDays != nil {
+		dd := creationDate.AddDate(0, 0, *creditDays)
+		dueDate = &dd
+	}
+	return creditDays, dueDate
+}
+
+// insertReceiveDocument inserts one ic_po_receive_document row (receive_no stays NULL).
+func insertReceiveDocument(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+}, poID int64, taxInvoiceNo *string, taxInvoiceDate *time.Time, req *SubmitReceiveDocumentRequest,
+	creditDays *int, dueDate *time.Time, createdBy *int64) (ICPOReceiveDocument, error) {
 	var d ICPOReceiveDocument
-	err = h.db.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO ic_po_receive_document
 		    (po_id, tax_invoice_no, tax_invoice_date, temp_delivery_no, temp_delivery_date,
 		     credit_days, due_date, exchange_rate, remarks, created_by, updated_by)
@@ -597,14 +630,7 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 	).Scan(&d.ID, &d.POID, &d.TaxInvoiceNo, &d.TaxInvoiceDate, &d.TempDeliveryNo, &d.TempDeliveryDate,
 		&d.CreditDays, &d.DueDate, &d.ExchangeRate, &d.Remarks,
 		&d.CreatedAt, &d.UpdatedAt, &d.CreatedBy, &d.UpdatedBy)
-	if err != nil {
-		// po_id is no longer unique on this table (many documents per PO), so a duplicate-key
-		// error here can only come from the partial unique index on receive_no — which this
-		// INSERT never sets (always NULL at creation) — so this is a genuine unexpected failure.
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to submit receive document: "+err.Error())
-	}
-
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": d})
+	return d, err
 }
 
 type ICReceiveDocumentSummary struct {
@@ -1015,7 +1041,7 @@ func validateReceiveDocumentBelongsToPO(ctx context.Context, querier interface {
 // @Security     BearerAuth
 // @Produce      json
 // @Param        poId                path   int  true  "purchase_order.id"
-// @Param        receive_document_id query  int  true  "ic_po_receive_document.id (must belong to this PO)"
+// @Param        receive_document_id query  int  false "ic_po_receive_document.id (optional; if given must belong to this PO)"
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
 // @Failure      404  {object}  fiber.Map
@@ -1028,9 +1054,14 @@ func (h *ICHandler) ListReceiveLines(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid poId")
 	}
-	docID, err := strconv.ParseInt(c.Query("receive_document_id"), 10, 64)
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "receive_document_id is required")
+	// receive_document_id is optional: the lines are PO-level, and the single-save flow
+	// loads them before any document exists. When given, it must still belong to this PO.
+	var docID int64
+	if raw := c.Query("receive_document_id"); raw != "" {
+		docID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid receive_document_id")
+		}
 	}
 
 	var orderType string
@@ -1043,8 +1074,10 @@ func (h *ICHandler) ListReceiveLines(c *fiber.Ctx) error {
 	if poStatus != "APPROVED" {
 		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
 	}
-	if err := validateReceiveDocumentBelongsToPO(ctx, h.db, docID, poID); err != nil {
-		return err
+	if docID != 0 {
+		if err := validateReceiveDocumentBelongsToPO(ctx, h.db, docID, poID); err != nil {
+			return err
+		}
 	}
 
 	lines, err := fetchICReceiveLines(ctx, h.db, poID)
@@ -1087,8 +1120,9 @@ type icSubmitReceiveLineInput struct {
 }
 
 type icSubmitReceiveLinesRequest struct {
-	ReceiveDocumentID int64                      `json:"receive_document_id"`
-	Lines             []icSubmitReceiveLineInput `json:"lines"`
+	ReceiveDocumentID int64                         `json:"receive_document_id"`
+	Header            *SubmitReceiveDocumentRequest `json:"header"`
+	Lines            []icSubmitReceiveLineInput `json:"lines"`
 }
 
 // SubmitReceiveLines godoc
@@ -1121,8 +1155,20 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
+	// Without receive_document_id the receive document is created inline, in this same
+	// transaction, from `header` (same fields/validation as POST /receive-document, but
+	// exchange_rate is not used). With receive_document_id, any `header` is ignored.
+	var newTaxInvoiceNo *string
+	var newTaxInvoiceDate *time.Time
 	if req.ReceiveDocumentID == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "receive_document_id is required")
+		if req.Header == nil {
+			return fiber.NewError(fiber.StatusBadRequest, "header is required when receive_document_id is not provided")
+		}
+		req.Header.ExchangeRate = nil
+		newTaxInvoiceNo, newTaxInvoiceDate, err = parseReceiveDocumentHeader(req.Header)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Only lines with receive_qty > 0 are processed; others are skipped, not an error.
@@ -1142,6 +1188,45 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	var createdHeader *ICPOReceiveDocument
+	if req.ReceiveDocumentID == 0 {
+		// Lock the PO first: serializes concurrent inline creates for the same PO so the
+		// empty-draft check below can't be raced.
+		var supplierID *int64
+		var hdrPOStatus string
+		if err := tx.QueryRow(ctx, `SELECT supplier_id, status FROM purchase_order WHERE id = $1 FOR UPDATE`, poID).
+			Scan(&supplierID, &hdrPOStatus); err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "PO not found")
+		}
+		if hdrPOStatus != "APPROVED" {
+			return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+		}
+		var remainingQty float64
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(qty_ordered - COALESCE(qty_received, 0)), 0)
+			FROM purchase_order_line WHERE po_id = $1`, poID,
+		).Scan(&remainingQty); err != nil {
+			return err
+		}
+		if remainingQty <= 0 {
+			return fiber.NewError(fiber.StatusConflict, "this PO has nothing left to receive")
+		}
+		var existingDraftID int64
+		if err := tx.QueryRow(ctx, `
+			SELECT id FROM ic_po_receive_document WHERE po_id = $1 AND receive_no IS NULL`, poID,
+		).Scan(&existingDraftID); err == nil {
+			return fiber.NewError(fiber.StatusConflict, "an empty receive document already exists")
+		}
+		creditDays, dueDate := receiveDocumentCredit(ctx, tx, supplierID)
+		createdBy := claims.UserID
+		d, err := insertReceiveDocument(ctx, tx, poID, newTaxInvoiceNo, newTaxInvoiceDate, req.Header, creditDays, dueDate, &createdBy)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to create receive document: "+err.Error())
+		}
+		createdHeader = &d
+		req.ReceiveDocumentID = d.ID
+	}
 
 	// Lock the target receive document FIRST, before anything else in this transaction — one
 	// document accepts exactly one successful submit. If it already has a receive_no, this
@@ -1290,7 +1375,12 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "receive committed but failed to reload lines: "+err.Error())
 	}
 
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"receive_no": *receiveNo, "lines": lines}})
+	data := fiber.Map{"receive_no": *receiveNo, "receive_document_id": req.ReceiveDocumentID, "lines": lines}
+	if createdHeader != nil {
+		createdHeader.ReceiveNo = receiveNo
+		data["header"] = createdHeader
+	}
+	return c.JSON(fiber.Map{"success": true, "data": data})
 }
 
 type ICDocumentLine struct {

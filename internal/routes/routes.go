@@ -491,6 +491,9 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	ic.Get("/projects/:projectCode/job-codes", icMoveH.ListProjectJobCodes)
 	ic.Get("/projects/:projectCode/movements", icMoveH.ListMovements)
 	ic.Post("/projects/:projectCode/movements", icMoveH.CreateMovement)
+	// Single-save flow (no movement id yet) — static paths MUST precede the /:id routes below.
+	ic.Get("/projects/:projectCode/movements/available-materials", icMoveH.ListAvailableMaterialsNoMovement)
+	ic.Post("/projects/:projectCode/movements/submit", icMoveH.SubmitMovementNew)
 	ic.Get("/projects/:projectCode/movements/:id", icMoveH.GetMovement)
 	ic.Get("/projects/:projectCode/movements/:id/available-materials", icMoveH.ListAvailableMaterials)
 	ic.Get("/projects/:projectCode/cost-codes", icMoveH.ListProjectCostCodes)
