@@ -1067,6 +1067,9 @@ func (h *MasterHandler) UpdateUnit(c *fiber.Ctx) error {
 
 // ListRoles godoc
 // @Summary      List roles (optionally filtered by department)
+// @Description  With dept_code, returns that department's roles PLUS company-wide roles that have no
+// @Description  department (dept_code NULL or empty — Director, Executive Director, Board, MD), which
+// @Description  belong to every department.
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
@@ -1080,7 +1083,9 @@ func (h *MasterHandler) ListRoles(c *fiber.Ctx) error {
 	var err error
 	if deptCode != "" {
 		rows, err = h.db.Query(context.Background(),
-			`SELECT id, role_code, role_name, dept_code FROM roles WHERE is_active = true AND dept_code = $1 ORDER BY role_name`,
+			`SELECT id, role_code, role_name, dept_code FROM roles
+			 WHERE is_active = true AND (dept_code = $1 OR dept_code IS NULL OR dept_code = '')
+			 ORDER BY role_name`,
 			deptCode)
 	} else {
 		rows, err = h.db.Query(context.Background(),

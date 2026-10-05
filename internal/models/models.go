@@ -1732,6 +1732,7 @@ type PayableDoc struct {
 	DocNo          string  `json:"doc_no"`
 	DocType        string  `json:"doc_type"`
 	ProjectCode    *string `json:"project_code,omitempty"`
+	ProjectName    *string `json:"project_name"`
 	NetAmount      float64 `json:"net_amount"`
 	Status         string  `json:"status"`
 	PaidAmount     float64 `json:"paid_amount"`
