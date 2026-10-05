@@ -1969,6 +1969,98 @@
                 }
             }
         },
+        "/ic/pos/{poId}/documents": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Newest first (created_at DESC, then id DESC). doc_type RECEIVE|RETURN; id is ic_po_receive_document.id or ic_po_return_document.id; doc_no is receive_no (null for a receive document with no number yet, same as GET /ic/pos/{poId}/receive-documents) or return_no. line_count uses the same logic as the existing receive list (ledger rows linked by receive_document_id across ic_project_cost_item_transaction, ic_project_receipt_pool_transaction and stock_transaction) and return list (ic_po_return_line rows). total_qty: RECEIVE = SUM(qty) of those same linked ledger rows (stock and cost branches); RETURN = SUM(ic_po_return_line.return_qty). total_qty is null for a RECEIVE document that has no linked ledger rows (an empty draft, or legacy rows written before receive_document_id existed) — it cannot be derived reliably. RECEIVE only: tax_invoice_no, tax_invoice_date, temp_delivery_no, temp_delivery_date, due_date and the server-computed single reference ref_kind / ref_no / ref_date: ref_kind = TAX_INVOICE when tax_invoice_no is non-empty (after trim; primary when both exist), else TEMP_DELIVERY when temp_delivery_no is non-empty, else null; ref_no = the number of that kind; ref_date = the date of that kind, falling back to the other date when it is null (never invented; null when both are null or when ref_kind is null). RETURN only: return_date (ref_kind/ref_no/ref_date are null for returns). Fields that do not apply are null; every row has the same keys. 404 when the PO does not exist.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List ALL documents of a PO — receives and returns merged",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/header": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "pr_nos is the DISTINCT, ordered list of PR numbers linked to the PO through BOTH the header link (purchase_order.pr_id) and the line link (purchase_order_line.pr_line_id -\u003e purchase_request_line -\u003e purchase_request) — the same query GET /po uses for its pr_nos, so the two always agree. Never null (empty array when there is none). project_code and project_name are nullable. 404 when the PO does not exist.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "PO / PR / project header for the IC receive and return modals",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/ic/pos/{poId}/receive-document": {
             "get": {
                 "security": [
@@ -2026,7 +2118,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a NEW ic_po_receive_document row for this PO — a PO can have many receive documents now (one per delivery/invoice round). 409s \"this PO has nothing left to receive\" when SUM(qty_ordered - qty_received) over the PO's lines is \u003c= 0. 409s \"an empty receive document already exists\" if this PO already has an empty draft document (receive_no IS NULL) so empty drafts can't stack; that draft must be submitted (via receive-lines/submit) or deleted first. Computes due_date = (business date this row is created, Asia/Bangkok) + credit_days (credit_days parsed from the PO's supplier payment_terms). due_date is NULL if credit_days can't be parsed. Computed once at creation and never recomputed on later partial-receive rounds.",
+                "description": "tax_invoice_date (optional) must be YYYY-MM-DD and not later than today in Asia/Bangkok — a future date returns 400 (วันที่ใบกำกับภาษีต้องไม่เกินวันที่ปัจจุบัน) before anything is written or numbered; past dates and today are allowed. temp_delivery_date (optional; empty/missing stays valid and is stored NULL) must likewise be YYYY-MM-DD and not later than today, else 400 (วันที่ใบส่งของชั่วคราวต้องไม่เกินวันที่ปัจจุบัน); if both are invalid the tax invoice message is returned. Creates a NEW ic_po_receive_document row for this PO — a PO can have many receive documents now (one per delivery/invoice round). 409s \"this PO has nothing left to receive\" when SUM(qty_ordered - qty_received) over the PO's lines is \u003c= 0. 409s \"an empty receive document already exists\" if this PO already has an empty draft document (receive_no IS NULL) so empty drafts can't stack; that draft must be submitted (via receive-lines/submit) or deleted first. Computes due_date = (business date this row is created, Asia/Bangkok) + credit_days (credit_days parsed from the PO's supplier payment_terms). due_date is NULL if credit_days can't be parsed. Computed once at creation and never recomputed on later partial-receive rounds.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2464,7 +2556,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with \"this receive document has already been received — create a new receive document\" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_receipt_pool/ic_project_receipt_pool_transaction (order_type='cost', RECEIVE row tagged with this receive_document_id; ic_project_cost_item is only credited later by a movement ISSUE/TRANSFER), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.",
+                "description": "If the document is created inline from `header` (no receive_document_id), header.tax_invoice_date and header.temp_delivery_date follow the same rules as POST /receive-document: not later than today in Asia/Bangkok, else 400 before anything is written or numbered. One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with \"this receive document has already been received — create a new receive document\" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_receipt_pool/ic_project_receipt_pool_transaction (order_type='cost', RECEIVE row tagged with this receive_document_id; ic_project_cost_item is only credited later by a movement ISSUE/TRANSFER), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2577,16 +2669,14 @@
                         }
                     }
                 }
-            }
-        },
-        "/ic/pos/{poId}/return-lines/submit": {
+            },
             "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no.",
+                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly por_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type=\"RETURN\" (plus the reloaded lines).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2636,6 +2726,116 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/return-lines/submit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly por_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type=\"RETURN\" (plus the reloaded lines).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Submit this round's PO line-item return (stock or cost source)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Lines to return (only return_qty \u003e 0 are processed)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.icSubmitReturnLinesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/pos/{poId}/returns": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Newest first. A PO can have many return documents (one per submit of POST /ic/pos/{poId}/return-lines). line_count / total_qty come from ic_po_return_line. Returns made before return documents existed have no row here (not backfilled). Same naming as GET /ic/pos/{poId}/receive-documents; doc_type is always \"RETURN\".",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List the return documents (RT-) of a PO",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "purchase_order.id",
+                        "name": "poId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -2983,7 +3183,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (PIS-YYYYMM-NNNN for ISSUE, PTR-YYYYMM-NNNN for TRANSFER, monthly-reset counter shared mechanism with ic_po_receive_document.receive_no), and inserts the row with status=DRAFT.",
+                "description": "Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (IS-YYYYMM-NNNN for ISSUE, TF-YYYYMM-NNNN for TRANSFER, from the same shared monthly por_number_counter sequence as ic_po_receive_document.receive_no (IC-) and PO returns (RT-)), and inserts the row with status=DRAFT.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3786,6 +3986,52 @@
                 }
             }
         },
+        "/ic/returns/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Header (return_no, return_date, remarks, created_at, created_by_name), the PO (po_id, po_no, order_type), project (project_code, project_name), supplier_name, and lines with the 4-level cost code (subject+job+group+subgroup), mat_code, item_name, spec_name, unit, return_qty, remarks. doc_type is always \"RETURN\".",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "Get one return document in full (print feed)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "ic_po_return_document.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/inventory": {
             "get": {
                 "security": [
@@ -4193,7 +4439,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "scope=oh returns only active OH/General subgroups (cost_subject.subject_code = 'OH') — the only cost codes allowed on asset_equipment / office_equipment / asset_tool PR/PO lines. Rows carry subgroup_id (id), subgroup_code, subgroup_name and the 4-level cost_code, ordered by cost_code. Never identify OH by job_code 'G' alone — it also exists under subjects L, M, S.",
+                "description": "scope=oh returns only active OH/General subgroups (cost_subject.subject_code = 'OH') — the only cost codes allowed on asset_machine / asset_office_equipment / asset_tools PR/PO lines. Rows carry subgroup_id (id), subgroup_code, subgroup_name and the 4-level cost_code, ordered by cost_code. Never identify OH by job_code 'G' alone — it also exists under subjects L, M, S.",
                 "produces": [
                     "application/json"
                 ],
@@ -8875,7 +9121,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns COMPLETED PRs that still have at least one line with remaining (qty_requested - qty_ordered) \u003e 0. Uses qty_requested rather than qty_to_order because qty_to_order is a one-time snapshot computed at PR-submit time against stock_item.qty and is never resynced afterward — stock consumed elsewhere post-submit (or missing at submit time) left stale qty_to_order values that could hide PRs which still genuinely need purchasing. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.",
+                "description": "Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least one line with remaining (qty_requested - qty_reserved - qty_ordered) \u003e 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -9017,14 +9263,14 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns every line of the given PR with a computed remaining = qty_to_order - qty_ordered, so the PO-create form can show accurate \"still orderable\" quantities per line when building a split order (qty already covered by stock via qty_reserved is excluded from what's orderable). Lines that are fully ordered (remaining \u003c= 0) are included with is_fully_ordered=true rather than dropped, so the UI can show them struck out instead of silently disappearing.",
+                "description": "Feeds the \"pull lines from PR\" picker on the PO-create page. Returns only lines with remaining = qty_requested - qty_reserved - qty_ordered \u003e 0; fully ordered lines are NOT returned. qty_ordered is the accumulated qty across all non-cancelled POs (cancelling/deleting a PO gives its qty back, so the line reappears). Does not read qty_to_order — POST /po validation (reconcilePRLineQty) and the PR status recompute use the same remaining expression. Returns 400 if the PR is CANCELLED and 404 if it does not exist.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Purchase Order"
                 ],
-                "summary": "List a PR's lines with remaining orderable qty",
+                "summary": "List a PR's lines that can still be ordered",
                 "parameters": [
                     {
                         "type": "integer",
@@ -9037,6 +9283,18 @@
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -9923,6 +10181,93 @@
                 }
             }
         },
+        "/po/{projectCode}/cost-budget-detail": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One row per purchase_order_line.cost_subgroup_id for POs of the project that are not\nDRAFT/REJECTED/CANCELLED/deleted (order_type is NOT filtered). budget and ac_* are\nplaceholders (0) until real sources exist. pu_cost = SUM(qty_ordered * unit_price).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Cost Budget modal — project header + per-cost-code rows",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/{projectCode}/cost-budget-detail/{subgroupId}/purchases": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "PO lines (with optional PR number) for one project + cost_subgroup, same status filters as the detail endpoint.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Cost Budget modal — purchase lines behind one cost code",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "cost_subgroup.id",
+                        "name": "subgroupId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/pr": {
             "get": {
                 "security": [
@@ -9930,7 +10275,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "available_for_po=true additionally restricts to status=COMPLETED PRs that still\nhave at least one line not fully referenced by existing PO(s) — for the \"select\nPR to create PO from\" picker only. Omit it for any other PR listing (PR status/\nhistory pages), which must keep showing every PR regardless of reference status.\nEach item also carries po_conversion_status, computed from purchase_request_line\nqty_requested vs qty_ordered (aggregated across all lines, not the same as \"status\"):\nFULLY_CONVERTED (every line qty_ordered \u003e= qty_requested), PARTIALLY_CONVERTED\n(at least one line qty_ordered \u003e 0 but not all lines fully ordered), NOT_CONVERTED\n(every line qty_ordered = 0 or NULL).\nEach item also carries job_name (resolved from job_code via cost_subject+cost_job,\nsame join as GET /pr/{id}) and project_name (resolved from project_code via the\nproject table) — both null when the PR has no job_code/project_code or the code\ndoesn't resolve to a live master row.\nEach item also carries memo_no (resolved from memo_id via the memo table),\ndept_name (resolved from dept_code via the departments table), required_date\n(\"วันที่ส่งสินค้า\" — when the requester needs the goods by, distinct from pr_date)\nand created_at (\"วันที่เปิดเอกสาร\" — the DB row insert timestamp). dept_name,\nmemo_no, and required_date are null when the PR has no dept_code/memo_id/\nrequired_date or the code doesn't resolve to a live row.\nEach item also carries has_active_po_link (bool) — true if any of this PR's\nlines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.\nSame condition the PR detail page's blocking-PO warning banner and the Update\nhandler's edit guard use — the frontend should hide/disable \"แก้ไข\" when true.",
+                "description": "available_for_po=true additionally restricts to COMPLETED / PARTIALLY_FILLED PRs that\nhave at least one line with qty_requested - qty_reserved - qty_ordered \u003e 0 — for the \"select\nPR to create PO from\" picker only. Omit it for any other PR listing (PR status/\nhistory pages), which must keep showing every PR regardless of reference status.\nEach item also carries po_conversion_status, computed from purchase_request_line\nqty_requested vs qty_ordered (aggregated across all lines, not the same as \"status\"):\nFULLY_CONVERTED (every line qty_ordered \u003e= qty_requested), PARTIALLY_CONVERTED\n(at least one line qty_ordered \u003e 0 but not all lines fully ordered), NOT_CONVERTED\n(every line qty_ordered = 0 or NULL).\nEach item also carries job_name (resolved from job_code via cost_subject+cost_job,\nsame join as GET /pr/{id}) and project_name (resolved from project_code via the\nproject table) — both null when the PR has no job_code/project_code or the code\ndoesn't resolve to a live master row.\nEach item also carries memo_no (resolved from memo_id via the memo table),\ndept_name (resolved from dept_code via the departments table), required_date\n(\"วันที่ส่งสินค้า\" — when the requester needs the goods by, distinct from pr_date)\nand created_at (\"วันที่เปิดเอกสาร\" — the DB row insert timestamp). dept_name,\nmemo_no, and required_date are null when the PR has no dept_code/memo_id/\nrequired_date or the code doesn't resolve to a live row.\nEach item also carries has_remaining (bool) — true if any line has\nqty_requested - qty_reserved - qty_ordered \u003e 0 (same expression as the PO-create pickers).\nEach item also carries has_active_po_link (bool) — true if any of this PR's\nlines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.\nSame condition the PR detail page's blocking-PO warning banner and the Update\nhandler's edit guard use — the frontend should hide/disable \"แก้ไข\" when true.",
                 "produces": [
                     "application/json"
                 ],
@@ -9947,7 +10292,7 @@
                     },
                     {
                         "type": "boolean",
-                        "description": "true = only COMPLETED PRs with remaining unreferenced qty on at least one line",
+                        "description": "true = only COMPLETED/PARTIALLY_FILLED PRs with qty_requested - qty_reserved - qty_ordered \u003e 0 on at least one line",
                         "name": "available_for_po",
                         "in": "query"
                     },
@@ -9977,7 +10322,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "stock | cost | asset_equipment | office_equipment | asset_tool",
+                        "description": "stock | cost | asset_machine | asset_office_equipment | asset_tools",
                         "name": "order_type",
                         "in": "query"
                     },
@@ -14046,6 +14391,9 @@
                 "line_id": {
                     "type": "integer"
                 },
+                "remarks": {
+                    "type": "string"
+                },
                 "return_qty": {
                     "type": "number"
                 }
@@ -14061,6 +14409,10 @@
                     }
                 },
                 "remarks": {
+                    "type": "string"
+                },
+                "return_date": {
+                    "description": "optional YYYY-MM-DD, default today (Bangkok)",
                     "type": "string"
                 }
             }

@@ -13,16 +13,16 @@ import (
 // exactly these five). 'stock' and 'cost' go through the IC receiving flow; the three
 // asset/office types have NO goods-receiving process and must never appear in IC.
 const (
-	OrderTypeStock           = "stock"
-	OrderTypeCost            = "cost"
-	OrderTypeAssetEquipment  = "asset_equipment"
-	OrderTypeOfficeEquipment = "office_equipment"
-	OrderTypeAssetTool       = "asset_tool"
+	OrderTypeStock                = "stock"
+	OrderTypeCost                 = "cost"
+	OrderTypeAssetMachine         = "asset_machine"
+	OrderTypeAssetOfficeEquipment = "asset_office_equipment"
+	OrderTypeAssetTools           = "asset_tools"
 )
 
 // AllowedOrderTypes is the single source of truth for valid order_type values.
 var AllowedOrderTypes = []string{
-	OrderTypeStock, OrderTypeCost, OrderTypeAssetEquipment, OrderTypeOfficeEquipment, OrderTypeAssetTool,
+	OrderTypeStock, OrderTypeCost, OrderTypeAssetMachine, OrderTypeAssetOfficeEquipment, OrderTypeAssetTools,
 }
 
 // dbJobCodes mirrors the live CHECK on purchase_request.job_code / purchase_order.job_code
@@ -48,7 +48,7 @@ func ValidateAssetJobCode(code string) error {
 	return nil
 }
 
-const orderTypeErrMsg = "order_type ต้องเป็นหนึ่งใน: stock, cost, asset_equipment, office_equipment, asset_tool"
+const orderTypeErrMsg = "order_type ต้องเป็นหนึ่งใน: stock, cost, asset_machine, asset_office_equipment, asset_tools"
 
 // IsValidOrderType reports whether v is one of the 5 allowed order_type values.
 func IsValidOrderType(v string) bool {
@@ -60,10 +60,10 @@ func IsValidOrderType(v string) bool {
 	return false
 }
 
-// IsAssetOrOfficeType is true only for the 3 non-IC types (asset_equipment, office_equipment,
-// asset_tool).
+// IsAssetOrOfficeType is true only for the 3 non-IC types (asset_machine, asset_office_equipment,
+// asset_tools).
 func IsAssetOrOfficeType(v string) bool {
-	return v == OrderTypeAssetEquipment || v == OrderTypeOfficeEquipment || v == OrderTypeAssetTool
+	return v == OrderTypeAssetMachine || v == OrderTypeAssetOfficeEquipment || v == OrderTypeAssetTools
 }
 
 // validateOrderType returns a 400 with a Thai message when v is not one of the 5 values.

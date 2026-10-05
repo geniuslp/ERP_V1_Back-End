@@ -22,8 +22,8 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 
 // ListPRApproval godoc
 // @Summary      List purchase requests
-// @Description  available_for_po=true additionally restricts to status=COMPLETED PRs that still
-// @Description  have at least one line not fully referenced by existing PO(s) — for the "select
+// @Description  available_for_po=true additionally restricts to COMPLETED / PARTIALLY_FILLED PRs that
+// @Description  have at least one line with qty_requested - qty_reserved - qty_ordered > 0 — for the "select
 // @Description  PR to create PO from" picker only. Omit it for any other PR listing (PR status/
 // @Description  history pages), which must keep showing every PR regardless of reference status.
 // @Description  Each item also carries po_conversion_status, computed from purchase_request_line
@@ -41,6 +41,8 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 // @Description  and created_at ("วันที่เปิดเอกสาร" — the DB row insert timestamp). dept_name,
 // @Description  memo_no, and required_date are null when the PR has no dept_code/memo_id/
 // @Description  required_date or the code doesn't resolve to a live row.
+// @Description  Each item also carries has_remaining (bool) — true if any line has
+// @Description  qty_requested - qty_reserved - qty_ordered > 0 (same expression as the PO-create pickers).
 // @Description  Each item also carries has_active_po_link (bool) — true if any of this PR's
 // @Description  lines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.
 // @Description  Same condition the PR detail page's blocking-PO warning banner and the Update
@@ -49,12 +51,12 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 // @Security     BearerAuth
 // @Produce      json
 // @Param        status            query  string  false  "status filter — one of DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED, CANCELLED"
-// @Param        available_for_po  query  bool    false  "true = only COMPLETED PRs with remaining unreferenced qty on at least one line"
+// @Param        available_for_po  query  bool    false  "true = only COMPLETED/PARTIALLY_FILLED PRs with qty_requested - qty_reserved - qty_ordered > 0 on at least one line"
 // @Param        search            query  string  false  "matches pr_no or remarks (ILIKE, substring)"
 // @Param        date_from         query  string  false  "filter by created_at >= this date (YYYY-MM-DD)"
 // @Param        date_to           query  string  false  "filter by created_at <= this date (YYYY-MM-DD)"
 // @Param        job_code          query  string  false  "exact match on pr.job_code"
-// @Param        order_type        query  string  false  "stock | cost | asset_equipment | office_equipment | asset_tool"
+// @Param        order_type        query  string  false  "stock | cost | asset_machine | asset_office_equipment | asset_tools"
 // @Param        page              query  int     false  "page"   default(1)
 // @Param        limit             query  int     false  "limit"  default(20)
 // @Success      200  {object}  fiber.Map
@@ -114,29 +116,15 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		AND ($7::text IS NULL OR pr.job_code = $7)
 		AND ($8::text IS NULL OR pr.order_type = $8)`
 
-	// available_for_po forces status=COMPLETED (PR's only "usable" terminal status) and adds a
-	// live EXISTS check: at least one line whose referenced-qty sum, from non-cancelled
-	// purchase_order_line rows joined the same way LinesWithPOStatus computes qty_remaining, is
-	// still below qty_requested. Uses qty_requested rather than qty_to_order because qty_to_order
-	// is a one-time snapshot computed at PR-submit time against stock_item.qty and is never
-	// resynced afterward — stock consumed elsewhere post-submit (or missing at submit time) left
-	// stale qty_to_order values that could hide PRs which still genuinely need purchasing (same
-	// fix already applied to GetAvailablePRs in po.go). A PR excluded here always shows
-	// qty_remaining=0 on every line there, and vice versa.
+	// available_for_po restricts to COMPLETED / PARTIALLY_FILLED PRs (was COMPLETED only, which hid a
+	// PR as soon as its first PO moved it to PARTIALLY_FILLED) that have at least one line with
+	// qty_requested - qty_reserved - qty_ordered > 0. Both the status list and the line rule are the shared
+	// constants in po.go, i.e. the exact expression GET /po/pr-lines/{pr_id} filters lines with.
+	// The same availableForPOFilter string feeds the COUNT and the SELECT, so total matches.
 	availableForPOFilter := "TRUE"
 	if availableForPO {
 		statusFilter = nil
-		availableForPOFilter = `
-			pr.status = 'COMPLETED'
-			AND EXISTS (
-				SELECT 1 FROM purchase_request_line prl
-				WHERE prl.pr_id = pr.id
-				AND prl.qty_requested > COALESCE((
-					SELECT SUM(pol.qty_ordered)
-					FROM purchase_order_line pol
-					WHERE pol.pr_line_id = prl.id AND pol.status != 'CANCELLED'
-				), 0)
-			)`
+		availableForPOFilter = sqlPRPickerStatuses + ` AND ` + sqlPRHasOrderableLine
 	}
 
 	var total int64
@@ -169,6 +157,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		CreatedAt          string  `json:"created_at"`
 		PoConversionStatus string  `json:"po_conversion_status"`
 		HasActivePOLink    bool    `json:"has_active_po_link"`
+		HasRemaining       bool    `json:"has_remaining"`
 	}
 
 	// po_conversion_status is computed per PR from an aggregate over purchase_request_line,
@@ -202,7 +191,8 @@ SELECT pr.id AS pr_id, pr.pr_no, pr.status,
            WHEN COALESCE(pc.any_ordered, false) THEN 'PARTIALLY_CONVERTED'
            ELSE 'NOT_CONVERTED'
        END AS po_conversion_status,
-       (ap.pr_id IS NOT NULL) AS has_active_po_link
+       (ap.pr_id IS NOT NULL) AS has_active_po_link,
+       `+sqlPRHasOrderableLine+` AS has_remaining
 FROM purchase_request pr
 LEFT JOIN users u1 ON u1.id = pr.requested_by
 LEFT JOIN poconv pc ON pc.pr_id = pr.id
@@ -228,7 +218,7 @@ LIMIT $2 OFFSET $3`,
 		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
 			&item.LocationText, &item.ProjectCode, &item.DeptCode, &item.Remarks, &item.PRDate, &item.PRType, &item.OrderType, &item.JobCode,
 			&item.JobName, &item.ProjectName, &item.DeptName, &item.MemoID, &item.MemoNo, &item.RequiredDate, &item.CreatedAt,
-			&item.PoConversionStatus, &item.HasActivePOLink)
+			&item.PoConversionStatus, &item.HasActivePOLink, &item.HasRemaining)
 		items = append(items, item)
 	}
 

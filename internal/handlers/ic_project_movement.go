@@ -116,7 +116,7 @@ func fetchProjectJobCodes(ctx context.Context, db *pgxpool.Pool, projectCode str
 
 // CreateMovement godoc
 // @Summary      Create an IC Project Movement (Issue or Transfer) header
-// @Description  Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (PIS-YYYYMM-NNNN for ISSUE, PTR-YYYYMM-NNNN for TRANSFER, monthly-reset counter shared mechanism with ic_po_receive_document.receive_no), and inserts the row with status=DRAFT.
+// @Description  Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (IS-YYYYMM-NNNN for ISSUE, TF-YYYYMM-NNNN for TRANSFER, from the same shared monthly por_number_counter sequence as ic_po_receive_document.receive_no (IC-) and PO returns (RT-)), and inserts the row with status=DRAFT.
 // @Tags         IC Project Movement
 // @Security     BearerAuth
 // @Accept       json
@@ -196,21 +196,14 @@ func (h *IcProjectMovementHandler) insertMovementHeader(ctx context.Context, tx 
 		return 0, "", fiber.NewError(fiber.StatusBadRequest, "job_code not assigned to this project")
 	}
 
-	prefix := "PIS"
+	prefix := "IS"
 	if req.DocType == "TRANSFER" {
-		prefix = "PTR"
+		prefix = "TF"
 	}
-
-	ym := time.Now().Format("200601")
-	var seq int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO por_number_counter (year_month, last_seq) VALUES ($1, 1)
-		ON CONFLICT (year_month) DO UPDATE SET last_seq = por_number_counter.last_seq + 1
-		RETURNING last_seq`, ym,
-	).Scan(&seq); err != nil {
-		return 0, "", fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	docNo, err := nextICDocNo(ctx, tx, prefix)
+	if err != nil {
+		return 0, "", fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถออกเลขที่เอกสารได้ กรุณาลองใหม่อีกครั้ง")
 	}
-	docNo := fmt.Sprintf("%s-%s-%04d", prefix, ym, seq)
 
 	var newID int64
 	err = tx.QueryRow(ctx, `

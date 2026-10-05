@@ -643,7 +643,7 @@ func revertPOLineClaims(ctx context.Context, tx pgx.Tx, poID int64, poPRID *int6
 		return err
 	}
 
-	lineRows, err := tx.Query(ctx, `SELECT qty_to_order, qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
+	lineRows, err := tx.Query(ctx, `SELECT qty_requested - COALESCE(qty_reserved, 0), qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
 	if err != nil {
 		return err
 	}

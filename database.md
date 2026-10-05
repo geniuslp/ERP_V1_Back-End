@@ -55,7 +55,7 @@
 | [po_edit_log](#po_edit_log) | PO | log การแก้ไข PO |
 | [po_number_counter](#po_number_counter) | PO | ตัว generate po_no แบบ monthly-reset (แทน po_seq) |
 | [po_status_log](#po_status_log) | PO | log สถานะ PO |
-| [por_number_counter](#por_number_counter) | IC | ตัว generate receive_no (POR-YYYYMM-NNNN) ของ IC |
+| [por_number_counter](#por_number_counter) | IC | ตัว generate receive_no (IC-YYYYMM-NNNN) ของ IC |
 | [pr_attachment](#pr_attachment) | PR | ไฟล์แนบ PR |
 | [pr_status_log](#pr_status_log) | PR | log สถานะ PR |
 | [project](#project) | Master | โครงการ |
@@ -118,7 +118,7 @@
 - `borrow_type` — `'BORROW'` = ขอยืม/เบิก, `'RETURN'` = คืน
 - `borrow_line.mat_type` — `'RETURNABLE'` = ต้องคืน, `'CONSUMABLE'` = ไม่ต้องคืน
 - `grn` มี `quality_status`, `confirmed_by`, `delivery_note` — ใช้ schema นี้ ไม่ใช่ inventory table
-- `purchase_request.order_type` — varchar(30), CHECK `'stock'|'cost'|'asset_equipment'|'office_equipment'|'asset_tool'`. `'stock'` = ซื้อเข้าคลัง, `'cost'` = ซื้อเข้าโครงการ; อีก 3 ค่า (asset_equipment/office_equipment/asset_tool) = ซื้อทรัพย์สิน/อุปกรณ์สำนักงาน/เครื่องมือ — ไม่มีขั้นตอนรับของ ไม่เข้า IC, cost code ผูกกับ OH/General เท่านั้น — คนละความหมายกับ `pr_type`
+- `purchase_request.order_type` — varchar(30), CHECK `'stock'|'cost'|'asset_machine'|'asset_office_equipment'|'asset_tools'`. `'stock'` = ซื้อเข้าคลัง, `'cost'` = ซื้อเข้าโครงการ; อีก 3 ค่า (asset_machine/asset_office_equipment/asset_tools) = ซื้อทรัพย์สิน/อุปกรณ์สำนักงาน/เครื่องมือ — ไม่มีขั้นตอนรับของ ไม่เข้า IC, cost code ผูกกับ OH/General เท่านั้น — คนละความหมายกับ `pr_type`
 - `work_order` (WO) เป็นเอกสารแยกจาก `purchase_order` (PO) — ใช้จ้างผู้รับเหมาช่วง
   ไม่มี FK เชื่อมกับ `purchase_request`/`purchase_order`
 - 🔴 work_order line items mirror โครงสร้างของ `purchase_order_line` เกือบทั้งหมด (ยกเว้น
@@ -479,7 +479,7 @@ tax_invoice_no    varchar       nullable
 tax_invoice_date  date          NOT NULL
 temp_delivery_no  varchar       nullable
 temp_delivery_date date         nullable
-receive_no        varchar(30)   nullable  — เติมครั้งเดียวตอน submit line-item รอบแรกสำเร็จ, รูปแบบ POR-YYYYMM-NNNN
+receive_no        varchar(30)   nullable  — เติมครั้งเดียวตอน submit line-item รอบแรกสำเร็จ, รูปแบบ IC-YYYYMM-NNNN
 credit_days       integer       nullable  — parse จาก supplier.payment_terms
 due_date          date          nullable  — = tax_invoice_date + credit_days
 exchange_rate     numeric       nullable
@@ -879,7 +879,7 @@ last_seq   integer    NOT NULL  DEFAULT 0
 
 ### por_number_counter
 > 🆕 2026-09-21 — pattern เดียวกับ `po_number_counter` generate `receive_no` ของ IC module รูปแบบ
-> `POR-YYYYMM-NNNN` consume ตอน submit line-item รอบแรกที่สำเร็จของ IC PO Receive แล้วเก็บผลไว้ที่
+> `IC-YYYYMM-NNNN` consume ตอน submit line-item รอบแรกที่สำเร็จของ IC PO Receive แล้วเก็บผลไว้ที่
 > `ic_po_receive_document.receive_no` ดู [ic_po_receive_document](#ic_po_receive_document)
 ```
 year_month varchar(6) NOT NULL  PK  — 'YYYYMM'
@@ -952,7 +952,7 @@ status           varchar(30)   NOT NULL  DEFAULT 'DRAFT'
                  — สถานะอนุมัติเท่านั้น: DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|PENDING_REAPPROVAL|CANCELLED
 status_receive   varchar(20)   NOT NULL  DEFAULT 'NOT_SENT'
                  — สถานะรับของ แยกจาก status: NOT_SENT|SENT|PARTIALLY_RECEIVED|RECEIVED
-order_type       varchar(30)   NOT NULL  DEFAULT 'stock'  — CHECK ('stock'|'cost'|'asset_equipment'|'office_equipment'|'asset_tool'), เหมือน purchase_request.order_type
+order_type       varchar(30)   NOT NULL  DEFAULT 'stock'  — CHECK ('stock'|'cost'|'asset_machine'|'asset_office_equipment'|'asset_tools'), เหมือน purchase_request.order_type
 job_code         varchar(20)   NOT NULL  — required เสมอ, auto-fill จาก pr.job_code ถ้าไม่ส่งมาและมี pr_id
 payment_terms    varchar(100)  nullable
 delivery_address text          nullable
@@ -1024,7 +1024,7 @@ warehouse_code varchar(20) nullable
 required_date  date        nullable
 status         varchar(20) NOT NULL  DEFAULT 'DRAFT'
 priority       varchar(20) DEFAULT 'NORMAL'  — LOW|NORMAL|HIGH|URGENT
-order_type     varchar(30) NOT NULL  DEFAULT 'stock'  — CHECK IN ('stock','cost','asset_equipment','office_equipment','asset_tool') — 'stock' = ซื้อเข้าคลัง, 'cost' = ซื้อเข้าโครงการ (cost)
+order_type     varchar(30) NOT NULL  DEFAULT 'stock'  — CHECK IN ('stock','cost','asset_machine','asset_office_equipment','asset_tools') — 'stock' = ซื้อเข้าคลัง, 'cost' = ซื้อเข้าโครงการ (cost)
 pr_type        varchar(10) NOT NULL  DEFAULT 'PO_WO'  — CHECK IN ('PO_WO','PO_ONLY','WO_ONLY') — เก็บไว้เฉยๆ ยังไม่มีโมดูล WO จริง ไม่มี logic ต่อ
 job_code       varchar    nullable  — 🔴 added 2026-09-28, was missing from this doc entirely though it's a real, actively-queried column (pr.go/pr_approval.go); one of the 12 fixed job type codes (MP/ME/MS/MF/MG/MH/FS/FP/FB/DE/RE/G)
 dept_code      varchar(20) nullable  — 🔴 added 2026-09-28, was missing from this doc entirely; NO FK enforced live (confirmed: empty dept_code round-trips with zero DB error)

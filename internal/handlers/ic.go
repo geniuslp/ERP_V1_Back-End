@@ -383,6 +383,7 @@ type ICReceiveDocumentContext struct {
 }
 
 type ICPOReceiveDocument struct {
+	DocType           string     `json:"doc_type"`
 	ID                int64      `json:"id"`
 	POID              int64      `json:"po_id"`
 	TaxInvoiceNo      *string    `json:"tax_invoice_no"`
@@ -446,7 +447,7 @@ func (h *ICHandler) GetReceiveDocument(c *fiber.Ctx) error {
 	ctxRow.CreditDaysFromSupplier = parsePaymentTermsDays(paymentTerms)
 
 	var doc *ICPOReceiveDocument
-	var d ICPOReceiveDocument
+	d := ICPOReceiveDocument{DocType: "RECEIVE"}
 	err = h.db.QueryRow(ctx, `
 		SELECT id, po_id, tax_invoice_no, tax_invoice_date::text, temp_delivery_no, temp_delivery_date::text,
 		       receive_no, credit_days, due_date::text, exchange_rate, remarks,
@@ -483,7 +484,7 @@ type SubmitReceiveDocumentRequest struct {
 
 // SubmitReceiveDocument godoc
 // @Summary      Submit the PO receive document
-// @Description  Creates a NEW ic_po_receive_document row for this PO — a PO can have many receive documents now (one per delivery/invoice round). 409s "this PO has nothing left to receive" when SUM(qty_ordered - qty_received) over the PO's lines is <= 0. 409s "an empty receive document already exists" if this PO already has an empty draft document (receive_no IS NULL) so empty drafts can't stack; that draft must be submitted (via receive-lines/submit) or deleted first. Computes due_date = (business date this row is created, Asia/Bangkok) + credit_days (credit_days parsed from the PO's supplier payment_terms). due_date is NULL if credit_days can't be parsed. Computed once at creation and never recomputed on later partial-receive rounds.
+// @Description  tax_invoice_date (optional) must be YYYY-MM-DD and not later than today in Asia/Bangkok — a future date returns 400 (วันที่ใบกำกับภาษีต้องไม่เกินวันที่ปัจจุบัน) before anything is written or numbered; past dates and today are allowed. temp_delivery_date (optional; empty/missing stays valid and is stored NULL) must likewise be YYYY-MM-DD and not later than today, else 400 (วันที่ใบส่งของชั่วคราวต้องไม่เกินวันที่ปัจจุบัน); if both are invalid the tax invoice message is returned. Creates a NEW ic_po_receive_document row for this PO — a PO can have many receive documents now (one per delivery/invoice round). 409s "this PO has nothing left to receive" when SUM(qty_ordered - qty_received) over the PO's lines is <= 0. 409s "an empty receive document already exists" if this PO already has an empty draft document (receive_no IS NULL) so empty drafts can't stack; that draft must be submitted (via receive-lines/submit) or deleted first. Computes due_date = (business date this row is created, Asia/Bangkok) + credit_days (credit_days parsed from the PO's supplier payment_terms). due_date is NULL if credit_days can't be parsed. Computed once at creation and never recomputed on later partial-receive rounds.
 // @Tags         IC
 // @Security     BearerAuth
 // @Accept       json
@@ -565,7 +566,7 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 // parseReceiveDocumentHeader trims and validates the header fields shared by
 // POST /receive-document and the inline `header` of POST /receive-lines/submit.
 // tax_invoice_no/date are optional (a document may carry only temp_delivery_no/date, or
-// neither yet) — empty values are stored as NULL, not ''. A non-empty date must still parse.
+// neither yet) — empty values are stored as NULL, not ''. A non-empty date must still parse and must not be later than today (Asia/Bangkok); the same applies to a non-empty temp_delivery_date (empty/missing stays NULL).
 func parseReceiveDocumentHeader(req *SubmitReceiveDocumentRequest) (*string, *time.Time, error) {
 	req.TaxInvoiceNo = strings.TrimSpace(req.TaxInvoiceNo)
 	req.TaxInvoiceDate = strings.TrimSpace(req.TaxInvoiceDate)
@@ -579,7 +580,27 @@ func parseReceiveDocumentHeader(req *SubmitReceiveDocumentRequest) (*string, *ti
 		if err != nil {
 			return nil, nil, fiber.NewError(fiber.StatusBadRequest, "tax_invoice_date must be in YYYY-MM-DD format")
 		}
+		// Dates only, Asia/Bangkok: today is allowed, a later date is not (ISO dates compare as text).
+		if req.TaxInvoiceDate > bangkokNow().Format("2006-01-02") {
+			return nil, nil, fiber.NewError(fiber.StatusBadRequest, "วันที่ใบกำกับภาษีต้องไม่เกินวันที่ปัจจุบัน")
+		}
 		taxInvoiceDate = &t
+	}
+	// temp_delivery_date is optional: nil/empty stays NULL. A value is parsed here (instead of being
+	// handed to Postgres as raw text) so it can be compared and a bad format gets a plain 400.
+	if req.TempDeliveryDate != nil {
+		v := strings.TrimSpace(*req.TempDeliveryDate)
+		if v == "" {
+			req.TempDeliveryDate = nil
+		} else {
+			if _, err := time.Parse("2006-01-02", v); err != nil {
+				return nil, nil, fiber.NewError(fiber.StatusBadRequest, "วันที่ใบส่งของชั่วคราวต้องอยู่ในรูปแบบ YYYY-MM-DD")
+			}
+			if v > bangkokNow().Format("2006-01-02") {
+				return nil, nil, fiber.NewError(fiber.StatusBadRequest, "วันที่ใบส่งของชั่วคราวต้องไม่เกินวันที่ปัจจุบัน")
+			}
+			req.TempDeliveryDate = &v
+		}
 	}
 	return taxInvoiceNo, taxInvoiceDate, nil
 }
@@ -616,7 +637,7 @@ func insertReceiveDocument(ctx context.Context, q interface {
 	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
 }, poID int64, taxInvoiceNo *string, taxInvoiceDate *time.Time, req *SubmitReceiveDocumentRequest,
 	creditDays *int, dueDate *time.Time, createdBy *int64) (ICPOReceiveDocument, error) {
-	var d ICPOReceiveDocument
+	d := ICPOReceiveDocument{DocType: "RECEIVE"}
 	err := q.QueryRow(ctx, `
 		INSERT INTO ic_po_receive_document
 		    (po_id, tax_invoice_no, tax_invoice_date, temp_delivery_no, temp_delivery_date,
@@ -634,6 +655,7 @@ func insertReceiveDocument(ctx context.Context, q interface {
 }
 
 type ICReceiveDocumentSummary struct {
+	DocType          string  `json:"doc_type"`
 	ID               int64   `json:"id"`
 	ReceiveNo        *string `json:"receive_no"`
 	TaxInvoiceNo     *string `json:"tax_invoice_no"`
@@ -713,7 +735,7 @@ func (h *ICHandler) ListReceiveDocuments(c *fiber.Ctx) error {
 
 	items := []ICReceiveDocumentSummary{}
 	for rows.Next() {
-		var s ICReceiveDocumentSummary
+		s := ICReceiveDocumentSummary{DocType: "RECEIVE"}
 		if err := rows.Scan(&s.ID, &s.ReceiveNo, &s.TaxInvoiceNo, &s.TaxInvoiceDate,
 			&s.TempDeliveryNo, &s.TempDeliveryDate, &s.CreditDays, &s.DueDate,
 			&s.CreatedAt, &s.LineCount); err != nil {
@@ -758,7 +780,7 @@ func (h *ICHandler) GetReceiveDocumentByID(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid docId")
 	}
 
-	var d ICPOReceiveDocument
+	d := ICPOReceiveDocument{DocType: "RECEIVE"}
 	err = h.db.QueryRow(ctx, `
 		SELECT id, po_id, tax_invoice_no, tax_invoice_date::text, temp_delivery_no, temp_delivery_date::text,
 		       receive_no, credit_days, due_date::text, exchange_rate, remarks,
@@ -919,7 +941,7 @@ func (h *ICHandler) RateReceiveDocument(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "this receive document has already been rated")
 	}
 
-	var d ICPOReceiveDocument
+	d := ICPOReceiveDocument{DocType: "RECEIVE"}
 	err = tx.QueryRow(ctx, `
 		UPDATE ic_po_receive_document
 		SET score_quality = $1, score_quantity = $2, score_ontime = $3, score_notes = $4,
@@ -1127,7 +1149,7 @@ type icSubmitReceiveLinesRequest struct {
 
 // SubmitReceiveLines godoc
 // @Summary      Submit this round's PO line-item receiving (stock or cost destination)
-// @Description  One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with "this receive document has already been received — create a new receive document" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_receipt_pool/ic_project_receipt_pool_transaction (order_type='cost', RECEIVE row tagged with this receive_document_id; ic_project_cost_item is only credited later by a movement ISSUE/TRANSFER), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.
+// @Description  If the document is created inline from `header` (no receive_document_id), header.tax_invoice_date and header.temp_delivery_date follow the same rules as POST /receive-document: not later than today in Asia/Bangkok, else 400 before anything is written or numbered. One DB transaction. receive_document_id is required. The target document is locked FOR UPDATE first, before anything else — a document accepts exactly ONE successful submit: if it already has a receive_no, this 409s with "this receive document has already been received — create a new receive document" rather than accepting more lines against it. Then locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates receive_qty against the line's remaining balance (computed from purchase_order_line.qty_received, a running total across ALL of the PO's receive documents — so total received can never exceed qty ordered no matter how many documents are used), then posts to stock_item/stock_transaction (order_type='stock', tagging each stock_transaction row with this receive_document_id) or ic_project_receipt_pool/ic_project_receipt_pool_transaction (order_type='cost', RECEIVE row tagged with this receive_document_id; ic_project_cost_item is only credited later by a movement ISSUE/TRANSFER), and recomputes purchase_order.status_receive. On success, issues receive_no (por_number_counter, monthly reset) for this document — generated exactly once, at this its one allowed submit.
 // @Tags         IC
 // @Security     BearerAuth
 // @Accept       json
@@ -1350,16 +1372,10 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 	// This document is generated its receive_no here, at its one and only successful submit —
 	// we already rejected with 409 above if it had a receive_no, so this document is guaranteed
 	// to still be un-received at this point (still under the same FOR UPDATE lock taken above).
-	ym := time.Now().Format("200601")
-	var seq int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO por_number_counter (year_month, last_seq) VALUES ($1, 1)
-		ON CONFLICT (year_month) DO UPDATE SET last_seq = por_number_counter.last_seq + 1
-		RETURNING last_seq`, ym,
-	).Scan(&seq); err != nil {
+	receiveNoVal, err := nextICDocNo(ctx, tx, "IC")
+	if err != nil {
 		return err
 	}
-	receiveNoVal := fmt.Sprintf("POR-%s-%04d", ym, seq)
 	receiveNo := &receiveNoVal
 
 	if _, err := tx.Exec(ctx, `UPDATE ic_po_receive_document SET receive_no = $1 WHERE id = $2`, receiveNoVal, req.ReceiveDocumentID); err != nil {
@@ -1375,7 +1391,7 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "receive committed but failed to reload lines: "+err.Error())
 	}
 
-	data := fiber.Map{"receive_no": *receiveNo, "receive_document_id": req.ReceiveDocumentID, "lines": lines}
+	data := fiber.Map{"doc_type": "RECEIVE", "receive_no": *receiveNo, "receive_document_id": req.ReceiveDocumentID, "lines": lines}
 	if createdHeader != nil {
 		createdHeader.ReceiveNo = receiveNo
 		data["header"] = createdHeader
@@ -1867,16 +1883,29 @@ func (h *ICHandler) ListReturnLines(c *fiber.Ctx) error {
 type icSubmitReturnLineInput struct {
 	LineID    int64   `json:"line_id"`
 	ReturnQty float64 `json:"return_qty"`
+	Remarks   *string `json:"remarks"`
 }
 
 type icSubmitReturnLinesRequest struct {
-	Remarks *string                   `json:"remarks"`
-	Lines   []icSubmitReturnLineInput `json:"lines"`
+	ReturnDate *string                   `json:"return_date"` // optional YYYY-MM-DD, default today (Bangkok)
+	Remarks    *string                   `json:"remarks"`
+	Lines      []icSubmitReturnLineInput `json:"lines"`
+}
+
+// icReturnPlan is one validated return line, ready to post to the ledger.
+type icReturnPlan struct {
+	in             icSubmitReturnLineInput
+	lineNo         int64
+	matCode        string
+	unitPrice      float64
+	costSubgroupID *int64
+	qtyOrdered     float64
+	qtyReceived    float64
 }
 
 // SubmitReturnLines godoc
 // @Summary      Submit this round's PO line-item return (stock or cost source)
-// @Description  One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no.
+// @Description  One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly por_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type="RETURN" (plus the reloaded lines).
 // @Tags         IC
 // @Security     BearerAuth
 // @Accept       json
@@ -1888,6 +1917,7 @@ type icSubmitReturnLinesRequest struct {
 // @Failure      404  {object}  fiber.Map
 // @Failure      500  {object}  fiber.Map
 // @Router       /ic/pos/{poId}/return-lines/submit [post]
+// @Router       /ic/pos/{poId}/return-lines [post]
 func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -1896,12 +1926,12 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 
 	poID, err := strconv.ParseInt(c.Params("poId"), 10, 64)
 	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid poId")
+		return fiber.NewError(fiber.StatusBadRequest, "poId ไม่ถูกต้อง")
 	}
 
 	var req icSubmitReturnLinesRequest
 	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return fiber.NewError(fiber.StatusBadRequest, "ข้อมูลที่ส่งมาไม่ถูกต้อง")
 	}
 
 	var toProcess []icSubmitReturnLineInput
@@ -1911,7 +1941,7 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 		}
 	}
 	if len(toProcess) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "no lines with return_qty > 0 to process")
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาระบุจำนวนที่ต้องการคืนอย่างน้อย 1 รายการ")
 	}
 
 	ctx := context.Background()
@@ -1928,38 +1958,84 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 		SELECT order_type, project_code, status FROM purchase_order WHERE id = $1 FOR UPDATE`,
 		poID,
 	).Scan(&orderType, &projectCode, &poStatus); err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "PO not found")
+		return fiber.NewError(fiber.StatusNotFound, "ไม่พบใบสั่งซื้อ")
 	}
 	if poStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+		return fiber.NewError(fiber.StatusBadRequest, "ใบสั่งซื้อนี้ยังไม่ได้รับการอนุมัติ")
 	}
 
+	// Phase 1 — validate everything (no document number is consumed yet).
+	returnDate := ""
+	if req.ReturnDate != nil && strings.TrimSpace(*req.ReturnDate) != "" {
+		if _, err := time.Parse("2006-01-02", strings.TrimSpace(*req.ReturnDate)); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "return_date ต้องอยู่ในรูปแบบ YYYY-MM-DD")
+		}
+		returnDate = strings.TrimSpace(*req.ReturnDate)
+	}
+	if orderType != "stock" && orderType != "cost" {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("ประเภทใบสั่งซื้อ %q ไม่รองรับการคืนสินค้า (รองรับเฉพาะ stock และ cost)", orderType))
+	}
+	seenLines := map[int64]bool{}
+	plans := make([]icReturnPlan, 0, len(toProcess))
 	for _, in := range toProcess {
-		var linePOID, lineNo int64
-		var matCode string
-		var qtyOrdered, qtyReceived, unitPrice float64
-		var costSubgroupID *int64
+		if seenLines[in.LineID] {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("line_id %d: มีรายการซ้ำในคำขอ กรุณารวมจำนวนเป็นบรรทัดเดียว", in.LineID))
+		}
+		seenLines[in.LineID] = true
+
+		var p icReturnPlan
+		var linePOID int64
+		p.in = in
 		if err := tx.QueryRow(ctx, `
 			SELECT po_id, line_no, mat_code, qty_ordered, qty_received, unit_price, cost_subgroup_id
 			FROM purchase_order_line WHERE id = $1 FOR UPDATE`,
 			in.LineID,
-		).Scan(&linePOID, &lineNo, &matCode, &qtyOrdered, &qtyReceived, &unitPrice, &costSubgroupID); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("line_id %d: not found", in.LineID))
+		).Scan(&linePOID, &p.lineNo, &p.matCode, &p.qtyOrdered, &p.qtyReceived, &p.unitPrice, &p.costSubgroupID); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("ไม่พบรายการสั่งซื้อ line_id %d", in.LineID))
 		}
 		if linePOID != poID {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("line_id %d: does not belong to po_id %d", in.LineID, poID))
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("รายการ line_id %d ไม่ได้อยู่ในใบสั่งซื้อนี้ (po_id %d)", in.LineID, poID))
 		}
-		if in.ReturnQty > qtyReceived {
+		if in.ReturnQty > p.qtyReceived {
 			return fiber.NewError(fiber.StatusBadRequest,
-				fmt.Sprintf("line_no %d: return_qty %.4f exceeds qty_received %.4f", lineNo, in.ReturnQty, qtyReceived))
+				fmt.Sprintf("รายการที่ %d: จำนวนที่คืน %.4f เกินจำนวนที่รับเข้าแล้ว %.4f", p.lineNo, in.ReturnQty, p.qtyReceived))
 		}
+		if orderType == "cost" {
+			if p.costSubgroupID == nil {
+				return fiber.NewError(fiber.StatusBadRequest,
+					fmt.Sprintf("รายการที่ %d: ไม่มีรหัสต้นทุน (cost code) จึงไม่สามารถคืนจากรายการต้นทุนโครงการได้", p.lineNo))
+			}
+			if projectCode == nil || *projectCode == "" {
+				return fiber.NewError(fiber.StatusBadRequest,
+					fmt.Sprintf("รายการที่ %d: ใบสั่งซื้อไม่ได้ระบุโครงการ จึงไม่สามารถคืนจากรายการต้นทุนโครงการได้", p.lineNo))
+			}
+		}
+		plans = append(plans, p)
+	}
 
-		newQtyReceived := qtyReceived - in.ReturnQty
+	// Phase 2 — allocate the RT number right before the header INSERT, same tx.
+	returnNo, err := nextICDocNo(ctx, tx, "RT")
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถออกเลขที่เอกสารคืนสินค้าได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	var returnID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO ic_po_return_document (po_id, return_no, return_date, remarks, created_by)
+		VALUES ($1, $2, COALESCE(NULLIF($3, '')::date, (timezone('Asia/Bangkok', now()))::date), $4, $5)
+		RETURNING id`, poID, returnNo, returnDate, req.Remarks, claims.UserID,
+	).Scan(&returnID); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "บันทึกเอกสารคืนสินค้าไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
+	}
+
+	// Phase 3 — post the ledger (unchanged logic) and write the document lines.
+	for i, p := range plans {
+		in := p.in
+		newQtyReceived := p.qtyReceived - in.ReturnQty
 		var lineStatus string
 		switch {
 		case newQtyReceived <= 0:
 			lineStatus = "OPEN"
-		case newQtyReceived >= qtyOrdered:
+		case newQtyReceived >= p.qtyOrdered:
 			lineStatus = "RECEIVED"
 		default:
 			lineStatus = "PARTIAL"
@@ -1971,25 +2047,22 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 			return err
 		}
 
-		switch orderType {
-		case "stock":
-			if err := icReturnFromStock(ctx, tx, matCode, lineNo, in.ReturnQty, poID, claims.UserID, req.Remarks); err != nil {
+		if orderType == "stock" {
+			if err := icReturnFromStock(ctx, tx, p.matCode, p.lineNo, in.ReturnQty, poID, claims.UserID, req.Remarks, returnID); err != nil {
 				return err
 			}
-		case "cost":
-			if costSubgroupID == nil {
-				return fiber.NewError(fiber.StatusBadRequest,
-					fmt.Sprintf("line_no %d: has no cost_subgroup_id — a cost-type PO line must have a cost code to return from project cost items", lineNo))
-			}
-			if projectCode == nil || *projectCode == "" {
-				return fiber.NewError(fiber.StatusBadRequest,
-					fmt.Sprintf("line_no %d: PO has no project_code set — cannot return from a project cost item", lineNo))
-			}
-			if err := icReturnFromProjectCost(ctx, tx, *projectCode, matCode, *costSubgroupID, in.ReturnQty, unitPrice, poID, in.LineID, claims.UserID, req.Remarks); err != nil {
+		} else {
+			if err := icReturnFromProjectCost(ctx, tx, *projectCode, p.matCode, *p.costSubgroupID, in.ReturnQty, p.unitPrice, poID, in.LineID, claims.UserID, req.Remarks, returnID); err != nil {
 				return err
 			}
-		default:
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PO has unsupported order_type %q — expected 'stock' or 'cost'", orderType))
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ic_po_return_line (return_id, line_no, po_line_id, mat_code, cost_subgroup_id, return_qty, remarks)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			returnID, i+1, in.LineID, p.matCode, p.costSubgroupID, in.ReturnQty, in.Remarks,
+		); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "บันทึกรายการคืนสินค้าไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
 		}
 	}
 
@@ -2045,25 +2118,27 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "return committed but failed to reload lines: "+err.Error())
 	}
 
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"lines": lines}})
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"return_id": returnID, "return_no": returnNo, "doc_type": "RETURN", "lines": lines,
+	}})
 }
 
 // icReturnFromStock posts a PO-line return by subtracting from stock_item/stock_transaction.
 // Mirrors icReceiveToStock but never auto-creates a stock_item row — a missing row for a mat_code
 // that was previously received into stock would indicate a deeper data problem, not something to
 // paper over here.
-func icReturnFromStock(ctx context.Context, tx pgx.Tx, matCode string, lineNo int64, returnQty float64, poID, userID int64, remarks *string) error {
+func icReturnFromStock(ctx context.Context, tx pgx.Tx, matCode string, lineNo int64, returnQty float64, poID, userID int64, remarks *string, returnDocumentID int64) error {
 	var itemID int64
 	var locationCode string
 	var qtyBefore float64
 	if err := tx.QueryRow(ctx, `SELECT id, location_code, qty FROM stock_item WHERE mat_code = $1 FOR UPDATE`, matCode).
 		Scan(&itemID, &locationCode, &qtyBefore); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("line_no %d: mat_code %s has no stock_item row", lineNo, matCode))
+			fmt.Sprintf("รายการที่ %d: ไม่พบสต๊อกของวัสดุ %s", lineNo, matCode))
 	}
 	if returnQty > qtyBefore {
 		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("line_no %d: mat_code %s return_qty %.4f exceeds available stock qty %.4f", lineNo, matCode, returnQty, qtyBefore))
+			fmt.Sprintf("รายการที่ %d: วัสดุ %s จำนวนที่คืน %.4f เกินจำนวนคงเหลือในสต๊อก %.4f", lineNo, matCode, returnQty, qtyBefore))
 	}
 
 	qtyAfter := qtyBefore - returnQty
@@ -2076,9 +2151,9 @@ func icReturnFromStock(ctx context.Context, tx pgx.Tx, matCode string, lineNo in
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO stock_transaction (txn_no, txn_type, item_id, qty, qty_before, qty_after, ref_doc_type, ref_doc_id, from_location, txn_date, remarks, created_by)
-		VALUES ($1, 'OUT', $2, $3, $4, $5, 'PO_RETURN', $6, $7, CURRENT_DATE, $8, $9)`,
-		txnNo, itemID, returnQty, qtyBefore, qtyAfter, poID, locationCode, remarks, userID,
+		INSERT INTO stock_transaction (txn_no, txn_type, item_id, qty, qty_before, qty_after, ref_doc_type, ref_doc_id, from_location, txn_date, remarks, created_by, return_document_id)
+		VALUES ($1, 'OUT', $2, $3, $4, $5, 'PO_RETURN', $6, $7, CURRENT_DATE, $8, $9, $10)`,
+		txnNo, itemID, returnQty, qtyBefore, qtyAfter, poID, locationCode, remarks, userID, returnDocumentID,
 	); err != nil {
 		return fmt.Errorf("mat_code %s: failed to insert stock_transaction: %w", matCode, err)
 	}
@@ -2093,7 +2168,7 @@ func icReturnFromStock(ctx context.Context, tx pgx.Tx, matCode string, lineNo in
 // ic_project_cost_item (goods already issued/transferred into the project). Locks pool then cost
 // item (same order as movement submit). Never auto-creates either row; if the combined balance is
 // short it returns a Thai 400 with both available quantities and nothing is written.
-func icReturnFromProjectCost(ctx context.Context, tx pgx.Tx, projectCode, matCode string, costSubgroupID int64, returnQty, unitPrice float64, poID, poLineID, userID int64, remarks *string) error {
+func icReturnFromProjectCost(ctx context.Context, tx pgx.Tx, projectCode, matCode string, costSubgroupID int64, returnQty, unitPrice float64, poID, poLineID, userID int64, remarks *string, returnDocumentID int64) error {
 	var poolID int64
 	var poolAvail float64
 	hasPool := true
@@ -2161,9 +2236,9 @@ func icReturnFromProjectCost(ctx context.Context, tx pgx.Tx, projectCode, matCod
 			return fmt.Errorf("mat_code %s: failed to update ic_project_cost_item: %w", matCode, err)
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO ic_project_cost_item_transaction (project_cost_item_id, po_id, po_line_id, qty, qty_before, qty_after, unit_cost, remarks, created_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			costItemID, poID, poLineID, -fromItem, itemQty, qtyAfter, unitPrice, remarks, userID,
+			INSERT INTO ic_project_cost_item_transaction (project_cost_item_id, po_id, po_line_id, qty, qty_before, qty_after, unit_cost, remarks, created_by, return_document_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			costItemID, poID, poLineID, -fromItem, itemQty, qtyAfter, unitPrice, remarks, userID, returnDocumentID,
 		); err != nil {
 			return fmt.Errorf("mat_code %s: failed to insert ic_project_cost_item_transaction: %w", matCode, err)
 		}

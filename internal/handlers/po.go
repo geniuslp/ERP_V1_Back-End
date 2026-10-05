@@ -61,11 +61,9 @@ type poLinePRRef struct {
 // decreases (or a PO line's pr_line_id being removed/reduced) are always allowed. Must be
 // called inside the same transaction as the purchase_order_line insert/delete it reconciles.
 //
-// Uses qty_requested rather than qty_to_order because qty_to_order is a one-time snapshot
-// computed at PR-submit time against stock_item.qty and is never resynced afterward — this
-// caused false "qty exceeds remaining" rejections (reporting 0 remaining) even when
-// qty_requested still had plenty of unfulfilled quantity. Same fix already applied to
-// GetAvailablePRs in this file and to the available_for_po filter in pr_approval.go.
+// The cap is qty_requested - qty_reserved (qty to buy after stock reservation), i.e. the same
+// remaining expression as sqlPRLineRemainingExpr — NOT qty_to_order, which is 0 on legacy PRs.
+// The picker, this validation and the PR status recompute all agree on "fully ordered".
 //
 // The bound check compares this call's NEW TOTAL for a pr_line_id (newSum) against the max it
 // could hold (qty_requested minus every OTHER PO's claim, i.e. current qty_ordered net of this
@@ -99,7 +97,7 @@ func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poL
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, qty_requested, qty_ordered FROM purchase_request_line
+		SELECT id, qty_requested - COALESCE(qty_reserved, 0), qty_ordered FROM purchase_request_line
 		WHERE id = ANY($1)
 		FOR UPDATE`, prLineIDs)
 	if err != nil {
@@ -158,7 +156,7 @@ func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poL
 // @Param        status    query  string  false  "status filter — comma-separated for multiple, e.g. PENDING_APPROVAL,PENDING_REAPPROVAL"
 // @Param        supplier  query  string  false  "supplier_id filter"
 // @Param        my        query  bool    false  "when true, only POs created by the current user"
-// @Param        order_type query string  false  "filter: stock | cost | asset_equipment | office_equipment | asset_tool"
+// @Param        order_type query string  false  "filter: stock | cost | asset_machine | asset_office_equipment | asset_tools"
 // @Param        page      query  int     false  "page"  default(1)
 // @Param        page_size query  int     false  "page_size (alias: limit)"  default(20)
 // @Param        limit     query  int     false  "alias for page_size — used if page_size is not sent"
@@ -1315,9 +1313,29 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 	return poID, poNo, approvalID, totalAmount, vatAmount, netAmount, nil
 }
 
+// sqlPRLineRemainingExpr is THE definition of a PR line's remaining orderable qty:
+// qty_requested - qty_reserved - qty_ordered. qty_to_order is deliberately NOT used — it is not
+// populated on legacy PRs (0 even though nothing was reserved). Used by the picker, the drawer,
+// GET /pr has_remaining and (as qty_requested - qty_reserved) by reconcilePRLineQty. Shared by the line picker
+// (GetPRLinesForPO, alias prl) and the PR picker (GET /pr?available_for_po=true and
+// GET /po/available-prs, via sqlPRHasOrderableLine) so the two can never disagree.
+const sqlPRLineRemainingExpr = `(prl.qty_requested - COALESCE(prl.qty_reserved, 0) - COALESCE(prl.qty_ordered, 0))`
+
+// sqlPRLineRemaining is the boolean form of sqlPRLineRemainingExpr (alias prl).
+const sqlPRLineRemaining = sqlPRLineRemainingExpr + ` > 0`
+
+// sqlPRHasOrderableLine is a boolean expression over a purchase_request aliased `pr`.
+const sqlPRHasOrderableLine = `EXISTS (
+	SELECT 1 FROM purchase_request_line prl
+	WHERE prl.pr_id = pr.id AND ` + sqlPRLineRemaining + `
+)`
+
+// sqlPRPickerStatuses: statuses a PR may be in and still be offered to the PO-create pickers.
+const sqlPRPickerStatuses = `pr.status IN ('COMPLETED','PARTIALLY_FILLED')`
+
 // GetAvailablePRs godoc
 // @Summary      List PRs eligible to be linked to a new PO
-// @Description  Returns COMPLETED PRs that still have at least one line with remaining (qty_requested - qty_ordered) > 0. Uses qty_requested rather than qty_to_order because qty_to_order is a one-time snapshot computed at PR-submit time against stock_item.qty and is never resynced afterward — stock consumed elsewhere post-submit (or missing at submit time) left stale qty_to_order values that could hide PRs which still genuinely need purchasing. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
+// @Description  Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least one line with remaining (qty_requested - qty_reserved - qty_ordered) > 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -1334,12 +1352,8 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		    pr.created_at
 		FROM purchase_request pr
 		LEFT JOIN users u ON u.id = pr.requested_by
-		WHERE pr.status = 'COMPLETED' AND pr.deleted_at IS NULL
-		  AND EXISTS (
-		      SELECT 1 FROM purchase_request_line prl
-		      WHERE prl.pr_id = pr.id
-		      AND prl.qty_requested - prl.qty_ordered > 0
-		  )
+		WHERE `+sqlPRPickerStatuses+` AND pr.deleted_at IS NULL
+		  AND `+sqlPRHasOrderableLine+`
 		ORDER BY pr.created_at DESC`)
 	if err != nil {
 		return err
@@ -1368,13 +1382,15 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 }
 
 // GetPRLinesForPO godoc
-// @Summary      List a PR's lines with remaining orderable qty
-// @Description  Returns every line of the given PR with a computed remaining = qty_to_order - qty_ordered, so the PO-create form can show accurate "still orderable" quantities per line when building a split order (qty already covered by stock via qty_reserved is excluded from what's orderable). Lines that are fully ordered (remaining <= 0) are included with is_fully_ordered=true rather than dropped, so the UI can show them struck out instead of silently disappearing.
+// @Summary      List a PR's lines that can still be ordered
+// @Description  Feeds the "pull lines from PR" picker on the PO-create page. Returns only lines with remaining = qty_requested - qty_reserved - qty_ordered > 0; fully ordered lines are NOT returned. qty_ordered is the accumulated qty across all non-cancelled POs (cancelling/deleting a PO gives its qty back, so the line reappears). Does not read qty_to_order — POST /po validation (reconcilePRLineQty) and the PR status recompute use the same remaining expression. Returns 400 if the PR is CANCELLED and 404 if it does not exist.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
 // @Param        pr_id  path  int  true  "PR ID"
 // @Success      200    {object}  fiber.Map
+// @Failure      400    {object}  fiber.Map
+// @Failure      404    {object}  fiber.Map
 // @Router       /po/pr-lines/{pr_id} [get]
 func (h *POHandler) GetPRLinesForPO(c *fiber.Ctx) error {
 	prID, err := strconv.ParseInt(c.Params("pr_id"), 10, 64)
@@ -1382,14 +1398,26 @@ func (h *POHandler) GetPRLinesForPO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid pr_id")
 	}
 
-	rows, err := h.db.Query(context.Background(), `
+	ctx := context.Background()
+	var prStatus string
+	if err := h.db.QueryRow(ctx,
+		`SELECT status FROM purchase_request WHERE id = $1 AND deleted_at IS NULL`, prID,
+	).Scan(&prStatus); err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "PR not found")
+	}
+	if prStatus == "CANCELLED" {
+		return fiber.NewError(fiber.StatusBadRequest, "PR is CANCELLED, cannot pull lines from it")
+	}
+
+	rows, err := h.db.Query(ctx, `
 		SELECT prl.id, prl.pr_id, prl.line_no, prl.mat_code, mn.mat_name,
 		       prl.qty_requested, prl.qty_reserved, prl.qty_to_order, prl.qty_ordered,
-		       (prl.qty_to_order - prl.qty_ordered) AS remaining, prl.status, prl.remarks
+		       `+sqlPRLineRemainingExpr+` AS remaining, prl.status, prl.remarks
 		FROM purchase_request_line prl
 		LEFT JOIN material_code mc ON mc.mat_code = prl.mat_code
 		LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
 		WHERE prl.pr_id = $1
+		  AND `+sqlPRLineRemaining+`
 		ORDER BY prl.line_no`, prID)
 	if err != nil {
 		return err
@@ -1397,19 +1425,18 @@ func (h *POHandler) GetPRLinesForPO(c *fiber.Ctx) error {
 	defer rows.Close()
 
 	type PRLineAvailable struct {
-		ID             int64   `json:"id"`
-		PRID           int64   `json:"pr_id"`
-		LineNo         int     `json:"line_no"`
-		MatCode        string  `json:"mat_code"`
-		MatName        *string `json:"mat_name,omitempty"`
-		QtyRequested   float64 `json:"qty_requested"`
-		QtyReserved    float64 `json:"qty_reserved"`
-		QtyToOrder     float64 `json:"qty_to_order"`
-		QtyOrdered     float64 `json:"qty_ordered"`
-		Remaining      float64 `json:"remaining"`
-		Status         string  `json:"status"`
-		Remarks        *string `json:"remarks,omitempty"`
-		IsFullyOrdered bool    `json:"is_fully_ordered"`
+		ID           int64   `json:"id"`
+		PRID         int64   `json:"pr_id"`
+		LineNo       int     `json:"line_no"`
+		MatCode      string  `json:"mat_code"`
+		MatName      *string `json:"mat_name,omitempty"`
+		QtyRequested float64 `json:"qty_requested"`
+		QtyReserved  float64 `json:"qty_reserved"`
+		QtyToOrder   float64 `json:"qty_to_order"`
+		QtyOrdered   float64 `json:"qty_ordered"`
+		Remaining    float64 `json:"remaining"`
+		Status       string  `json:"status"`
+		Remarks      *string `json:"remarks,omitempty"`
 	}
 
 	items := []PRLineAvailable{}
@@ -1418,9 +1445,6 @@ func (h *POHandler) GetPRLinesForPO(c *fiber.Ctx) error {
 		if err := rows.Scan(&r.ID, &r.PRID, &r.LineNo, &r.MatCode, &r.MatName,
 			&r.QtyRequested, &r.QtyReserved, &r.QtyToOrder, &r.QtyOrdered, &r.Remaining, &r.Status, &r.Remarks); err != nil {
 			return err
-		}
-		if r.Remaining <= 0 {
-			r.IsFullyOrdered = true
 		}
 		items = append(items, r)
 	}
@@ -2597,7 +2621,7 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 			return err
 		}
 
-		lineRows, err := tx.Query(ctx, `SELECT qty_to_order, qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
+		lineRows, err := tx.Query(ctx, `SELECT qty_requested - COALESCE(qty_reserved, 0), qty_ordered FROM purchase_request_line WHERE pr_id=$1`, *poPRID)
 		if err != nil {
 			return err
 		}

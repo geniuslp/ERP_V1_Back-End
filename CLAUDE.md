@@ -905,7 +905,7 @@ the new `MENU_IC` parent menu.
   [ic_project_cost_item_transaction](database.md#ic_project_cost_item_transaction) when
   `order_type='cost'`, and recomputes `purchase_order.status_receive`. On the **first successful**
   line-item submission it also issues a `receive_no` (via [por_number_counter](database.md#por_number_counter),
-  monthly-reset, format `POR-YYYYMM-NNNN`) and stamps it onto the `ic_po_receive_document` row —
+  monthly-reset, format `IC-YYYYMM-NNNN`) and stamps it onto the `ic_po_receive_document` row —
   later partial-receive rounds against the same PO do **not** regenerate it (idempotent by design,
   the document's receive number stays stable across multiple receive rounds).
 - **PO Return** (`POST /ic/pos/{poId}/return-lines`) is the same transactional shape in reverse:
@@ -1267,10 +1267,10 @@ declared, never populated by any query; don't build on it.
 
 ---
 
-## 🧭 Session learnings (2026-10-01) — new order_type values: asset_equipment / office_equipment / asset_tool
+## 🧭 Session learnings (2026-10-01) — new order_type values: asset_machine / asset_office_equipment / asset_tools
 
 - `purchase_request.order_type` / `purchase_order.order_type` are `varchar(30)`, CHECK allows
-  `stock, cost, asset_equipment, office_equipment, asset_tool` (applied via pgAdmin, no migration file).
+  `stock, cost, asset_machine, asset_office_equipment, asset_tools` (applied via pgAdmin, no migration file).
   The 3 new types have **no goods-receiving** and **never appear in IC**.
 - **Helpers** live in `internal/handlers/order_type.go`: `AllowedOrderTypes`, `IsValidOrderType`,
   `IsAssetOrOfficeType`, `validateOrderType`, `requireOHCostSubgroup`, `DefaultAssetJobCode`, and

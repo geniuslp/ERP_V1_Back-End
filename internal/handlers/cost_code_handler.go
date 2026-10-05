@@ -459,7 +459,7 @@ const costCodeFullQuery = `
 
 // ListFull godoc
 // @Summary      Full joined cost-code list with computed cost_code string
-// @Description  scope=oh returns only active OH/General subgroups (cost_subject.subject_code = 'OH') — the only cost codes allowed on asset_equipment / office_equipment / asset_tool PR/PO lines. Rows carry subgroup_id (id), subgroup_code, subgroup_name and the 4-level cost_code, ordered by cost_code. Never identify OH by job_code 'G' alone — it also exists under subjects L, M, S.
+// @Description  scope=oh returns only active OH/General subgroups (cost_subject.subject_code = 'OH') — the only cost codes allowed on asset_machine / asset_office_equipment / asset_tools PR/PO lines. Rows carry subgroup_id (id), subgroup_code, subgroup_name and the 4-level cost_code, ordered by cost_code. Never identify OH by job_code 'G' alone — it also exists under subjects L, M, S.
 // @Tags         CostCode
 // @Security     BearerAuth
 // @Produce      json
