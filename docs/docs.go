@@ -4275,8 +4275,14 @@ const docTemplate = `{
                     },
                     {
                         "type": "boolean",
-                        "description": "When true, only materials with cost_subgroup_id set (PR picker); stock/qty_on_hand is never used as a filter",
-                        "name": "has_cost_subgroup",
+                        "description": "When true, only materials with a cost code (cost_subgroup_id set). Default false = every active material. The old has_cost_subgroup param is deprecated and ignored (the PR/PO pickers still send it)",
+                        "name": "cost_code_only",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Accepted but ignored — page size is fixed at 10",
+                        "name": "limit",
                         "in": "query"
                     },
                     {
@@ -4297,6 +4303,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     },
                     "500": {

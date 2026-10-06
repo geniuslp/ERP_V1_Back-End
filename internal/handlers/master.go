@@ -558,10 +558,12 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
 // @Param        spec_id       query  int     false  "Filter by spec_size ID"
 // @Param        brand_id      query  int     false  "Filter by brand ID"
 // @Param        unit_id       query  int     false  "Filter by unit ID"
-// @Param        has_cost_subgroup query bool false "When true, only materials with cost_subgroup_id set (PR picker); stock/qty_on_hand is never used as a filter"
+// @Param        cost_code_only query bool false "When true, only materials with a cost code (cost_subgroup_id set). Default false = every active material. The old has_cost_subgroup param is deprecated and ignored (the PR/PO pickers still send it)"
+// @Param        limit         query  int     false  "Accepted but ignored — page size is fixed at 10"
 // @Param        project_code  query  string  false  "When set, adds stock_on_hand per material from project_stock for that project (read-only reference, e.g. Petty Cash line picker)"
 // @Param        page          query  int     false  "Page number (default 1)"
 // @Success      200   {object}  models.PaginatedResponse
+// @Failure      400   {object}  fiber.Map
 // @Failure      500   {object}  fiber.Map
 // @Router       /master/allMaterial [get]
 func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
@@ -575,7 +577,11 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 	specID := c.QueryInt("spec_id", 0)
 	brandID := c.QueryInt("brand_id", 0)
 	unitID := c.QueryInt("unit_id", 0)
-	hasCostSubgroup := c.QueryBool("has_cost_subgroup", false)
+	// cost_code_only is the explicit opt-in restriction. The legacy has_cost_subgroup param is
+	// deliberately NOT read any more: the PR and PO material pickers sent it, which hid every
+	// material without a cost code (6,215 of 7,129 active rows). Their cost-code rules are
+	// enforced per line on create/update/submit, not by hiding materials here.
+	costCodeOnly := c.QueryBool("cost_code_only", false)
 	projectCode := strings.TrimSpace(c.Query("project_code"))
 	page := c.QueryInt("page", 1)
 	if page < 1 {
@@ -638,7 +644,7 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 		args = append(args, unitID)
 		idx++
 	}
-	if hasCostSubgroup {
+	if costCodeOnly {
 		conditions = append(conditions, "mc.cost_subgroup_id IS NOT NULL")
 	}
 
