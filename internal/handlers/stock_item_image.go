@@ -88,7 +88,7 @@ func (h *StockItemImageHandler) UploadImages(c *fiber.Ctx) error {
 		return err
 	}
 
-	dir := filepath.Join("uploads", "stock", strconv.FormatInt(itemID, 10))
+	dir := uploadDiskDir("stock", strconv.FormatInt(itemID, 10))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
 	}
@@ -107,7 +107,7 @@ func (h *StockItemImageHandler) UploadImages(c *fiber.Ctx) error {
 		if err := c.SaveFile(fh, savePath); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
 		}
-		filePath := filepath.ToSlash(savePath)
+		filePath := uploadURLPath(savePath)
 
 		isPrimary := !hasPrimary && idx == 0
 		fileName := fh.Filename
@@ -261,7 +261,7 @@ func (h *StockItemImageHandler) DeleteImage(c *fiber.Ctx) error {
 		return err
 	}
 
-	os.Remove(filePath)
+	removeUploadFile(filePath)
 
 	if wasPrimary {
 		var nextID int64

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -452,8 +451,8 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	}
 
 	for _, att := range req.Attachments {
-		if _, err := os.Stat(toRelativeDiskPath(att.FilePath)); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
+		if err := checkAttachmentOnDisk(att.FilePath, att.FileName); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO public.memo_attachment
@@ -619,8 +618,8 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 	for _, att := range req.Attachments {
-		if _, err = os.Stat(toRelativeDiskPath(att.FilePath)); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
+		if err := checkAttachmentOnDisk(att.FilePath, att.FileName); err != nil {
+			return err
 		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO public.memo_attachment

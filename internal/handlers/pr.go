@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -400,8 +399,8 @@ func (h *PRHandler) createPRTx(ctx context.Context, req models.CreatePRRequest, 
 	// 3. Insert attachments (if any) — file_path came from a prior /upload/pr call; verify the
 	// file is actually on disk before creating a row that references it (see fileurl.go).
 	for _, att := range req.Attachments {
-		if _, err := os.Stat(toRelativeDiskPath(att.FilePath)); err != nil {
-			return 0, "", fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("attachment %q was not found on disk — please re-upload", att.FileName))
+		if err := checkAttachmentOnDisk(att.FilePath, att.FileName); err != nil {
+			return 0, "", err
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO pr_attachment (pr_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at)

@@ -33,7 +33,7 @@ func loadSignatureDataURL(path, mime string) string {
 	if path == "" || mime == "" {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	data, err := readUploadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -94,7 +94,7 @@ func (h *UsersHandler) UploadSignature(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("only PNG/JPEG images are allowed (detected: %s)", sniffed))
 	}
 
-	dir := filepath.Join("uploads", "signatures")
+	dir := uploadDiskDir("signatures")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
 	}
@@ -104,7 +104,7 @@ func (h *UsersHandler) UploadSignature(c *fiber.Ctx) error {
 	if err := c.SaveFile(file, savePath); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
 	}
-	relPath := filepath.ToSlash(savePath)
+	relPath := uploadURLPath(savePath)
 
 	if _, err := h.db.Exec(ctx, `
 		UPDATE users SET signature_path=$1, signature_mime=$2, signature_updated_at=NOW() WHERE id=$3`,
@@ -117,7 +117,7 @@ func (h *UsersHandler) UploadSignature(c *fiber.Ctx) error {
 	// Delete the previous file only after the DB row points at the new one, so a failed
 	// save/update above never leaves the user with no signature file at all.
 	if oldPath != nil && *oldPath != "" {
-		os.Remove(*oldPath)
+		removeUploadFile(*oldPath)
 	}
 
 	return c.JSON(fiber.Map{"success": true, "message": "signature uploaded"})
@@ -150,7 +150,7 @@ func (h *UsersHandler) GetSignature(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "user has no signature")
 	}
 
-	data, err := os.ReadFile(*path)
+	data, err := readUploadFile(*path)
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "signature file is missing on disk")
 	}
@@ -193,7 +193,7 @@ func (h *UsersHandler) DeleteSignature(c *fiber.Ctx) error {
 	}
 
 	if path != nil && *path != "" {
-		os.Remove(*path) // ignore error if already missing
+		removeUploadFile(*path) // ignore error if already missing
 	}
 
 	return c.JSON(fiber.Map{"success": true, "message": "signature deleted"})

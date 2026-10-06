@@ -30,6 +30,11 @@ func toAbsoluteFileURL(path string) string {
 		return path
 	}
 	path = stripKnownHost(path)
+	// A stored full URL may carry another environment's path prefix (e.g. "erp/uat/uploads/...");
+	// keep only "uploads/<rest>" so the current publicBaseURL isn't doubled with the old prefix.
+	if _, rest, ok := strings.Cut("/"+strings.TrimLeft(path, "/"), "/uploads/"); ok {
+		path = "uploads/" + rest
+	}
 	return publicBaseURL + "/" + strings.TrimLeft(path, "/")
 }
 

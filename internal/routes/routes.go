@@ -13,7 +13,7 @@ import (
 
 func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Serve uploaded files as static assets
-	app.Static("/uploads", "./uploads")
+	app.Static("/uploads", handlers.UploadRoot())
 
 	// Absolutize relative file_path values returned in attachment/image responses
 	handlers.SetPublicBaseURL(cfg.PublicBaseURL)

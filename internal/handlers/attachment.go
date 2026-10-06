@@ -49,7 +49,7 @@ func (h *AttachmentHandler) UploadPRFile(c *fiber.Ctx) error {
 	}
 
 	now := time.Now()
-	dir := filepath.Join("uploads", "pr", now.Format("2006"), now.Format("01"))
+	dir := uploadDiskDir("pr", now.Format("2006"), now.Format("01"))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
 	}
@@ -68,7 +68,7 @@ func (h *AttachmentHandler) UploadPRFile(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": models.UploadFileResponse{
-			FilePath: toAbsoluteFileURL(filepath.ToSlash(savePath)),
+			FilePath: toAbsoluteFileURL(uploadURLPath(savePath)),
 			FileName: file.Filename,
 			FileSize: file.Size,
 			FileType: contentType,
@@ -102,7 +102,7 @@ func (h *AttachmentHandler) UploadMemoFile(c *fiber.Ctx) error {
 	}
 
 	now := time.Now()
-	dir := filepath.Join("uploads", "memo", now.Format("2006"), now.Format("01"))
+	dir := uploadDiskDir("memo", now.Format("2006"), now.Format("01"))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
 	}
@@ -121,7 +121,7 @@ func (h *AttachmentHandler) UploadMemoFile(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": models.UploadFileResponse{
-			FilePath: toAbsoluteFileURL(filepath.ToSlash(savePath)),
+			FilePath: toAbsoluteFileURL(uploadURLPath(savePath)),
 			FileName: file.Filename,
 			FileSize: file.Size,
 			FileType: contentType,
@@ -158,7 +158,7 @@ func (h *AttachmentHandler) Add(c *fiber.Ctx) error {
 	}
 
 	now := time.Now()
-	dir := filepath.Join("uploads", "pr", now.Format("2006"), now.Format("01"))
+	dir := uploadDiskDir("pr", now.Format("2006"), now.Format("01"))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
 	}
@@ -167,7 +167,7 @@ func (h *AttachmentHandler) Add(c *fiber.Ctx) error {
 	if err := c.SaveFile(file, savePath); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
 	}
-	relPath := filepath.ToSlash(savePath)
+	relPath := uploadURLPath(savePath)
 
 	contentType := file.Header.Get("Content-Type")
 	if contentType == "" {
@@ -265,7 +265,7 @@ func (h *AttachmentHandler) AddPO(c *fiber.Ctx) error {
 	}
 
 	now := time.Now()
-	dir := filepath.Join("uploads", "po", now.Format("2006"), now.Format("01"))
+	dir := uploadDiskDir("po", now.Format("2006"), now.Format("01"))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create upload directory")
 	}
@@ -274,7 +274,7 @@ func (h *AttachmentHandler) AddPO(c *fiber.Ctx) error {
 	if err := c.SaveFile(file, savePath); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to save file")
 	}
-	relPath := filepath.ToSlash(savePath)
+	relPath := uploadURLPath(savePath)
 
 	contentType := file.Header.Get("Content-Type")
 	if contentType == "" {
@@ -379,7 +379,7 @@ func (h *AttachmentHandler) DeletePO(c *fiber.Ctx) error {
 	}
 
 	// Best-effort removal — don't fail the request if file is already gone
-	os.Remove(filePath)
+	removeUploadFile(filePath)
 
 	return c.JSON(fiber.Map{"success": true})
 }
@@ -420,7 +420,7 @@ func (h *AttachmentHandler) Delete(c *fiber.Ctx) error {
 	}
 
 	// Best-effort removal — don't fail the request if file is already gone
-	os.Remove(filePath)
+	removeUploadFile(filePath)
 
 	return c.JSON(fiber.Map{"success": true})
 }
