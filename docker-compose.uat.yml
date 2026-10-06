@@ -12,7 +12,7 @@ services:
     network_mode: host                     # same as prod (no ports: mapping in host mode)
     env_file: .env.uat                     # PORT=8081, DB erp_db_uat, own JWT secret, PUBLIC_BASE_URL
     volumes:
-      - erp_uat_uploads:/app/uploads       # separate attachment storage from prod
+      - /home/GENIUS/erp_uat_uploads:/app/uploads   # bind mount on the UAT host, separate from prod
     healthcheck:                           # Dockerfile's check hardcodes :8080 (= prod API in host mode)
       test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
       interval: 30s
@@ -21,6 +21,3 @@ services:
       retries: 3
     restart: unless-stopped
     mem_limit: 256m
-
-volumes:
-  erp_uat_uploads:
