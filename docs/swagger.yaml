@@ -7410,6 +7410,49 @@ paths:
       summary: Update a unit's display name
       tags:
       - Master
+  /master/units/used:
+    get:
+      description: Returns DISTINCT active units referenced by active material_code
+        rows, optionally narrowed by any combination of group_id, subgroup_id, mat_name_id,
+        spec_id, brand_id. With no params, returns every unit used by at least one
+        active material.
+      parameters:
+      - description: Material group ID
+        in: query
+        name: group_id
+        type: integer
+      - description: Subgroup ID
+        in: query
+        name: subgroup_id
+        type: integer
+      - description: Material name ID
+        in: query
+        name: mat_name_id
+        type: integer
+      - description: Spec/size ID
+        in: query
+        name: spec_id
+        type: integer
+      - description: Brand ID
+        in: query
+        name: brand_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List units actually used by active materials
+      tags:
+      - Master
   /master/warehouses:
     get:
       produces:

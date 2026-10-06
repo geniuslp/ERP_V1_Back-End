@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +28,84 @@ type MasterHandler struct {
 
 func NewMasterHandler(db *pgxpool.Pool) *MasterHandler {
 	return &MasterHandler{db: db}
+}
+
+// getDecodedCode returns the :code path param with percent-escapes decoded.
+// Fiber leaves %2F undecoded in c.Params, so mat codes such as "PA0100101/00007"
+// arrive as "PA0100101%2F00007". Falls back to the raw value if decoding fails.
+// (Fiber's global UnescapePath is deliberately NOT used — it would turn %2F into
+// "/" before routing and break route matching.)
+func getDecodedCode(c *fiber.Ctx) string {
+	raw := c.Params("code")
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		return decoded
+	}
+	return raw
+}
+
+// flexString accepts a JSON string, number, bool or null and keeps it as a string,
+// so a form that sends spec_code as 12 (number) or null doesn't fail the whole body.
+type flexString string
+
+func (f *flexString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if bytes.Equal(b, []byte("null")) {
+		*f = ""
+		return nil
+	}
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*f = flexString(strings.TrimSpace(s))
+		return nil
+	}
+	if len(b) > 0 && (b[0] == '{' || b[0] == '[') {
+		return errors.New("must be text, not an object or list")
+	}
+	*f = flexString(string(b)) // number / bool literal
+	return nil
+}
+
+// parseCreateMaterialBody decodes the raw JSON body (ignoring Content-Type) and
+// returns a 400 naming the offending field when a value has an unusable shape.
+func parseCreateMaterialBody(c *fiber.Ctx) (models.CreateMaterialRequest, error) {
+	var in struct {
+		GroupCode       flexString `json:"group_code"`
+		SubgroupCode    flexString `json:"subgroup_code"`
+		SubgroupName    flexString `json:"subgroup_name"`
+		MatNameCode     flexString `json:"mat_name_code"`
+		MatNameTH       flexString `json:"mat_name_th"`
+		SpecCode        flexString `json:"spec_code"`
+		SpecDescription flexString `json:"spec_description"`
+		BrandCode       flexString `json:"brand_code"`
+		BrandName       flexString `json:"brand_name"`
+		UnitCode        flexString `json:"unit_code"`
+		UnitName        flexString `json:"unit_name"`
+	}
+	if err := json.Unmarshal(c.Body(), &in); err != nil {
+		var ute *json.UnmarshalTypeError
+		var se *json.SyntaxError
+		switch {
+		case errors.As(err, &ute) && ute.Field != "":
+			return models.CreateMaterialRequest{}, fiber.NewError(fiber.StatusBadRequest,
+				fmt.Sprintf("field %q has the wrong type (expected text)", ute.Field))
+		case errors.As(err, &se):
+			return models.CreateMaterialRequest{}, fiber.NewError(fiber.StatusBadRequest,
+				"the request body is not valid JSON")
+		default:
+			return models.CreateMaterialRequest{}, fiber.NewError(fiber.StatusBadRequest,
+				"the request body could not be read: "+err.Error())
+		}
+	}
+	return models.CreateMaterialRequest{
+		GroupCode: string(in.GroupCode), SubgroupCode: string(in.SubgroupCode), SubgroupName: string(in.SubgroupName),
+		MatNameCode: string(in.MatNameCode), MatNameTH: string(in.MatNameTH),
+		SpecCode: string(in.SpecCode), SpecDescription: string(in.SpecDescription),
+		BrandCode: string(in.BrandCode), BrandName: string(in.BrandName),
+		UnitCode: string(in.UnitCode), UnitName: string(in.UnitName),
+	}, nil
 }
 
 // ─── Material Groups ──────────────────────────────────────────────────────────
@@ -223,7 +305,7 @@ func (h *MasterHandler) GetMaterialStats(c *fiber.Ctx) error {
 // @Failure      404   {object}  fiber.Map
 // @Router       /master/materials/{code} [get]
 func (h *MasterHandler) GetMaterial(c *fiber.Ctx) error {
-	code := c.Params("code")
+	code := getDecodedCode(c)
 	row := h.db.QueryRow(context.Background(), `
 		SELECT mc.id, mc.mat_code, mc.is_active,
 		       mg.id, mg.group_name,
@@ -270,7 +352,7 @@ func (h *MasterHandler) GetMaterial(c *fiber.Ctx) error {
 // @Failure      500    {object}  fiber.Map
 // @Router       /materials/{code}/price-history [get]
 func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
-	matCode := c.Params("code")
+	matCode := getDecodedCode(c)
 
 	page := max(c.QueryInt("page", 1), 1)
 	limit := min(max(c.QueryInt("limit", 20), 1), 100)
@@ -1018,6 +1100,70 @@ func (h *MasterHandler) ListUnits(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }
 
+// ListUsedUnits godoc
+// @Summary      List units actually used by active materials
+// @Description  Returns DISTINCT active units referenced by active material_code rows, optionally narrowed by any combination of group_id, subgroup_id, mat_name_id, spec_id, brand_id. With no params, returns every unit used by at least one active material.
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        group_id     query  int  false  "Material group ID"
+// @Param        subgroup_id  query  int  false  "Subgroup ID"
+// @Param        mat_name_id  query  int  false  "Material name ID"
+// @Param        spec_id      query  int  false  "Spec/size ID"
+// @Param        brand_id     query  int  false  "Brand ID"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Router       /master/units/used [get]
+func (h *MasterHandler) ListUsedUnits(c *fiber.Ctx) error {
+	names := []string{"group_id", "subgroup_id", "mat_name_id", "spec_id", "brand_id"}
+	args := make([]any, len(names))
+	for i, n := range names {
+		raw := c.Query(n)
+		if raw == "" {
+			continue // nil → filter is skipped by the IS NULL branch
+		}
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			return fiber.NewError(fiber.StatusBadRequest, n+" must be a positive number")
+		}
+		args[i] = v
+	}
+
+	rows, err := h.db.Query(c.Context(), `
+		SELECT DISTINCT u.id, u.unit_code, u.unit_name
+		FROM material_code mc
+		JOIN unit u ON u.id = mc.unit_id
+		WHERE u.is_active = true AND mc.is_active = true
+		  AND ($1::int IS NULL OR mc.group_id = $1)
+		  AND ($2::int IS NULL OR mc.subgroup_id = $2)
+		  AND ($3::int IS NULL OR mc.mat_name_id = $3)
+		  AND ($4::int IS NULL OR mc.spec_id = $4)
+		  AND ($5::int IS NULL OR mc.brand_id = $5)
+		ORDER BY u.unit_name`, args...)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "could not load units, please try again")
+	}
+	defer rows.Close()
+
+	type unitItem struct {
+		ID       int    `json:"id"`
+		UnitCode string `json:"unit_code"`
+		UnitName string `json:"unit_name"`
+	}
+	items := []unitItem{}
+	for rows.Next() {
+		var u unitItem
+		if err := rows.Scan(&u.ID, &u.UnitCode, &u.UnitName); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "could not read units, please try again")
+		}
+		items = append(items, u)
+	}
+	if err := rows.Err(); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "could not load units, please try again")
+	}
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
 // UpdateUnit godoc
 // @Summary      Update a unit's display name
 // @Description  Updates unit.unit_name only — unit_code (the stable identifier used in mat_code composition) is never changed here. Affects every material_code row linked to this unit.
@@ -1401,22 +1547,27 @@ func (h *MasterHandler) CreateSupplier(c *fiber.Ctx) error {
 // @Failure      409   {object}  fiber.Map
 // @Router       /master/materials [post]
 func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
-	var req models.CreateMaterialRequest
-	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	req, perr := parseCreateMaterialBody(c)
+	if perr != nil {
+		return perr
 	}
-	if req.GroupCode == "" || req.SubgroupCode == "" || req.SubgroupName == "" ||
-		req.MatNameCode == "" || req.MatNameTH == "" ||
-		req.SpecCode == "" || req.SpecDescription == "" ||
-		req.BrandCode == "" || req.BrandName == "" ||
-		req.UnitCode == "" || req.UnitName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "all fields are required")
+	required := []struct{ name, val string }{
+		{"group_code", req.GroupCode}, {"subgroup_code", req.SubgroupCode}, {"subgroup_name", req.SubgroupName},
+		{"mat_name_code", req.MatNameCode}, {"mat_name_th", req.MatNameTH},
+		{"spec_code", req.SpecCode}, {"spec_description", req.SpecDescription},
+		{"brand_code", req.BrandCode}, {"brand_name", req.BrandName},
+		{"unit_code", req.UnitCode}, {"unit_name", req.UnitName},
+	}
+	for _, f := range required {
+		if f.val == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "field "+f.name+" is required")
+		}
 	}
 
 	ctx := context.Background()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 	defer tx.Rollback(ctx)
 
@@ -1427,7 +1578,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		 RETURNING id`,
 		req.UnitCode, req.UnitName,
 	).Scan(&unitID); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 
 	var groupID int
@@ -1444,7 +1595,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		 RETURNING id`,
 		req.SubgroupCode, groupID, req.SubgroupName,
 	).Scan(&subgroupID); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 
 	var matNameID int
@@ -1454,7 +1605,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		 RETURNING id`,
 		req.MatNameCode, subgroupID, req.MatNameTH,
 	).Scan(&matNameID); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 
 	var specID int
@@ -1465,7 +1616,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		 RETURNING id`,
 		req.SpecCode, matNameID, req.SpecDescription,
 	).Scan(&specID); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 
 	var brandID int
@@ -1476,7 +1627,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		 RETURNING id`,
 		req.BrandCode, req.BrandName, specID,
 	).Scan(&brandID); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 
 	matCode := req.GroupCode + req.SubgroupCode + req.MatNameCode + req.SpecCode + req.BrandCode + req.UnitCode
@@ -1485,7 +1636,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 	if err = tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM material_code WHERE mat_code = $1`, matCode,
 	).Scan(&dupCount); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 	if dupCount > 0 {
 		return fiber.NewError(fiber.StatusConflict, "material already exists: "+matCode)
@@ -1506,7 +1657,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return fiber.NewError(fiber.StatusConflict, "material already exists: "+matCode)
 		}
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 
 	// Every material must have a matching stock_item so GRN receiving can
@@ -1515,7 +1666,7 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 	if err = tx.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM stock_item WHERE mat_code = $1)`, matCode,
 	).Scan(&stockItemExists); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 	if !stockItemExists {
 		// description = mat_name + " " + spec_description, same composition formula used by
@@ -1529,12 +1680,12 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 			 VALUES ($1, $2, $3, $4, 0, NOW(), NOW())`,
 			matCode, req.MatNameTH, description, req.UnitName,
 		); err != nil {
-			return err
+			return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 		}
 	}
 
 	if err = tx.Commit(ctx); err != nil {
-		return err
+		return fiber.NewError(fiber.StatusInternalServerError, "could not save the material, please check the codes and try again")
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -1860,7 +2011,7 @@ var materialCodeCascadeConstraints = []string{
 // @Failure      409   {object}  fiber.Map
 // @Router       /master/materials/{code} [put]
 func (h *MasterHandler) UpdateMaterial(c *fiber.Ctx) error {
-	matCode := c.Params("code")
+	matCode := getDecodedCode(c)
 	var req models.UpdateMaterialFullRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")

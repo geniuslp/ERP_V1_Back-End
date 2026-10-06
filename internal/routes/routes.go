@@ -60,6 +60,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/groups", masterH.ListGroups)
 	master.Put("/groups/:id", masterH.UpdateMatGroup)
 	master.Get("/units", masterH.ListUnits)
+	master.Get("/units/used", masterH.ListUsedUnits)
 	master.Put("/units/:id", masterH.UpdateUnit)
 	master.Get("/roles", masterH.ListRoles)
 	master.Get("/eligible-approvers", masterH.ListEligibleApprovers)

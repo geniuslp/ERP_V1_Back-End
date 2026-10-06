@@ -6623,6 +6623,69 @@
                 }
             }
         },
+        "/master/units/used": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns DISTINCT active units referenced by active material_code rows, optionally narrowed by any combination of group_id, subgroup_id, mat_name_id, spec_id, brand_id. With no params, returns every unit used by at least one active material.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "List units actually used by active materials",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Material group ID",
+                        "name": "group_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Subgroup ID",
+                        "name": "subgroup_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Material name ID",
+                        "name": "mat_name_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Spec/size ID",
+                        "name": "spec_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Brand ID",
+                        "name": "brand_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/units/{id}": {
             "put": {
                 "security": [
