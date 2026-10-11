@@ -502,6 +502,97 @@ const docTemplate = `{
                 }
             }
         },
+        "/approval/PETTY_CASH/{id}/approve": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One transaction: approval_request, document status, petty_cash_status_log, approval_log (APPROVE, with comments + ip). Caller must be the assigned approver (403 otherwise); an already decided document returns 409. Also reachable as PUT /approval/PETTY_CASH/{docId}/approve.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Approve a petty cash requisition (PENDING_APPROVAL → APPROVED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional comments",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/models.ApprovalActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/approval/PETTY_CASH/{id}/reject": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same as approve, but comments are required (400). Also reachable as PUT /approval/PETTY_CASH/{docId}/reject.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Reject a petty cash requisition (PENDING_APPROVAL → REJECTED)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "comments required",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.ApprovalActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/approval/{docType}/{docId}/approve": {
             "put": {
                 "security": [
@@ -776,8 +867,8 @@ const docTemplate = `{
                             "$ref": "#/definitions/fiber.Map"
                         }
                     },
-                    "401": {
-                        "description": "Unauthorized",
+                    "429": {
+                        "description": "Too Many Requests",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -1323,11 +1414,11 @@ const docTemplate = `{
                 "tags": [
                     "Finance"
                 ],
-                "summary": "List PO or WO headers with paid/remaining amounts",
+                "summary": "List PO, WO or PC (petty cash) headers with paid/remaining amounts",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "PO or WO",
+                        "description": "PO, WO or PC",
                         "name": "doc_type",
                         "in": "query",
                         "required": true
@@ -1378,6 +1469,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "New payments only (amount_paid \u003e 0). Locks the document row, requires status APPROVED,\nrejects a fully-paid document and any amount above the remaining balance. Reversals\nare no longer accepted here (reverses_id -\u003e 400); use POST /finance/payments/{id}/cancel.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1387,7 +1479,7 @@ const docTemplate = `{
                 "tags": [
                     "Finance"
                 ],
-                "summary": "Record a payment (or reversal) against a PO or WO",
+                "summary": "Record a new payment against a PO, WO or PC",
                 "parameters": [
                     {
                         "description": "Payment data",
@@ -1415,24 +1507,25 @@ const docTemplate = `{
                 }
             }
         },
-        "/finance/payments/{doc_type}/{doc_id}/log": {
+        "/finance/payments/{doc_type}/{doc_id}": {
             "get": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
+                "description": "No status filter (a non-APPROVED document is returned so the screen can say why it is not payable).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Finance"
                 ],
-                "summary": "Get payment_log history for one PO or WO",
+                "summary": "Get one PO, WO or PC in the same shape as a ListPayableDocs row",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "PO or WO",
+                        "description": "PO, WO or PC",
                         "name": "doc_type",
                         "in": "path",
                         "required": true
@@ -1448,6 +1541,104 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/finance/payments/{doc_type}/{doc_id}/log": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Finance"
+                ],
+                "summary": "Get payment_log history for one PO, WO or PC",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "PO, WO or PC",
+                        "name": "doc_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "document id",
+                        "name": "doc_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/finance/payments/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "The reversal amount is -original.amount_paid taken from the stored row, never from the client.\nRejects an empty reason, a payment that is itself a reversal, and a payment already reversed.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Finance"
+                ],
+                "summary": "Cancel one payment by inserting a linked negative reversal row",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "payment_log id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CancelPaymentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -2682,7 +2873,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly por_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type=\"RETURN\" (plus the reloaded lines).",
+                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from its own monthly ret_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type=\"RETURN\" (plus the reloaded lines).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2746,7 +2937,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly por_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type=\"RETURN\" (plus the reloaded lines).",
+                "description": "One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from its own monthly ret_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type=\"RETURN\" (plus the reloaded lines).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2955,7 +3146,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "For the ToCostCode dropdown — :projectCode here is the TARGET project (ToProject), re-called whenever the user changes it, not the movement's own project. Returns every cost_subgroup under any job_code assigned to this project. Each project.job_codes entry (e.g. \"MP\") is matched by reconstructing it as cost_subject.subject_code || cost_job.job_code (subject_code is 1 char, cost_job.job_code is 1 char) — the same decomposition ListAvailableMaterials uses, since cost_job.job_code alone is a different, single-letter code space.",
+                "description": "For the ToCostCode dropdown — :projectCode here is the TARGET project (ToProject), re-called whenever the user changes it, not the movement's own project. Returns every non-Head cost_subgroup under any job_code assigned to this project (Head/roll-up subgroups are excluded). Each project.job_codes entry (e.g. \"MP\") is matched by reconstructing it as cost_subject.subject_code || cost_job.job_code (subject_code is 1 char, cost_job.job_code is 1 char) — the same decomposition ListAvailableMaterials uses, since cost_job.job_code alone is a different, single-letter code space.",
                 "produces": [
                     "application/json"
                 ],
@@ -3189,7 +3380,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (IS-YYYYMM-NNNN for ISSUE, TF-YYYYMM-NNNN for TRANSFER, from the same shared monthly por_number_counter sequence as ic_po_receive_document.receive_no (IC-) and PO returns (RT-)), and inserts the row with status=DRAFT.",
+                "description": "Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (IS-YYYYMM-NNNN for ISSUE, TF-YYYYMM-NNNN for TRANSFER, each prefix with its own monthly sequence in doc_number_counter, separate from IC- receive numbers and from RT- returns, which use ret_number_counter), and inserts the row with status=DRAFT.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3325,7 +3516,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "For when the document does not exist yet. ONE DB transaction: creates the header (same validation and doc_no generation as POST .../movements, status DRAFT), inserts the lines, then runs the exact same submit logic as POST .../movements/{id}/submit (lock, re-validate qty against on-hand/pool, deduct, credit, status POSTED). Any failure rolls back everything including the header — no orphan DRAFT. project_code in the header is taken from the path. Error codes (e.g. LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED, LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED) are identical to the id-based endpoints. lines is required and must be non-empty.",
+                "description": "For when the document does not exist yet. ONE DB transaction: creates the header (same validation and doc_no generation as POST .../movements, status DRAFT), inserts the lines, then runs the exact same submit logic as POST .../movements/{id}/submit (lock, re-validate qty against on-hand/pool, deduct, credit, status POSTED). Any failure rolls back everything including the header — no orphan DRAFT. project_code in the header is taken from the path. Error codes (e.g. LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED, LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED) are identical to the id-based endpoints. lines is required and must be non-empty.\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3564,7 +3755,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Validates qty against ic_project_receipt_pool remaining = qty_received - qty_issued (locked FOR UPDATE) for (project_code, mat_code, cost_subgroup_id) and rejects with 400 if insufficient. For doc_type='ISSUE' the destination is forced to (movement.project_code, the line's own cost_subgroup_id) and any to_project_code/to_cost_subgroup_id in the body is ignored; for 'TRANSFER' both are required. Only DRAFT movements accept new lines. Does NOT deduct qty_on_hand here — deduction happens only when the whole movement document is confirmed/submitted (a separate, not-yet-built step). Inserts with the next line_no for this movement.",
+                "description": "Validates qty against ic_project_receipt_pool remaining = qty_received - qty_issued (locked FOR UPDATE) for (project_code, mat_code, cost_subgroup_id) and rejects with 400 if insufficient. For doc_type='ISSUE' the destination is forced to (movement.project_code, the line's own cost_subgroup_id) and any to_project_code/to_cost_subgroup_id in the body is ignored; for 'TRANSFER' both are required. Only DRAFT movements accept new lines. Does NOT deduct qty_on_hand here — deduction happens only when the whole movement document is confirmed/submitted (a separate, not-yet-built step). Inserts with the next line_no for this movement.\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4471,6 +4662,12 @@ const docTemplate = `{
                         "description": "oh = only OH/General active subgroups",
                         "name": "scope",
                         "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true = also return Head (roll-up) subgroups; default false hides them. Every row carries is_head.",
+                        "name": "include_head",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -4797,7 +4994,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active cost_subgroup.",
+                "description": "Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active, non-Head cost_subgroup (Head subgroups are not selectable).",
                 "produces": [
                     "application/json"
                 ],
@@ -4846,6 +5043,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Rows keep their keys (id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at) and gain is_head (bool, always present). Head (roll-up) subgroups are hidden unless include_head=true; the master cost-code page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id}, .../{id}/deactivate and .../{id}/head.",
                 "produces": [
                     "application/json"
                 ],
@@ -4858,6 +5056,12 @@ const docTemplate = `{
                         "type": "integer",
                         "description": "group_id filter",
                         "name": "group_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true = also return Head subgroups (default false hides them)",
+                        "name": "include_head",
                         "in": "query"
                     }
                 ],
@@ -5016,6 +5220,64 @@ const docTemplate = `{
                 }
             }
         },
+        "/master/cost-code/subgroups/{id}/head": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same access as the other cost-code master edits (JWT only; no extra role guard). Setting is_head=true is always allowed, even when the subgroup is already used — existing data is left untouched, only NEW selections are blocked. The response carries the updated row (incl. is_head) and in_use: {pr_lines, po_lines, materials} counts so the UI can warn. Setting false just un-hides it.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Mark / unmark a cost subgroup as Head (roll-up node, not selectable on documents)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Subgroup ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "is_head",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.SetSubgroupHeadReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/cost-code/subjects": {
             "get": {
                 "security": [
@@ -5047,7 +5309,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's \"ผู้อนุมัติ\" field) so only users actually eligible to approve that doc_type are offered.",
+                "description": "Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's \"ผู้อนุมัติ\" field) so only users actually eligible to approve that doc_type are offered.\nEach item keeps value/label/dept (existing dropdown contract) and also returns user_id, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.",
                 "produces": [
                     "application/json"
                 ],
@@ -5058,7 +5320,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Document type, e.g. MEMO",
+                        "description": "Document type, e.g. MEMO or PETTY_CASH",
                         "name": "doc_type",
                         "in": "query",
                         "required": true
@@ -8211,7 +8473,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns past PO lines for the given mat_code, most recent first, for the \"ดูราคาที่เคยซื้อ\" price-history panel on the PO line-item picker. Excludes CANCELLED POs.",
+                "description": "Returns past PO lines for the given mat_code, most recent first, for the \"ดูราคาที่เคยซื้อ\" price-history panel on the PO line-item picker. Excludes CANCELLED POs. Each row also carries the PO header's project_code and project_name (LEFT JOIN project; null when the PO has no project).",
                 "produces": [
                     "application/json"
                 ],
@@ -8311,6 +8573,18 @@ const docTemplate = `{
                         "type": "string",
                         "description": "true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)",
                         "name": "my_approvals",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "true = (PR memo panel) hide memos with no available line left; adds total_lines/taken_lines/remaining_lines. A line is taken by a live PR (not CANCELLED, not soft-deleted); a memo linked by a live PR that has no memo_line_id lines (legacy whole-memo link) counts as fully used",
+                        "name": "exclude_used_by_pr",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "true = with exclude_used_by_pr, return fully-used memos too (still adds the line counts)",
+                        "name": "include_used",
                         "in": "query"
                     },
                     {
@@ -8519,6 +8793,58 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/memo/{id}/available-lines": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Every line of the Memo plus taken / taken_by_pr_id / taken_by_pr_no. A line is taken when a purchase_request_line references it (memo_line_id) on a PR that is not CANCELLED and not soft-deleted. exclude_pr_id (optional) makes lines taken by that PR report as not taken — used when editing that PR.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Memo"
+                ],
+                "summary": "List a Memo's lines with their \"taken by PR\" state",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Memo ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Treat lines taken by this PR as free (PR edit screen)",
+                        "name": "exclude_pr_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -8754,7 +9080,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id). Each line picks its own project_code — the document itself has no single project.",
+                "description": "status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code.",
                 "consumes": [
                     "application/json"
                 ],
@@ -8787,6 +9113,76 @@ const docTemplate = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/line-options": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "tax_forms (ภ.ง.ด.3 / ภ.ง.ด.53), active wht_income_types ordered by sort_order, and the fixed vat_rate (percent) used by the line calculation. Static route — registered before /:id.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Dropdown options for the petty cash line modal",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/pending-approval": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "status = PENDING_APPROVAL with a PENDING approval_request assigned to the caller. Paginated; search matches pc_no. vendor_names is the distinct supplier names on the lines, comma-joined. submitted_at = latest SUBMIT approval_log, else latest PENDING_APPROVAL status-log entry, else the approval_request creation time.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Petty cash documents waiting for the current user's approval",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "default 1",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "default 20, max 100",
+                        "name": "page_size",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "pc_no contains",
+                        "name": "search",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
                         }
                     }
                 }
@@ -8836,6 +9232,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Head cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.",
                 "consumes": [
                     "application/json"
                 ],
@@ -8911,6 +9308,40 @@ const docTemplate = `{
                 }
             }
         },
+        "/petty-cash/{id}/approval-chain": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One row per approval step: approver user id, employee_code, step_no, full_name, full_name_th, level (highest roles.level the user holds), roles [{role_code, role_name}] and role_names (comma-joined, for display) and approval status (null = not yet requested | PENDING | APPROVED | REJECTED).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Approval chain of a petty cash requisition",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/petty-cash/{id}/approve": {
             "post": {
                 "security": [
@@ -8918,6 +9349,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "One transaction: approval_request, document status, petty_cash_status_log, approval_log (APPROVE, with comments + ip). Caller must be the assigned approver (403 otherwise); an already decided document returns 409. Also reachable as PUT /approval/PETTY_CASH/{docId}/approve.",
                 "consumes": [
                     "application/json"
                 ],
@@ -8948,6 +9380,158 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/{id}/attachments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "List attachments of a petty cash requisition",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "multipart/form-data, field \"file\". Only while the document is DRAFT (or REJECTED, same rule as Update). Max 10 MB; pdf, jpg, jpeg, png, doc, docx, xls, xlsx. The file is written to uploads/petty-cash/{id}/ under a generated name, then the row is inserted; if the insert fails the file is removed. file_path in the response is an absolute URL.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Upload an attachment straight to a petty cash requisition",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "Attachment file",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/petty-cash/{id}/attachments/{attId}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same DRAFT/REJECTED-only rule as upload. Removes the row and the file on disk (a missing file is ignored). The attachment must belong to the document.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Petty Cash"
+                ],
+                "summary": "Delete a petty cash attachment",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Petty cash requisition ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Attachment ID",
+                        "name": "attId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -8995,6 +9579,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Same as approve, but comments are required (400). Also reachable as PUT /approval/PETTY_CASH/{docId}/reject.",
                 "consumes": [
                     "application/json"
                 ],
@@ -9158,7 +9743,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request. job_code is required overall — if omitted and pr_id is set, it's auto-filled from the source PR's job_code (an explicit job_code in the body always wins). lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are optional free text, unvalidated.\npo_no is generated server-side at save time (po_number_counter, inside the create transaction); any po_no in the body is ignored. Response data includes po_id and po_no (PO-YYYYMM-NNNN).",
+                "description": "Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request. job_code is required overall — if omitted and pr_id is set, it's auto-filled from the source PR's job_code (an explicit job_code in the body always wins). lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are optional free text, unvalidated.\nSubmit gate: when the resulting status is PENDING_APPROVAL, every line must have a cost_subgroup_id (after PR-line auto-fill) or the call fails with 400 \"กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)\". DRAFT saves are not affected.\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.\npo_no is generated server-side at save time (po_number_counter, inside the create transaction); any po_no in the body is ignored. Response data includes po_id and po_no (PO-YYYYMM-NNNN).",
                 "consumes": [
                     "application/json"
                 ],
@@ -9203,7 +9788,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least one line with remaining (qty_requested - qty_reserved - qty_ordered) \u003e 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.",
+                "description": "Each row also carries project_code and project_name (LEFT JOIN project; null when the PR has no project). Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least one line with remaining (qty_requested - qty_reserved - qty_ordered) \u003e 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -9268,7 +9853,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is\nnot considered), one object per PO with a nested \"lines\" array. mat_code filter is applied\nat the line level: only lines matching the filter appear in \"lines\", and a PO is dropped\nfrom the result entirely if none of its lines match. Pagination (page/page_size)\npaginates POs, not lines.",
+                "description": "Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is\nnot considered), one object per PO with a nested \"lines\" array. mat_code filter is applied\nat the line level: only lines matching the filter appear in \"lines\", and a PO is dropped\nfrom the result entirely if none of its lines match. Pagination (page/page_size)\npaginates POs, not lines.\nEach line also carries cost_subgroup_id, cost_code, cost_name, head_subgroup_id,\nhead_cost_code, head_cost_name (the Head of the line's cost group; the line's own\nsubgroup when it is itself the Head; null when the group has no Head), qty_received\n(purchase_order_line.qty_received, already net of IC returns), qty_outstanding\n(\u003e= 0, 0 for a cancelled line) and line_receiving_status (NOT_RECEIVED | PARTIAL |\nCOMPLETE; null for a cancelled line). Each PO carries receiving_status derived from its\nnon-cancelled lines (null when none).",
                 "produces": [
                     "application/json"
                 ],
@@ -9311,6 +9896,24 @@ const docTemplate = `{
                         "type": "string",
                         "description": "po.project_code filter",
                         "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "header receiving status: NOT_RECEIVED | PARTIAL | COMPLETE (derived from non-cancelled lines, same rule as Finance)",
+                        "name": "receiving_status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "PO matches when at least one line has exactly this cost_subgroup_id",
+                        "name": "cost_subgroup_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "id of a Head subgroup; PO matches when at least one line's cost subgroup is in that Head's group",
+                        "name": "head_subgroup_id",
                         "in": "query"
                     },
                     {
@@ -9515,7 +10118,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Replaces header fields and all lines of a PO that is still in DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved for APPROVED POs; other statuses cannot be edited). Line totals and the PO total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code auto-fill rules as POST /po. job_code: omit to keep the PO's current value; an explicit value (or the linked PR's job_code, if pr_id is (re)sent) always overrides it. lines[].cost_subgroup_id: same precedence as POST /po — an explicit value always wins over the auto-fill from lines[].pr_line_id. receiver_name/receiver_phone are optional free text, unvalidated.",
+                "description": "Replaces header fields and all lines of a PO that is still in DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved for APPROVED POs; other statuses cannot be edited). Line totals and the PO total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code auto-fill rules as POST /po. job_code: omit to keep the PO's current value; an explicit value (or the linked PR's job_code, if pr_id is (re)sent) always overrides it. lines[].cost_subgroup_id: same precedence as POST /po — an explicit value always wins over the auto-fill from lines[].pr_line_id. receiver_name/receiver_phone are optional free text, unvalidated.\nSubmit gate: when the resulting status is PENDING_APPROVAL, every line must have a cost_subgroup_id (after PR-line auto-fill) or the call fails with 400 \"กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)\". DRAFT saves are not affected.\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.",
                 "consumes": [
                     "application/json"
                 ],
@@ -9888,7 +10491,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are editable here too, same as payment_terms/remarks.",
+                "description": "Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are editable here too, same as payment_terms/remarks.\nRe-submits the PO (-\u003e PENDING_REAPPROVAL), so every line must have a cost_subgroup_id after the edit (after PR-line auto-fill) or the call fails with 400 \"กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)\".\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.",
                 "consumes": [
                     "application/json"
                 ],
@@ -9946,7 +10549,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Inserts purchase_order_line rows. For lines that reference a pr_line_id, increments purchase_request_line.qty_ordered and re-evaluates the parent PR status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id.",
+                "description": "Inserts purchase_order_line rows. For lines that reference a pr_line_id, increments purchase_request_line.qty_ordered and re-evaluates the parent PR status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id.\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.",
                 "consumes": [
                     "application/json"
                 ],
@@ -10357,7 +10960,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "available_for_po=true additionally restricts to COMPLETED / PARTIALLY_FILLED PRs that\nhave at least one line with qty_requested - qty_reserved - qty_ordered \u003e 0 — for the \"select\nPR to create PO from\" picker only. Omit it for any other PR listing (PR status/\nhistory pages), which must keep showing every PR regardless of reference status.\nEach item also carries po_conversion_status, computed from purchase_request_line\nqty_requested vs qty_ordered (aggregated across all lines, not the same as \"status\"):\nFULLY_CONVERTED (every line qty_ordered \u003e= qty_requested), PARTIALLY_CONVERTED\n(at least one line qty_ordered \u003e 0 but not all lines fully ordered), NOT_CONVERTED\n(every line qty_ordered = 0 or NULL).\nEach item also carries job_name (resolved from job_code via cost_subject+cost_job,\nsame join as GET /pr/{id}) and project_name (resolved from project_code via the\nproject table) — both null when the PR has no job_code/project_code or the code\ndoesn't resolve to a live master row.\nEach item also carries memo_no (resolved from memo_id via the memo table),\ndept_name (resolved from dept_code via the departments table), required_date\n(\"วันที่ส่งสินค้า\" — when the requester needs the goods by, distinct from pr_date)\nand created_at (\"วันที่เปิดเอกสาร\" — the DB row insert timestamp). dept_name,\nmemo_no, and required_date are null when the PR has no dept_code/memo_id/\nrequired_date or the code doesn't resolve to a live row.\nEach item also carries has_remaining (bool) — true if any line has\nqty_requested - qty_reserved - qty_ordered \u003e 0 (same expression as the PO-create pickers).\nEach item also carries has_active_po_link (bool) — true if any of this PR's\nlines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.\nSame condition the PR detail page's blocking-PO warning banner and the Update\nhandler's edit guard use — the frontend should hide/disable \"แก้ไข\" when true.",
+                "description": "available_for_po=true additionally restricts to COMPLETED / PARTIALLY_FILLED PRs that\nhave at least one line with qty_requested - qty_reserved - qty_ordered \u003e 0 — for the \"select\nPR to create PO from\" picker only. Omit it for any other PR listing (PR status/\nhistory pages), which must keep showing every PR regardless of reference status.\nEach item also carries po_conversion_status, computed from purchase_request_line\nqty_requested vs qty_ordered (aggregated across all lines, not the same as \"status\"):\nFULLY_CONVERTED (every line qty_ordered \u003e= qty_requested), PARTIALLY_CONVERTED\n(at least one line qty_ordered \u003e 0 but not all lines fully ordered), NOT_CONVERTED\n(every line qty_ordered = 0 or NULL).\nEach item also carries job_name (resolved from job_code via cost_subject+cost_job,\nsame join as GET /pr/{id}) and project_name (resolved from project_code via the\nproject table) — both null when the PR has no job_code/project_code or the code\ndoesn't resolve to a live master row.\nEach item also carries memo_no (resolved from memo_id via the memo table),\ndept_name (resolved from dept_code via the departments table), required_date\n(\"วันที่ส่งสินค้า\" — when the requester needs the goods by, distinct from pr_date)\nand created_at (\"วันที่เปิดเอกสาร\" — the DB row insert timestamp). dept_name,\nmemo_no, and required_date are null when the PR has no dept_code/memo_id/\nrequired_date or the code doesn't resolve to a live row.\nEach item also carries has_remaining (bool) — true if any line has\nqty_requested - qty_reserved - qty_ordered \u003e 0 (same expression as the PO-create pickers).\nlinked_pos: [{po_id, po_no, status}] — every non-CANCELLED PO with a line referencing this PR (distinct, by po_no, [] when none).\nEach item also carries has_active_po_link (bool) — true if any of this PR's\nlines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.\nSame condition the PR detail page's blocking-PO warning banner and the Update\nhandler's edit guard use — the frontend should hide/disable \"แก้ไข\" when true.",
                 "produces": [
                     "application/json"
                 ],
@@ -10438,7 +11041,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.\npr_no is generated server-side at save time (pr_number_counter, inside the create transaction); any pr_no in the body is ignored. Response data: {\"id\": \u003cint\u003e, \"pr_no\": \"PRYYYYMM-NNNN\"}.",
+                "description": "job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.\npr_no is generated server-side at save time (pr_number_counter, inside the create transaction); any pr_no in the body is ignored. Response data: {\"id\": \u003cint\u003e, \"pr_no\": \"PRYYYYMM-NNNN\"}.",
                 "consumes": [
                     "application/json"
                 ],
@@ -10483,7 +11086,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "po_conversion_status is computed from purchase_request_line qty_requested vs\nqty_ordered aggregated across all lines: FULLY_CONVERTED, PARTIALLY_CONVERTED,\nor NOT_CONVERTED (same 3 values as GET /pr's list-level field).\nproject_name is resolved from project_code via the project table (null if the\nPR has no project_code or it doesn't match a live project row), same as job_name.\ndept_name is resolved from dept_code via the departments table, and memo_no is\nresolved from memo_id via the memo table — both null when the PR has no\ndept_code/memo_id or the code doesn't resolve to a live row. Also carries\nrequired_date and created_at.",
+                "description": "po_conversion_status is computed from purchase_request_line qty_requested vs\nqty_ordered aggregated across all lines: FULLY_CONVERTED, PARTIALLY_CONVERTED,\nor NOT_CONVERTED (same 3 values as GET /pr's list-level field).\nproject_name is resolved from project_code via the project table (null if the\nPR has no project_code or it doesn't match a live project row), same as job_name.\ndept_name is resolved from dept_code via the departments table, and memo_no is\nresolved from memo_id via the memo table — both null when the PR has no\ndept_code/memo_id or the code doesn't resolve to a live row. Also carries\nrequired_date and created_at. Every line carries deduct_stock (bool, stored per line). linked_pos: [{po_id, po_no, status}] of every non-CANCELLED PO\nthat has a line referencing this PR (distinct, ordered by po_no; [] when none).",
                 "produces": [
                     "application/json"
                 ],
@@ -10521,7 +11124,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only allowed while status='DRAFT' (including PRs freshly reopened via\nPUT /pr/{id}/reopen, which itself guarantees no active PO references any of\nthis PR's lines — see Reopen). Because that guard already holds by the time a\nPR can reach DRAFT, editing here is fully free: lines are deleted and\nreinserted from the payload with no FK-safety restrictions. Logs the edit to\nerp_audit_log. Status stays DRAFT afterward — the user must explicitly call\nPOST /pr/{id}/submit to re-run deductStockOnSubmit against the new\nqty_requested values and go back to COMPLETED.\njob_code: omit to keep the PR's current value; job_code must be one of the 12 fixed job type codes if sent.\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty.",
+                "description": "Allowed from DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED; CANCELLED -\u003e 400.\nReturns 409 (plain Thai message) if any line is referenced by an active PO (status != CANCELLED),\nbefore any write. A non-DRAFT PR is first brought back to DRAFT exactly like PUT /pr/{id}/reopen\n(stock/project-credit reversal, which itself returns 409 if the project already consumed the\nmaterial), then lines are saved: a line sent with its id is updated IN PLACE (cost_subgroup_id, qty, ...\npersist on the existing row; mat_code of an existing line cannot change -\u003e 400), a line without id is inserted,\nand existing lines missing from the payload are deleted (409 if the line ever credited a project's stock).\nThe stock/project-credit reversal always uses the cost code stored before the edit; the re-submit reserves under the new one.\nstatus=COMPLETED in the body re-submits in the same tx. Cost code may be blank on DRAFT, required on COMPLETED.\njob_code: omit to keep the PR's current value; job_code must be one of the 12 fixed job type codes if sent.\nlines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty.\nHead cost codes (cost_subgroup.is_head) are rejected with 400 \"Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …\" when the value is NEW or CHANGED vs what the document already stores.",
                 "consumes": [
                     "application/json"
                 ],
@@ -10531,7 +11134,7 @@ const docTemplate = `{
                 "tags": [
                     "Purchase Request"
                 ],
-                "summary": "Edit a DRAFT PR's header and lines",
+                "summary": "Edit a PR's header and lines (any status except CANCELLED, never while a PO is linked)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -10565,6 +11168,12 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "active PO linked to this PR, or stock already consumed",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -10842,14 +11451,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this\nPR's lines (via purchase_order_line.pr_line_id) is not yet \"closed\" — closed means\nstatus='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already\nserved its purpose and no longer needs to block PR edits). The system does not\nauto-cancel/auto-close anything; the user must get the referencing PO(s) to one of\nthose states manually first. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an\noffsetting 'IN' transaction, then sets status back to DRAFT. For cost PRs it also\nreverses the project credit: per pr_line_id it nets the ref_type='PR' rows of\nic_project_cost_item_transaction and, if the net is \u003e 0, subtracts it from\nic_project_cost_item.qty_on_hand (409 if the project no longer holds that much)\nand writes a negative 'PR' row. Idempotent: a net of 0 writes nothing. Nothing\nis deleted. project_stock is not involved.",
+                "description": "Allowed from COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED. Blocks with 409 if any\nactive PO (status != CANCELLED, incl. fully received) references this PR's lines via\npurchase_order_line.pr_line_id. The system does not auto-cancel anything. Reverses any stock\ndeducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',\nref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an\noffsetting 'IN' transaction, then sets status back to DRAFT. For cost PRs it also\nreverses the project credit: per pr_line_id it nets the ref_type='PR' rows of\nic_project_cost_item_transaction and, if the net is \u003e 0, subtracts it from\nic_project_cost_item.qty_on_hand (409 if the project no longer holds that much)\nand writes a negative 'PR' row. Idempotent: a net of 0 writes nothing. Nothing\nis deleted. project_stock is not involved.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Purchase Request"
                 ],
-                "summary": "Reopen a COMPLETED PR back to DRAFT for editing",
+                "summary": "Reopen a non-DRAFT PR back to DRAFT for editing",
                 "parameters": [
                     {
                         "type": "integer",
@@ -10877,6 +11486,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
+                    },
+                    "409": {
+                        "description": "active PO linked to this PR, or stock already consumed",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
                     }
                 }
             }
@@ -10888,6 +11503,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Every line must have a cost_subgroup_id, otherwise 400 \"กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)\". DRAFT saves are not affected. The same rule applies to POST /pr and PUT /pr/{id} when status=COMPLETED.",
                 "produces": [
                     "application/json"
                 ],
@@ -10912,7 +11528,13 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "missing cost code on one or more lines, or other validation error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "active PO linked to this PR",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -13360,7 +13982,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Create a new user account, optionally assigning roles",
+                "description": "Create a new user account, optionally assigning roles. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th (Thai name) is optional: trimmed, max 200 characters (else 400), empty string stored as NULL.",
                 "consumes": [
                     "application/json"
                 ],
@@ -13480,7 +14102,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Update user profile information",
+                "description": "Update user profile information. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th is optional: omitted = keep stored value, empty string = clear (NULL), max 200 characters. department (free-text position) and dept_code are separate fields.",
                 "consumes": [
                     "application/json"
                 ],
@@ -14358,6 +14980,14 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.SetSubgroupHeadReq": {
+            "type": "object",
+            "properties": {
+                "is_head": {
+                    "type": "boolean"
+                }
+            }
+        },
         "handlers.SubmitReceiveDocumentRequest": {
             "type": "object",
             "properties": {
@@ -14836,6 +15466,14 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "comments": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CancelPaymentRequest": {
+            "type": "object",
+            "properties": {
+                "reason": {
                     "type": "string"
                 }
             }
@@ -15467,6 +16105,10 @@ const docTemplate = `{
                 "mat_code": {
                     "type": "string"
                 },
+                "memo_line_id": {
+                    "description": "MemoLineID: optional — the memo_line (of this PR's memo_id) this PR line takes. One memo_line can be\ntaken by only one active PR.",
+                    "type": "integer"
+                },
                 "qty_requested": {
                     "type": "number"
                 },
@@ -15553,12 +16195,13 @@ const docTemplate = `{
         "models.CreatePettyCashLineItem": {
             "type": "object",
             "required": [
-                "mat_code",
-                "project_code",
-                "qty",
-                "unit_price"
+                "project_code"
             ],
             "properties": {
+                "amount": {
+                    "description": "Amount (before VAT) is the new-style input; legacy callers may omit it and send qty*unit_price.\nQty/UnitPrice/Discount/DiscType/WhtRate are only read for that legacy fallback — new-style\nlines are stored as qty=1, unit_price=amount, no discount; wht_rate comes from the income type.",
+                    "type": "number"
+                },
                 "cost_subgroup_id": {
                     "type": "integer"
                 },
@@ -15571,7 +16214,14 @@ const docTemplate = `{
                 "discount": {
                     "type": "number"
                 },
+                "has_tax_invoice": {
+                    "type": "boolean"
+                },
+                "has_wht": {
+                    "type": "boolean"
+                },
                 "mat_code": {
+                    "description": "optional — the name goes in description when absent",
                     "type": "string"
                 },
                 "project_code": {
@@ -15583,25 +16233,63 @@ const docTemplate = `{
                 "remarks": {
                     "type": "string"
                 },
+                "supplier_address": {
+                    "type": "string"
+                },
+                "supplier_id": {
+                    "type": "integer"
+                },
+                "supplier_name": {
+                    "type": "string"
+                },
+                "supplier_tax_id": {
+                    "type": "string"
+                },
+                "tax_form_code": {
+                    "type": "string"
+                },
+                "tax_invoice_date": {
+                    "description": "YYYY-MM-DD",
+                    "type": "string"
+                },
+                "tax_invoice_no": {
+                    "type": "string"
+                },
                 "unit_price": {
-                    "type": "number",
-                    "minimum": 0
+                    "type": "number"
+                },
+                "wht_base_amount": {
+                    "type": "number"
+                },
+                "wht_income_type_id": {
+                    "type": "integer"
+                },
+                "wht_pay_date": {
+                    "description": "YYYY-MM-DD",
+                    "type": "string"
                 },
                 "wht_rate": {
+                    "description": "ignored — snapshot from wht_income_type.rate",
                     "type": "number"
                 }
             }
         },
         "models.CreatePettyCashRequest": {
             "type": "object",
-            "required": [
-                "lines"
-            ],
             "properties": {
                 "approver_id": {
                     "type": "integer"
                 },
+                "branch_code": {
+                    "type": "string"
+                },
                 "currency": {
+                    "type": "string"
+                },
+                "dept_code": {
+                    "type": "string"
+                },
+                "dept_name": {
                     "type": "string"
                 },
                 "discount_amount": {
@@ -15610,14 +16298,34 @@ const docTemplate = `{
                 "discount_type": {
                     "type": "string"
                 },
+                "doc_type": {
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
-                    "minItems": 1,
                     "items": {
                         "$ref": "#/definitions/models.CreatePettyCashLineItem"
                     }
                 },
+                "order_type": {
+                    "type": "string"
+                },
+                "payee_emp_code": {
+                    "type": "string"
+                },
+                "payee_name": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "project_name": {
+                    "type": "string"
+                },
                 "purpose": {
+                    "type": "string"
+                },
+                "ref_doc_no": {
                     "type": "string"
                 },
                 "remarks": {
@@ -16071,6 +16779,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "full_name": {
+                    "type": "string",
+                    "maxLength": 200
+                },
+                "full_name_th": {
                     "type": "string",
                     "maxLength": 200
                 },
@@ -16756,6 +17468,9 @@ const docTemplate = `{
                 "project_name": {
                     "type": "string"
                 },
+                "remaining_lines": {
+                    "type": "integer"
+                },
                 "requested_by": {
                     "type": "integer"
                 },
@@ -16780,9 +17495,16 @@ const docTemplate = `{
                 "status": {
                     "type": "string"
                 },
+                "taken_lines": {
+                    "type": "integer"
+                },
                 "title": {
                     "description": "legacy: no longer collected, NULL for new memos; kept for old rows",
                     "type": "string"
+                },
+                "total_lines": {
+                    "description": "Line-usage counts — only populated by GET /memo when exclude_used_by_pr=true or include_used=true.",
+                    "type": "integer"
                 },
                 "updated_at": {
                     "type": "string"
@@ -16852,6 +17574,10 @@ const docTemplate = `{
             "properties": {
                 "description": {
                     "type": "string"
+                },
+                "id": {
+                    "description": "ID identifies an existing memo_line on update (keeps its id stable so purchase_request_line.memo_line_id\nreferences survive). Omit for new lines; ignored on create.",
+                    "type": "integer"
                 },
                 "line_no": {
                     "type": "integer"
@@ -17322,7 +18048,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "doc_type": {
-                    "description": "'PO' | 'WO'",
+                    "description": "'PO' | 'WO' | 'PC'",
                     "type": "string"
                 },
                 "paid_by": {
@@ -17747,6 +18473,10 @@ const docTemplate = `{
                 "mat_code": {
                     "type": "string"
                 },
+                "memo_line_id": {
+                    "description": "MemoLineID: optional — the memo_line (of this PR's memo_id) this PR line takes. One memo_line can be\ntaken by only one active PR.",
+                    "type": "integer"
+                },
                 "qty_requested": {
                     "type": "number"
                 },
@@ -17815,14 +18545,20 @@ const docTemplate = `{
         },
         "models.UpdatePettyCashRequest": {
             "type": "object",
-            "required": [
-                "lines"
-            ],
             "properties": {
                 "approver_id": {
                     "type": "integer"
                 },
+                "branch_code": {
+                    "type": "string"
+                },
                 "currency": {
+                    "type": "string"
+                },
+                "dept_code": {
+                    "type": "string"
+                },
+                "dept_name": {
                     "type": "string"
                 },
                 "discount_amount": {
@@ -17831,14 +18567,34 @@ const docTemplate = `{
                 "discount_type": {
                     "type": "string"
                 },
+                "doc_type": {
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
-                    "minItems": 1,
                     "items": {
                         "$ref": "#/definitions/models.CreatePettyCashLineItem"
                     }
                 },
+                "order_type": {
+                    "type": "string"
+                },
+                "payee_emp_code": {
+                    "type": "string"
+                },
+                "payee_name": {
+                    "type": "string"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "project_name": {
+                    "type": "string"
+                },
                 "purpose": {
+                    "type": "string"
+                },
+                "ref_doc_no": {
                     "type": "string"
                 },
                 "remarks": {
@@ -18023,6 +18779,11 @@ const docTemplate = `{
                     "type": "string",
                     "maxLength": 200
                 },
+                "full_name_th": {
+                    "description": "nil = absent (keep stored value); \"\" = clear",
+                    "type": "string",
+                    "maxLength": 200
+                },
                 "location_code": {
                     "type": "string"
                 },
@@ -18143,6 +18904,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "full_name": {
+                    "type": "string"
+                },
+                "full_name_th": {
                     "type": "string"
                 },
                 "id": {

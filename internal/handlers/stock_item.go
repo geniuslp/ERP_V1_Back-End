@@ -751,6 +751,16 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 
 		if row.CostCode != "" {
 			if costSubgroupID, ok := costSubgroupByCode[row.CostCode]; ok {
+				// Head cost codes can't be newly assigned; keeping the material's current code is fine.
+				var curCost []int64
+				var cur *int64
+				if qerr := tx.QueryRow(ctx, `SELECT cost_subgroup_id FROM material_code WHERE mat_code=$1`, row.MatCode).Scan(&cur); qerr == nil && cur != nil {
+					curCost = []int64{*cur}
+				}
+				if herr := requireNonHeadCostCodes(ctx, tx, []*int64{ptrID(costSubgroupID)}, curCost); herr != nil {
+					errs = append(errs, fmt.Sprintf("row %d: %s — imported without setting Cost Code", row.RowNo, herr.Error()))
+					continue
+				}
 				// cost_subgroup_id lives on material_code (joined out to stock_item via
 				// mat_code), not on stock_item itself — that's what /master/stock's
 				// "Cost Code" column actually reads.

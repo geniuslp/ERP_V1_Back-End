@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 // @Description  required_date or the code doesn't resolve to a live row.
 // @Description  Each item also carries has_remaining (bool) — true if any line has
 // @Description  qty_requested - qty_reserved - qty_ordered > 0 (same expression as the PO-create pickers).
+// @Description  linked_pos: [{po_id, po_no, status}] — every non-CANCELLED PO with a line referencing this PR (distinct, by po_no, [] when none).
 // @Description  Each item also carries has_active_po_link (bool) — true if any of this PR's
 // @Description  lines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.
 // @Description  Same condition the PR detail page's blocking-PO warning banner and the Update
@@ -135,29 +137,30 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	).Scan(&total)
 
 	type PRListItem struct {
-		ID                 int64   `json:"id"`
-		PRNo               string  `json:"pr_no"`
-		Status             string  `json:"status"`
-		RequestedBy        string  `json:"requested_by"`
-		ApproverName       *string `json:"approver_name"`
-		LocationText       string  `json:"location_text"`
-		ProjectCode        *string `json:"project_code"`
-		DeptCode           *string `json:"dept_code,omitempty"`
-		Remarks            *string `json:"remarks"`
-		PRDate             string  `json:"pr_date"`
-		PRType             string  `json:"pr_type"`
-		OrderType          string  `json:"order_type"`
-		JobCode            *string `json:"job_code,omitempty"`
-		JobName            *string `json:"job_name,omitempty"`
-		ProjectName        *string `json:"project_name,omitempty"`
-		DeptName          *string `json:"dept_name,omitempty"`
-		MemoID             *int64  `json:"memo_id,omitempty"`
-		MemoNo             *string `json:"memo_no,omitempty"`
-		RequiredDate       *string `json:"required_date,omitempty"`
-		CreatedAt          string  `json:"created_at"`
-		PoConversionStatus string  `json:"po_conversion_status"`
-		HasActivePOLink    bool    `json:"has_active_po_link"`
-		HasRemaining       bool    `json:"has_remaining"`
+		ID                 int64      `json:"id"`
+		PRNo               string     `json:"pr_no"`
+		Status             string     `json:"status"`
+		RequestedBy        string     `json:"requested_by"`
+		ApproverName       *string    `json:"approver_name"`
+		LocationText       string     `json:"location_text"`
+		ProjectCode        *string    `json:"project_code"`
+		DeptCode           *string    `json:"dept_code,omitempty"`
+		Remarks            *string    `json:"remarks"`
+		PRDate             string     `json:"pr_date"`
+		PRType             string     `json:"pr_type"`
+		OrderType          string     `json:"order_type"`
+		JobCode            *string    `json:"job_code,omitempty"`
+		JobName            *string    `json:"job_name,omitempty"`
+		ProjectName        *string    `json:"project_name,omitempty"`
+		DeptName           *string    `json:"dept_name,omitempty"`
+		MemoID             *int64     `json:"memo_id,omitempty"`
+		MemoNo             *string    `json:"memo_no,omitempty"`
+		RequiredDate       *string    `json:"required_date,omitempty"`
+		CreatedAt          string     `json:"created_at"`
+		PoConversionStatus string     `json:"po_conversion_status"`
+		HasActivePOLink    bool       `json:"has_active_po_link"`
+		LinkedPOs          []LinkedPO `json:"linked_pos"`
+		HasRemaining       bool       `json:"has_remaining"`
 	}
 
 	// po_conversion_status is computed per PR from an aggregate over purchase_request_line,
@@ -174,11 +177,10 @@ WITH poconv AS (
 	GROUP BY prl.pr_id
 ),
 activepo AS (
-	SELECT DISTINCT prl.pr_id
-	FROM purchase_request_line prl
-	JOIN purchase_order_line pol ON pol.pr_line_id = prl.id
-	JOIN purchase_order po ON po.id = pol.po_id
-	WHERE po.status != 'CANCELLED' AND po.deleted_at IS NULL
+	SELECT x.pr_id,
+	       jsonb_agg(jsonb_build_object('po_id', x.po_id, 'po_no', x.po_no, 'status', x.status) ORDER BY x.po_no) AS linked_pos
+	FROM (`+sqlActivePOLinks+`) x
+	GROUP BY x.pr_id
 )
 SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        COALESCE(u1.full_name, '') AS requested_by,
@@ -192,6 +194,7 @@ SELECT pr.id AS pr_id, pr.pr_no, pr.status,
            ELSE 'NOT_CONVERTED'
        END AS po_conversion_status,
        (ap.pr_id IS NOT NULL) AS has_active_po_link,
+       COALESCE(ap.linked_pos, '[]'::jsonb) AS linked_pos,
        `+sqlPRHasOrderableLine+` AS has_remaining
 FROM purchase_request pr
 LEFT JOIN users u1 ON u1.id = pr.requested_by
@@ -215,10 +218,15 @@ LIMIT $2 OFFSET $3`,
 	items := make([]PRListItem, 0)
 	for rows.Next() {
 		var item PRListItem
+		var linkedJSON []byte
 		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
 			&item.LocationText, &item.ProjectCode, &item.DeptCode, &item.Remarks, &item.PRDate, &item.PRType, &item.OrderType, &item.JobCode,
 			&item.JobName, &item.ProjectName, &item.DeptName, &item.MemoID, &item.MemoNo, &item.RequiredDate, &item.CreatedAt,
-			&item.PoConversionStatus, &item.HasActivePOLink, &item.HasRemaining)
+			&item.PoConversionStatus, &item.HasActivePOLink, &linkedJSON, &item.HasRemaining)
+		item.LinkedPOs = []LinkedPO{}
+		if len(linkedJSON) > 0 {
+			_ = json.Unmarshal(linkedJSON, &item.LinkedPOs)
+		}
 		items = append(items, item)
 	}
 
@@ -243,7 +251,8 @@ LIMIT $2 OFFSET $3`,
 // @Description  dept_name is resolved from dept_code via the departments table, and memo_no is
 // @Description  resolved from memo_id via the memo table — both null when the PR has no
 // @Description  dept_code/memo_id or the code doesn't resolve to a live row. Also carries
-// @Description  required_date and created_at.
+// @Description  required_date and created_at. Every line carries deduct_stock (bool, stored per line). linked_pos: [{po_id, po_no, status}] of every non-CANCELLED PO
+// @Description  that has a line referencing this PR (distinct, ordered by po_no; [] when none).
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
@@ -265,6 +274,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		QtyReserved  float64 `json:"qty_reserved"`
 		QtyToOrder   float64 `json:"qty_to_order"`
 		Status       string  `json:"status"`
+		DeductStock  bool    `json:"deduct_stock"` // whether Submit reserves this line from stock_item (stored per line)
 		Remarks      *string `json:"remarks,omitempty"`
 		MatName      *string `json:"mat_name,omitempty"`
 		UnitName     *string `json:"unit_name,omitempty"`
@@ -277,6 +287,11 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		CostSubgroupID   *int64  `json:"cost_subgroup_id,omitempty"`
 		CostCode         *string `json:"cost_code,omitempty"`          // resolved combined code, e.g. "LE30300"
 		CostSubgroupName *string `json:"cost_subgroup_name,omitempty"` // resolved cost_subgroup.subgroup_name
+
+		// Memo line this PR line takes (null for legacy lines / PRs without memo lines).
+		MemoLineID          *int64  `json:"memo_line_id,omitempty"`
+		MemoLineNo          *int    `json:"memo_line_no,omitempty"`
+		MemoLineDescription *string `json:"memo_line_description,omitempty"`
 	}
 
 	type PRDetail struct {
@@ -305,6 +320,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		MemoID             *int64                    `json:"memo_id,omitempty"`
 		MemoNo             *string                   `json:"memo_no,omitempty"` // resolved from memo_id via the memo table (memo id PK, single-row join)
 		PoConversionStatus string                    `json:"po_conversion_status"`
+		LinkedPOs          []LinkedPO                `json:"linked_pos"`
 		Lines              []PRLineItem              `json:"lines"`
 		Attachments        models.PRAttachments      `json:"attachments"`
 		RequesterSignature *models.UserSignatureInfo `json:"requester_signature"`
@@ -366,17 +382,25 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		}
 	}
 
+	linkedPOs, err := fetchLinkedPOs(context.Background(), h.db, id)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to fetch linked POs: "+err.Error())
+	}
+	pr.LinkedPOs = linkedPOs
+
 	// ── Lines ────────────────────────────────────────────────────────────────
 	lineRows, err := h.db.Query(context.Background(), `
 		SELECT
 			prl.id, prl.line_no, prl.mat_code, prl.qty_requested,
-			prl.qty_reserved, prl.qty_to_order, prl.status, prl.remarks,
+			prl.qty_reserved, prl.qty_to_order, prl.status, prl.deduct_stock, prl.remarks,
 			mn.mat_name, u.unit_name, b.brand_name, ss.spec_description AS spec_name,
 			mg.group_name, sg.subgroup_name,
 			prl.cost_subgroup_id,
 			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
-			csg.subgroup_name AS cost_subgroup_name
+			csg.subgroup_name AS cost_subgroup_name,
+			prl.memo_line_id, ml.line_no, ml.description
 		FROM purchase_request_line prl
+		LEFT JOIN memo_line ml ON ml.id = prl.memo_line_id
 		LEFT JOIN material_code mc ON mc.mat_code = prl.mat_code
 		LEFT JOIN mat_group     mg ON mg.id = mc.group_id
 		LEFT JOIN subgroup      sg ON sg.id = mc.subgroup_id
@@ -398,10 +422,11 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 			var l PRLineItem
 			if err := lineRows.Scan(
 				&l.ID, &l.LineNo, &l.MatCode, &l.QtyRequested,
-				&l.QtyReserved, &l.QtyToOrder, &l.Status, &l.Remarks,
+				&l.QtyReserved, &l.QtyToOrder, &l.Status, &l.DeductStock, &l.Remarks,
 				&l.MatName, &l.UnitName, &l.BrandName, &l.SpecName,
 				&l.GroupName, &l.SubgroupName,
 				&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName,
+				&l.MemoLineID, &l.MemoLineNo, &l.MemoLineDescription,
 			); err != nil {
 				log.Printf("❌ lines scan error: %v", err)
 			}

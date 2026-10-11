@@ -179,6 +179,7 @@ func (h *PRHandler) List(c *fiber.Ctx) error {
 // @Summary      Create purchase request
 // @Description  job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).
 // @Description  lines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Accept       json
@@ -227,6 +228,16 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	}
 	if req.Status != "DRAFT" && req.Status != "COMPLETED" {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or COMPLETED")
+	}
+
+	{
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = l.CostSubgroupID
+		}
+		if err := requireNonHeadCostCodes(context.Background(), h.db, ids, nil); err != nil {
+			return err
+		}
 	}
 
 	if req.OrderType == "" {
@@ -292,16 +303,7 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	}
 
 	if req.MemoID != nil {
-		var existingPRNo string
-		err := h.db.QueryRow(context.Background(),
-			`SELECT pr_no FROM purchase_request WHERE memo_id = $1`, *req.MemoID,
-		).Scan(&existingPRNo)
-		if err == nil {
-			return fiber.NewError(fiber.StatusConflict, "memo already used by PR "+existingPRNo)
-		} else if err != pgx.ErrNoRows {
-			return err
-		}
-
+		// A memo may feed many PRs now; exclusivity is per memo_line (see claimMemoLines).
 		// Snapshot the memo's delivery_location into location_text at selection time —
 		// only when the memo actually has one set, otherwise keep the client-supplied value.
 		var memoDeliveryLocation *string
@@ -319,6 +321,15 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	// retry-on-collision loop is needed here anymore — the sequence guarantees uniqueness.
 	if req.Status == "COMPLETED" && req.OrderType == "cost" && req.ProjectCode == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
+	}
+	if req.Status == "COMPLETED" {
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = l.CostSubgroupID
+		}
+		if err := validateLinesHaveCostCode(ids); err != nil {
+			return err
+		}
 	}
 	var actorID int64
 	if claims := middleware.GetClaims(c); claims != nil {
@@ -378,6 +389,15 @@ func (h *PRHandler) createPRTx(ctx context.Context, req models.CreatePRRequest, 
 		return 0, "", fiber.NewError(fiber.StatusInternalServerError, "failed to create PR: "+err.Error())
 	}
 
+	// 1b. Lines that take a memo_line: validate + lock in this same tx (409 if another active PR has it).
+	memoLineIDs := make([]*int64, len(req.Lines))
+	for i, l := range req.Lines {
+		memoLineIDs[i] = l.MemoLineID
+	}
+	if err := claimMemoLines(ctx, tx, req.MemoID, prID, memoLineIDs); err != nil {
+		return 0, "", err
+	}
+
 	// 2. Insert lines
 	for _, line := range req.Lines {
 		deductStock := true
@@ -388,9 +408,9 @@ func (h *PRHandler) createPRTx(ctx context.Context, req models.CreatePRRequest, 
 			deductStock = false // never reserve/deduct warehouse stock for asset/office types
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks)
-			VALUES ($1,$2,$3,$4,'OPEN',$5,$6,$7)`,
-			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock, line.Remarks,
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks, memo_line_id)
+			VALUES ($1,$2,$3,$4,'OPEN',$5,$6,$7,$8)`,
+			prID, line.LineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock, line.Remarks, line.MemoLineID,
 		); err != nil {
 			return 0, "", fiber.NewError(fiber.StatusInternalServerError, "failed to insert line: "+err.Error())
 		}
@@ -429,12 +449,14 @@ func (h *PRHandler) createPRTx(ctx context.Context, req models.CreatePRRequest, 
 
 // SubmitPR godoc
 // @Summary      Submit PR (no approval required — goes straight to COMPLETED)
+// @Description  Every line must have a cost_subgroup_id, otherwise 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not affected. The same rule applies to POST /pr and PUT /pr/{id} when status=COMPLETED.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
 // @Param        id  path  int  true  "PR ID"
 // @Success      200  {object}  fiber.Map
-// @Failure      400  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map  "missing cost code on one or more lines, or other validation error"
+// @Failure      409  {object}  fiber.Map  "active PO linked to this PR"
 // @Router       /pr/{id}/submit [post]
 func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
@@ -460,12 +482,38 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
 
+	{
+		rows, err := h.db.Query(ctx, `SELECT cost_subgroup_id FROM purchase_request_line WHERE pr_id=$1 ORDER BY line_no`, id)
+		if err != nil {
+			return err
+		}
+		var ids []*int64
+		for rows.Next() {
+			var cs *int64
+			if err := rows.Scan(&cs); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, cs)
+		}
+		rows.Close()
+		if err := validateLinesHaveCostCode(ids); err != nil {
+			return err
+		}
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
+	if err := lockPRLines(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := requireNoActivePOLink(ctx, tx, id); err != nil {
+		return err
+	}
 	if err := validateNoMixedDeductStock(ctx, tx, id); err != nil {
 		return err
 	}
@@ -482,6 +530,120 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 // pgQuerier is satisfied by both *pgxpool.Pool and pgx.Tx.
 type pgQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// prEditableStatuses: a PR may be edited from any of these statuses as long as no active PO is
+// linked to it (see requireNoActivePOLink). CANCELLED stays non-editable.
+var prEditableStatuses = map[string]bool{
+	"DRAFT": true, "COMPLETED": true, "STOCK_CHECK": true, "PARTIALLY_FILLED": true, "FULFILLED": true,
+}
+
+func isPREditableStatus(status string) bool { return prEditableStatuses[status] }
+
+// sqlActivePOPredicate is THE definition of an "active" PO for the PR<->PO link: not CANCELLED and
+// not soft-deleted. Shared by requireNoActivePOLink and the activepo CTE behind has_active_po_link
+// in GET /pr (pr_approval.go) so the two can never drift apart. Requires alias po.
+const sqlActivePOPredicate = `po.status != 'CANCELLED' AND po.deleted_at IS NULL`
+
+// sqlActivePOLinks yields one row per (PR, active PO) pair: every PO with at least one
+// purchase_order_line referencing a line of the PR. Single source for the helpers below and for
+// the activepo CTE in GET /pr (pr_approval.go), so has_active_po_link / linked_pos / the 409 guard
+// all agree. purchase_order's PK column is id (exposed as po_id).
+const sqlActivePOLinks = `
+	SELECT DISTINCT prl.pr_id, po.id AS po_id, po.po_no, po.status
+	FROM purchase_request_line prl
+	JOIN purchase_order_line pol ON pol.pr_line_id = prl.id
+	JOIN purchase_order po ON po.id = pol.po_id
+	WHERE ` + sqlActivePOPredicate
+
+// LinkedPO is one active PO linked to a PR (list/detail field linked_pos).
+type LinkedPO struct {
+	POID   int64  `json:"po_id"`
+	PONo   string `json:"po_no"`
+	Status string `json:"status"`
+}
+
+// fetchLinkedPOs returns the PR's active linked POs ordered by po_no; never nil.
+func fetchLinkedPOs(ctx context.Context, q pgQuerier, prID int64) ([]LinkedPO, error) {
+	rows, err := q.Query(ctx, `SELECT po_id, po_no, status FROM (`+sqlActivePOLinks+`) x WHERE x.pr_id = $1 ORDER BY po_no`, prID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LinkedPO{}
+	for rows.Next() {
+		var l LinkedPO
+		if err := rows.Scan(&l.POID, &l.PONo, &l.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// requireNoActivePOLink returns 409 (plain Thai message naming up to 5 POs, no SQL wording) when
+// any line of the PR is referenced by an active PO. Call it before any write.
+func requireNoActivePOLink(ctx context.Context, q pgQuerier, prID int64) error {
+	pos, err := fetchLinkedPOs(ctx, q, prID)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 0 {
+		return nil
+	}
+	const maxNamed = 5
+	names := make([]string, 0, maxNamed)
+	for i, po := range pos {
+		if i == maxNamed {
+			break
+		}
+		names = append(names, po.PONo)
+	}
+	msg := "ไม่สามารถแก้ไขได้ เนื่องจากมี PO ผูกอยู่: " + strings.Join(names, ", ")
+	if len(pos) > maxNamed {
+		msg += fmt.Sprintf(" และอีก %d ใบ", len(pos)-maxNamed)
+	}
+	return fiber.NewError(fiber.StatusConflict, msg)
+}
+
+// lockPRLines serialises with PO creation (which locks the same PR lines FOR UPDATE), so the
+// active-PO-link check that follows cannot miss a PO committed concurrently.
+func lockPRLines(ctx context.Context, tx pgx.Tx, prID int64) error {
+	rows, err := tx.Query(ctx, `SELECT id FROM purchase_request_line WHERE pr_id=$1 FOR UPDATE`, prID)
+	if err != nil {
+		return err
+	}
+	rows.Close()
+	return rows.Err()
+}
+
+// reopenPRTx moves a non-DRAFT PR back to DRAFT inside the caller's tx: reverses stock/project
+// credit (reversePRStockTx keeps its 409 when the project already consumed the material), resets
+// the reservation split, writes pr_status_log + erp_audit_log. Shared by Reopen and Update.
+func reopenPRTx(ctx context.Context, tx pgx.Tx, prID int64, prNo, fromStatus string, userID int64, remarks string) error {
+	if err := reversePRStockTx(ctx, tx, prID, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE purchase_request_line SET qty_reserved = 0, qty_to_order = qty_requested WHERE pr_id = $1`, prID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status='DRAFT', updated_at=NOW() WHERE id=$1`, prID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+		VALUES ($1,$2,'DRAFT',$3,$4)`, prID, fromStatus, userID, remarks,
+	); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
+		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
+		prID, userID, fmt.Sprintf(`{"pr_no":"%s","status":"DRAFT","action":"reopen"}`, prNo),
+	)
+	return err
 }
 
 // validateNoMixedDeductStock: Reopen's reversal query finds prior deductions by ref_doc_id +
@@ -848,13 +1010,10 @@ func reversePRStockTx(ctx context.Context, tx pgx.Tx, prID, userID int64) error 
 }
 
 // Reopen godoc
-// @Summary      Reopen a COMPLETED PR back to DRAFT for editing
-// @Description  Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this
-// @Description  PR's lines (via purchase_order_line.pr_line_id) is not yet "closed" — closed means
-// @Description  status='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already
-// @Description  served its purpose and no longer needs to block PR edits). The system does not
-// @Description  auto-cancel/auto-close anything; the user must get the referencing PO(s) to one of
-// @Description  those states manually first. Reverses any stock
+// @Summary      Reopen a non-DRAFT PR back to DRAFT for editing
+// @Description  Allowed from COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED. Blocks with 409 if any
+// @Description  active PO (status != CANCELLED, incl. fully received) references this PR's lines via
+// @Description  purchase_order_line.pr_line_id. The system does not auto-cancel anything. Reverses any stock
 // @Description  deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
 // @Description  ref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an
 // @Description  offsetting 'IN' transaction, then sets status back to DRAFT. For cost PRs it also
@@ -870,6 +1029,7 @@ func reversePRStockTx(ctx context.Context, tx pgx.Tx, prID, userID int64) error 
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
 // @Failure      404  {object}  fiber.Map
+// @Failure      409  {object}  fiber.Map  "active PO linked to this PR, or stock already consumed"
 // @Router       /pr/{id}/reopen [put]
 func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
@@ -896,62 +1056,16 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 	).Scan(&currentStatus, &prNo, &orderType, &projectCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
-	if currentStatus != "COMPLETED" {
+	if currentStatus == "DRAFT" || !isPREditableStatus(currentStatus) {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot reopen PR in status: %s", currentStatus))
 	}
-
-	blockRows, err := tx.Query(ctx, `
-		SELECT DISTINCT po.po_no
-		FROM purchase_order_line pol
-		JOIN purchase_order po ON po.id = pol.po_id
-		JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
-		WHERE prl.pr_id = $1 AND po.status != 'CANCELLED' AND po.status_receive != 'RECEIVED' AND po.deleted_at IS NULL
-		ORDER BY po.po_no`, id)
-	if err != nil {
+	if err := lockPRLines(ctx, tx, id); err != nil {
 		return err
 	}
-	var blockingPONos []string
-	for blockRows.Next() {
-		var poNo string
-		if err := blockRows.Scan(&poNo); err != nil {
-			blockRows.Close()
-			return err
-		}
-		blockingPONos = append(blockingPONos, poNo)
-	}
-	blockRows.Close()
-	if len(blockingPONos) > 0 {
-		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(
-			"กรุณายกเลิก PO ต่อไปนี้ก่อนแก้ไข PR: %s", strings.Join(blockingPONos, ", ")))
-	}
-
-	if err := reversePRStockTx(ctx, tx, id, userID); err != nil {
+	if err := requireNoActivePOLink(ctx, tx, id); err != nil {
 		return err
 	}
-
-	if _, err := tx.Exec(ctx,
-		`UPDATE purchase_request_line SET qty_reserved = 0, qty_to_order = qty_requested
-		 WHERE pr_id = $1`, id,
-	); err != nil {
-		return err
-	}
-
-	if _, err := tx.Exec(ctx,
-		`UPDATE purchase_request SET status='DRAFT', updated_at=NOW() WHERE id=$1`, id,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
-		VALUES ($1,$2,'DRAFT',$3,'reopened for editing')`, id, currentStatus, userID,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
-		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
-		id, userID, fmt.Sprintf(`{"pr_no":"%s","status":"DRAFT","action":"reopen"}`, prNo),
-	); err != nil {
+	if err := reopenPRTx(ctx, tx, id, prNo, currentStatus, userID, "reopened for editing"); err != nil {
 		return err
 	}
 
@@ -962,17 +1076,19 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 }
 
 // Update godoc
-// @Summary      Edit a DRAFT PR's header and lines
-// @Description  Only allowed while status='DRAFT' (including PRs freshly reopened via
-// @Description  PUT /pr/{id}/reopen, which itself guarantees no active PO references any of
-// @Description  this PR's lines — see Reopen). Because that guard already holds by the time a
-// @Description  PR can reach DRAFT, editing here is fully free: lines are deleted and
-// @Description  reinserted from the payload with no FK-safety restrictions. Logs the edit to
-// @Description  erp_audit_log. Status stays DRAFT afterward — the user must explicitly call
-// @Description  POST /pr/{id}/submit to re-run deductStockOnSubmit against the new
-// @Description  qty_requested values and go back to COMPLETED.
+// @Summary      Edit a PR's header and lines (any status except CANCELLED, never while a PO is linked)
+// @Description  Allowed from DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED; CANCELLED -> 400.
+// @Description  Returns 409 (plain Thai message) if any line is referenced by an active PO (status != CANCELLED),
+// @Description  before any write. A non-DRAFT PR is first brought back to DRAFT exactly like PUT /pr/{id}/reopen
+// @Description  (stock/project-credit reversal, which itself returns 409 if the project already consumed the
+// @Description  material), then lines are saved: a line sent with its id is updated IN PLACE (cost_subgroup_id, qty, ...
+// @Description  persist on the existing row; mat_code of an existing line cannot change -> 400), a line without id is inserted,
+// @Description  and existing lines missing from the payload are deleted (409 if the line ever credited a project's stock).
+// @Description  The stock/project-credit reversal always uses the cost code stored before the edit; the re-submit reserves under the new one.
+// @Description  status=COMPLETED in the body re-submits in the same tx. Cost code may be blank on DRAFT, required on COMPLETED.
 // @Description  job_code: omit to keep the PR's current value; job_code must be one of the 12 fixed job type codes if sent.
 // @Description  lines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty.
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Accept       json
@@ -982,6 +1098,7 @@ func (h *PRHandler) Reopen(c *fiber.Ctx) error {
 // @Success      200   {object}  fiber.Map
 // @Failure      400   {object}  fiber.Map
 // @Failure      404   {object}  fiber.Map
+// @Failure      409   {object}  fiber.Map  "active PO linked to this PR, or stock already consumed"
 // @Router       /pr/{id} [put]
 func (h *PRHandler) Update(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
@@ -1067,42 +1184,30 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	}
 
 	var currentStatus, prNo, currentOrderType, currentPRType, currentJobCode string
-	if err := h.db.QueryRow(ctx, `SELECT status, pr_no, order_type, pr_type, job_code FROM purchase_request WHERE id=$1 AND deleted_at IS NULL`, prID).Scan(&currentStatus, &prNo, &currentOrderType, &currentPRType, &currentJobCode); err != nil {
+	var currentMemoID *int64
+	if err := h.db.QueryRow(ctx, `SELECT status, pr_no, order_type, pr_type, job_code, memo_id FROM purchase_request WHERE id=$1 AND deleted_at IS NULL`, prID).Scan(&currentStatus, &prNo, &currentOrderType, &currentPRType, &currentJobCode, &currentMemoID); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
-	if currentStatus != "DRAFT" {
-		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("PR must be DRAFT to edit (current status: %s)", currentStatus))
+	if !isPREditableStatus(currentStatus) {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot edit PR in status: %s", currentStatus))
 	}
 
-	// Same condition the PR detail page's "PO ที่ต้องยกเลิกก่อนแก้ไข PR นี้" warning banner uses:
-	// if any of this PR's lines are still referenced by a non-CANCELLED PO line, the DELETE below
-	// would hit purchase_order_line_pr_line_id_fkey and fail with a raw Postgres error. Check up
-	// front and reject with a specific, plain-Thai message instead — this must NOT contain
-	// SQLSTATE/violates/foreign key wording, since the frontend's generic-error sanitizer
-	// (GENERIC_ERROR_MESSAGE regex in src/services/api.ts) treats that pattern as an opaque error.
+	// Fast-fail before any write; re-checked under row locks inside the tx below. Must not contain
+	// SQLSTATE/violates/foreign key wording (frontend generic-error sanitizer).
+	if err := requireNoActivePOLink(ctx, h.db, prID); err != nil {
+		return err
+	}
 	{
-		rows, err := h.db.Query(ctx, `
-			SELECT DISTINCT po.po_no
-			FROM purchase_order_line pol
-			JOIN purchase_order po ON po.id = pol.po_id
-			WHERE pol.pr_line_id IN (SELECT id FROM purchase_request_line WHERE pr_id = $1)
-			  AND po.status != 'CANCELLED' AND po.deleted_at IS NULL`, prID)
+		stored, err := storedCostSubgroupIDs(ctx, h.db, "purchase_request_line", prID)
 		if err != nil {
 			return err
 		}
-		var blockingPOs []string
-		for rows.Next() {
-			var poNo string
-			if err := rows.Scan(&poNo); err != nil {
-				rows.Close()
-				return err
-			}
-			blockingPOs = append(blockingPOs, poNo)
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = l.CostSubgroupID
 		}
-		rows.Close()
-		if len(blockingPOs) > 0 {
-			return fiber.NewError(fiber.StatusConflict,
-				fmt.Sprintf("ไม่สามารถแก้ไข PR นี้ได้ เนื่องจากมี PO ที่ยังไม่ยกเลิกผูกอยู่: %s", strings.Join(blockingPOs, ", ")))
+		if err := requireNonHeadCostCodes(ctx, h.db, ids, stored); err != nil {
+			return err
 		}
 	}
 
@@ -1168,12 +1273,35 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	if req.Status == "COMPLETED" && orderType == "cost" && (req.ProjectCode == nil || strings.TrimSpace(*req.ProjectCode) == "") {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
+	if req.Status == "COMPLETED" {
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = l.CostSubgroupID
+		}
+		if err := validateLinesHaveCostCode(ids); err != nil {
+			return err
+		}
+	}
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// Authoritative check under lock, then bring non-DRAFT PRs back to DRAFT exactly like Reopen
+	// (stock/project credit reversal, reservation reset) before the lines are replaced.
+	if err := lockPRLines(ctx, tx, prID); err != nil {
+		return err
+	}
+	if err := requireNoActivePOLink(ctx, tx, prID); err != nil {
+		return err
+	}
+	if currentStatus != "DRAFT" {
+		if err := reopenPRTx(ctx, tx, prID, prNo, currentStatus, claims.UserID, "reopened by edit"); err != nil {
+			return err
+		}
+	}
 
 	// "AND status='DRAFT'" is enforced in the WHERE clause itself, not just via the pre-check
 	// above — closes the race where another request moves the PR out of DRAFT between the
@@ -1193,10 +1321,92 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "PR not found or not editable")
 	}
 
-	// No active PO can reference any of this PR's lines at this point (guaranteed by the
-	// Reopen guard), so lines can simply be wiped and reinserted from the payload.
-	if _, err := tx.Exec(ctx, `DELETE FROM purchase_request_line WHERE pr_id=$1`, prID); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to clear lines: "+err.Error())
+	// Lines are updated IN PLACE when the payload carries their id (so purchase_request_line.id —
+	// referenced by ic_project_cost_item_transaction.pr_line_id and purchase_order_line.pr_line_id —
+	// stays stable, and cost_subgroup_id/qty/etc. are really written to the existing row). Lines
+	// without an id are inserted; existing lines missing from the payload are removed. mat_code of an
+	// existing line cannot change. Any reversal of stock / project credit already happened above
+	// (reopenPRTx), against the cost code stored BEFORE this edit.
+	existing := map[int64]string{}
+	{
+		rows, err := tx.Query(ctx, `SELECT id, mat_code FROM purchase_request_line WHERE pr_id=$1`, prID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var lid int64
+			var mc string
+			if err := rows.Scan(&lid, &mc); err != nil {
+				rows.Close()
+				return err
+			}
+			existing[lid] = mc
+		}
+		rows.Close()
+	}
+	keep := map[int64]bool{}
+	for i, l := range req.Lines {
+		if l.ID == nil {
+			continue
+		}
+		oldMat, ok := existing[*l.ID]
+		if !ok {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: ไม่พบรายการ id %d ใน PR นี้", i, *l.ID))
+		}
+		if keep[*l.ID] {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: id %d ถูกส่งซ้ำ", i, *l.ID))
+		}
+		if oldMat != l.MatCode {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: ไม่สามารถเปลี่ยนวัสดุของรายการเดิมได้ (%s) กรุณาลบรายการแล้วเพิ่มใหม่", i, oldMat))
+		}
+		keep[*l.ID] = true
+	}
+	var removed []int64
+	for lid := range existing {
+		if !keep[lid] {
+			removed = append(removed, lid)
+		}
+	}
+	if len(removed) > 0 {
+		// No ACTIVE PO references these lines (requireNoActivePOLink above), but CANCELLED POs still
+		// hold pr_line_id FKs; purchase_order_line.pr_line_id is nullable, the PO keeps its own data.
+		if _, err := tx.Exec(ctx, `UPDATE purchase_order_line SET pr_line_id = NULL WHERE pr_line_id = ANY($1)`, removed); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to detach cancelled PO lines: "+err.Error())
+		}
+		// A line that ever credited a project (ic_project_cost_item_transaction ref_type='PR') must keep
+		// existing: the table's CHECK requires pr_line_id for PR rows, so the history can't be detached.
+		var histMat string
+		err := tx.QueryRow(ctx, `
+			SELECT prl.mat_code FROM purchase_request_line prl
+			WHERE prl.id = ANY($1)
+			  AND EXISTS (SELECT 1 FROM ic_project_cost_item_transaction t WHERE t.pr_line_id = prl.id)
+			LIMIT 1`, removed).Scan(&histMat)
+		if err == nil {
+			return fiber.NewError(fiber.StatusConflict, fmt.Sprintf(
+				"ไม่สามารถลบรายการวัสดุ %s ได้ เนื่องจากเคยตัดสต๊อกเข้าโครงการแล้ว กรุณาแก้ไขจำนวนหรือ Cost Code ของรายการเดิมแทน", histMat))
+		}
+		if err != pgx.ErrNoRows {
+			return err
+		}
+	}
+	// Park every line number out of the way so renumbering can never collide on (pr_id, line_no).
+	if _, err := tx.Exec(ctx, `UPDATE purchase_request_line SET line_no = line_no + 100000 WHERE pr_id=$1`, prID); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to renumber lines: "+err.Error())
+	}
+	if len(removed) > 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM purchase_request_line WHERE id = ANY($1)`, removed); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to remove lines: "+err.Error())
+		}
+	}
+
+	// Lines that take a memo_line: validate + lock in this same tx (the PR's own lines never count as
+	// a conflict). memo_id is not editable here, so the memo is the PR's stored one.
+	memoLineIDs := make([]*int64, len(req.Lines))
+	for i, l := range req.Lines {
+		memoLineIDs[i] = l.MemoLineID
+	}
+	if err := claimMemoLines(ctx, tx, currentMemoID, prID, memoLineIDs); err != nil {
+		return err
 	}
 
 	for i, line := range req.Lines {
@@ -1204,17 +1414,35 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		if lineNo == 0 {
 			lineNo = i + 1
 		}
-		deductStock := true
+		// deduct_stock: an existing line (id set) whose payload omits the flag KEEPS its stored value —
+		// it must never silently flip back to ON on edit. New lines default to ON. Asset/office types are
+		// always forced OFF (never reserve/deduct warehouse stock).
+		var deductStockPtr *bool
 		if line.DeductStock != nil {
-			deductStock = *line.DeductStock
+			v := *line.DeductStock
+			deductStockPtr = &v
 		}
 		if IsAssetOrOfficeType(orderType) {
-			deductStock = false // never reserve/deduct warehouse stock for asset/office types
+			off := false
+			deductStockPtr = &off
+		}
+		deductStock := deductStockPtr == nil || *deductStockPtr // value used for INSERT (default ON)
+		if line.ID != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE purchase_request_line
+				SET line_no=$1, qty_requested=$2, cost_subgroup_id=$3, deduct_stock=COALESCE($4::boolean, deduct_stock), remarks=$5, memo_line_id=$6,
+				    qty_reserved=0, qty_to_order=$2
+				WHERE id=$7 AND pr_id=$8`,
+				lineNo, line.QtyRequested, line.CostSubgroupID, deductStockPtr, line.Remarks, line.MemoLineID, *line.ID, prID,
+			); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "line update error: "+err.Error())
+			}
+			continue
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks)
-			VALUES ($1,$2,$3,$4,'OPEN',$5,$6,$7)`,
-			prID, lineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock, line.Remarks,
+			INSERT INTO purchase_request_line (pr_id, line_no, mat_code, qty_requested, status, cost_subgroup_id, deduct_stock, remarks, memo_line_id)
+			VALUES ($1,$2,$3,$4,'OPEN',$5,$6,$7,$8)`,
+			prID, lineNo, line.MatCode, line.QtyRequested, line.CostSubgroupID, deductStock, line.Remarks, line.MemoLineID,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid mat_code", i))

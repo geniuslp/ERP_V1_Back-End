@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
@@ -95,6 +96,24 @@ func (h *ICHandler) RequireICPO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "PO ประเภทนี้ไม่มีขั้นตอนรับของ จึงไม่อยู่ในระบบ Inventory Control (IC)")
 	}
 	return c.Next()
+}
+
+// validateLinesHaveCostCode is the "submit" gate shared by PR and PO: every line must carry a
+// cost_subgroup_id (nil or <= 0 counts as missing). DRAFT saves never call it. ids must be the
+// lines as they will be after the request is applied (for PO: after PR-line auto-fill). The
+// error names the offending 1-based line numbers.
+func validateLinesHaveCostCode(ids []*int64) error {
+	var missing []string
+	for i, id := range ids {
+		if id == nil || *id <= 0 {
+			missing = append(missing, strconv.Itoa(i+1))
+		}
+	}
+	if len(missing) > 0 {
+		return fiber.NewError(fiber.StatusBadRequest,
+			fmt.Sprintf("กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ %s)", strings.Join(missing, ", ")))
+	}
+	return nil
 }
 
 type pgRowQuerier interface {

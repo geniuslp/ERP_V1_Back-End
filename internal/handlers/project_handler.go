@@ -62,13 +62,15 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 		  AND po.status = 'APPROVED'), 0)
 	+ COALESCE((SELECT SUM(wo.net_amount) FROM work_order wo
 		WHERE wo.project_code = p.project_code
-		  AND wo.status = 'APPROVED'), 0) AS spent_amount,
+		  AND wo.status = 'APPROVED'), 0)
+	+ ` + pcProjectSpentSQL + ` AS spent_amount,
 	COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
 		JOIN purchase_order po ON po.id = pl.doc_id
 		WHERE pl.doc_type = 'PO' AND po.project_code = p.project_code), 0)
 	+ COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
 		JOIN work_order wo ON wo.id = pl.doc_id
-		WHERE pl.doc_type = 'WO' AND wo.project_code = p.project_code), 0) AS paid_amount,
+		WHERE pl.doc_type = 'WO' AND wo.project_code = p.project_code), 0)
+	+ ` + pcProjectPaidSQL + ` AS paid_amount,
 	p.budget_amount - (
 		COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 			WHERE po.project_code = p.project_code
@@ -76,6 +78,7 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 		+ COALESCE((SELECT SUM(wo.net_amount) FROM work_order wo
 			WHERE wo.project_code = p.project_code
 			  AND wo.status = 'APPROVED'), 0)
+		+ ` + pcProjectSpentSQL + `
 	) AS remaining_amount,
 	p.consultant_name, p.consultant_phone,
 	p.start_date, p.end_date, p.status, p.is_active,

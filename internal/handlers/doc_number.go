@@ -20,6 +20,8 @@ var monthlyCounterTables = map[string]bool{
 	"pr_number_counter":   true,
 	"po_number_counter":   true,
 	"memo_number_counter": true,
+	"pc_number_counter":   true,
+	"ret_number_counter":  true, // PO return (RT-YYYYMM-NNNN): its own series, separate from por_number_counter
 }
 
 var (
@@ -60,13 +62,20 @@ func formatPRNo(now time.Time, seq int64) string   { return fmt.Sprintf("PR%s-%0
 func formatPONo(now time.Time, seq int64) string   { return fmt.Sprintf("PO-%s-%04d", now.Format("200601"), seq) }
 func formatMemoNo(now time.Time, seq int64) string { return fmt.Sprintf("MEM-%s-%04d", now.Format("0601"), seq) }
 
-// icDocPrefixes is the whitelist for nextICDocNo: IC = PO receive, IS = project ISSUE, TF = project
-// TRANSFER, RT = PO return. All four draw from the ONE shared monthly por_number_counter sequence
-// (so the NNNN part never repeats across prefixes within a month). The prefix is only a label —
-// never parse it back to decide the document type; use the owning table / doc_type column.
-var icDocPrefixes = map[string]bool{"IC": true, "IS": true, "TF": true, "RT": true}
+// Petty cash: PC-YYYYMM-NNNN. Pre-existing rows (PC-YYYY-NNNNNN) are left untouched.
+func formatPCNo(now time.Time, seq int64) string { return fmt.Sprintf("PC-%s-%04d", now.Format("200601"), seq) }
 
-// nextICDocNo allocates the next number from por_number_counter for the Bangkok month and returns
+// PO return: RT-YYYYMM-NNNN, from its own monthly ret_number_counter (not por_number_counter).
+func formatRTNo(now time.Time, seq int64) string { return fmt.Sprintf("RT-%s-%04d", now.Format("200601"), seq) }
+
+// icDocPrefixes is the whitelist for nextICDocNo: IC = PO receive, IS = project ISSUE, TF = project
+// TRANSFER. Each prefix has its OWN monthly sequence in doc_number_counter (PK prefix, year_month), so
+// the NNNN parts of IS, TF and IC are independent. PO return (RT) is NOT here: it has its own
+// counter, see formatRTNo / ret_number_counter. The prefix is only a label — never parse it back to
+// decide the document type; use the owning table / doc_type column.
+var icDocPrefixes = map[string]bool{"IC": true, "IS": true, "TF": true}
+
+// nextICDocNo allocates the next number from doc_number_counter (this prefix only) for the Bangkok month and returns
 // "{PREFIX}-YYYYMM-NNNN". Must run on the document's own create transaction, right before the
 // header INSERT and after validation, so a failed save gives the number back.
 func nextICDocNo(ctx context.Context, tx pgx.Tx, prefix string) (string, error) {
@@ -77,9 +86,9 @@ func nextICDocNo(ctx context.Context, tx pgx.Tx, prefix string) (string, error) 
 	ym := now.Format("200601")
 	var seq int64
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO por_number_counter (year_month, last_seq) VALUES ($1, 1)
-		ON CONFLICT (year_month) DO UPDATE SET last_seq = por_number_counter.last_seq + 1
-		RETURNING last_seq`, ym,
+		INSERT INTO doc_number_counter (prefix, year_month, last_seq) VALUES ($1, $2, 1)
+		ON CONFLICT (prefix, year_month) DO UPDATE SET last_seq = doc_number_counter.last_seq + 1
+		RETURNING last_seq`, prefix, ym,
 	).Scan(&seq); err != nil {
 		return "", err
 	}

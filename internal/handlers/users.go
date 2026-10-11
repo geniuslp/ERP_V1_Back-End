@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"erp-api/internal/auth"
 	"erp-api/internal/config"
@@ -13,6 +14,64 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// validateFullName trims and checks the display name before any SQL runs. users.full_name is
+// VARCHAR(255) NOT NULL; the API limit is 200 characters (runes, not bytes — Thai is multi-byte).
+func validateFullName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", fiber.NewError(fiber.StatusBadRequest, "กรุณากรอกชื่อ-นามสกุล (ภาษาอังกฤษ)")
+	}
+	if utf8.RuneCountInString(name) > 200 {
+		return "", fiber.NewError(fiber.StatusBadRequest, "ชื่อ-นามสกุล (ภาษาอังกฤษ) ยาวเกิน 200 ตัวอักษร")
+	}
+	return name, nil
+}
+
+// normalizeFullNameTH trims the optional Thai name. A nil input means "field absent"; an empty
+// result means "store NULL". Length is counted in runes (Thai is multi-byte), max 200.
+func normalizeFullNameTH(raw *string) (*string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	v := strings.TrimSpace(*raw)
+	if utf8.RuneCountInString(v) > 200 {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "ชื่อภาษาไทยยาวเกิน 200 ตัวอักษร")
+	}
+	return &v, nil
+}
+
+// normalizeEmployeeCode trims the optional employee code (max 30 characters, counted in runes).
+// nil input = field absent; a non-nil result of "" means "store NULL".
+func normalizeEmployeeCode(raw *string) (*string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	v := strings.TrimSpace(*raw)
+	if utf8.RuneCountInString(v) > 30 {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "รหัสพนักงานยาวเกิน 30 ตัวอักษร")
+	}
+	return &v, nil
+}
+
+// ensureEmployeeCodeFree rejects a non-empty employee_code already held by another user.
+// users.employee_code has no unique constraint, so this is an application-level check only
+// (two concurrent requests could still race past it).
+func (h *UsersHandler) ensureEmployeeCodeFree(ctx context.Context, code string, excludeUserID int64) error {
+	if code == "" {
+		return nil
+	}
+	var taken bool
+	if err := h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE employee_code=$1 AND id<>$2)`, code, excludeUserID,
+	).Scan(&taken); err != nil {
+		return err
+	}
+	if taken {
+		return fiber.NewError(fiber.StatusConflict, "รหัสพนักงานนี้ถูกใช้แล้ว")
+	}
+	return nil
+}
 
 type UsersHandler struct {
 	db  *pgxpool.Pool
@@ -38,22 +97,22 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	var query string
 	switch role {
 	case "approver":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
+		query = `SELECT u.id, u.username, u.full_name, u.full_name_th, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.department = 'บริหาร' AND u.is_active = true ORDER BY u.full_name`
 	case "requester":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
+		query = `SELECT u.id, u.username, u.full_name, u.full_name_th, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE (u.department IN ('วิศวกรรม', 'ฝ่ายจัดซื้อ') OR u.department IS NULL)
 				 AND u.is_active = true
 				 ORDER BY u.full_name`
 	case "engineering":
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
+		query = `SELECT u.id, u.username, u.full_name, u.full_name_th, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.department = 'วิศวกรรม' AND u.is_active = true
 				 ORDER BY u.full_name`
 	default:
-		query = `SELECT u.id, u.username, u.full_name, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
+		query = `SELECT u.id, u.username, u.full_name, u.full_name_th, u.email, u.location_code, u.employee_code, u.department, d.dept_name, u.dept_code, u.is_active, u.created_at, u.updated_at, (u.signature_path IS NOT NULL) AS has_signature
 				 FROM users u LEFT JOIN departments d ON d.dept_code = u.dept_code
 				 WHERE u.is_active = true
 				 ORDER BY u.id`
@@ -69,7 +128,7 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		var u models.User
 		var hasSignature bool
-		if err := rows.Scan(&u.ID, &u.Username, &u.FullName, &u.Email, &u.LocationCode,
+		if err := rows.Scan(&u.ID, &u.Username, &u.FullName, &u.FullNameTH, &u.Email, &u.LocationCode,
 			&u.EmployeeCode, &u.Department, &u.DeptName, &u.DeptCode, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &hasSignature); err != nil {
 			return err
 		}
@@ -86,6 +145,7 @@ func (h *UsersHandler) List(c *fiber.Ctx) error {
 			"id":            u.ID,
 			"username":      u.Username,
 			"full_name":     u.FullName,
+			"full_name_th":  u.FullNameTH,
 			"email":         u.Email,
 			"location_code": u.LocationCode,
 			"employee_code": u.EmployeeCode,
@@ -160,7 +220,7 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	row := h.db.QueryRow(context.Background(), `
-		SELECT u.id, u.username, u.full_name, u.email, u.department, u.dept_code, d.dept_name,
+		SELECT u.id, u.username, u.full_name, u.full_name_th, u.employee_code, u.email, u.department, u.dept_code, d.dept_name,
 		       (u.signature_path IS NOT NULL) AS has_signature
 		FROM users u
 		LEFT JOIN departments d ON d.dept_code = u.dept_code
@@ -170,13 +230,15 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 		userID       int64
 		username     string
 		fullName     string
+		fullNameTH   *string
+		employeeCode *string
 		email        *string
 		department   *string
 		deptCode     *string
 		deptName     *string
 		hasSignature bool
 	)
-	if err := row.Scan(&userID, &username, &fullName, &email, &department, &deptCode, &deptName, &hasSignature); err != nil {
+	if err := row.Scan(&userID, &username, &fullName, &fullNameTH, &employeeCode, &email, &department, &deptCode, &deptName, &hasSignature); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "user not found")
 	}
 
@@ -192,6 +254,8 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 		"id":            userID,
 		"username":      username,
 		"full_name":     fullName,
+		"full_name_th":  fullNameTH,
+		"employee_code": employeeCode,
 		"email":         email,
 		"dept_code":     deptCode,
 		"dept_name":     deptName,
@@ -203,7 +267,7 @@ func (h *UsersHandler) Get(c *fiber.Ctx) error {
 
 // Create godoc
 // @Summary      Create user
-// @Description  Create a new user account, optionally assigning roles
+// @Description  Create a new user account, optionally assigning roles. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th (Thai name) is optional: trimmed, max 200 characters (else 400), empty string stored as NULL.
 // @Tags         Users
 // @Security     BearerAuth
 // @Accept       json
@@ -219,8 +283,33 @@ func (h *UsersHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
 	req.Username = strings.TrimSpace(req.Username)
-	if req.Username == "" || req.Password == "" || req.FullName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "username, password and full_name required")
+	if req.Username == "" || req.Password == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "username and password required")
+	}
+	fullName, err := validateFullName(req.FullName)
+	if err != nil {
+		return err
+	}
+	req.FullName = fullName
+	fullNameTH, err := normalizeFullNameTH(req.FullNameTH)
+	if err != nil {
+		return err
+	}
+	var fullNameTHVal *string // NULL when absent or empty
+	if fullNameTH != nil && *fullNameTH != "" {
+		fullNameTHVal = fullNameTH
+	}
+
+	employeeCode, err := normalizeEmployeeCode(req.EmployeeCode)
+	if err != nil {
+		return err
+	}
+	var employeeCodeVal *string // NULL when absent or empty
+	if employeeCode != nil && *employeeCode != "" {
+		employeeCodeVal = employeeCode
+		if err := h.ensureEmployeeCodeFree(context.Background(), *employeeCode, 0); err != nil {
+			return err
+		}
 	}
 
 	hash, err := auth.HashPassword(req.Password, h.cfg.BcryptCost)
@@ -236,10 +325,10 @@ func (h *UsersHandler) Create(c *fiber.Ctx) error {
 
 	var userID int64
 	err = tx.QueryRow(context.Background(), `
-		INSERT INTO users (username, password_hash, full_name, email, location_code, employee_code, department, is_active, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,true,NOW(),NOW())
+		INSERT INTO users (username, password_hash, full_name, full_name_th, email, location_code, employee_code, department, is_active, created_at, updated_at)
+		VALUES ($1,$2,$3,$8,$4,$5,$6,$7,true,NOW(),NOW())
 		RETURNING id`,
-		req.Username, hash, req.FullName, req.Email, req.LocationCode, req.EmployeeCode, req.Department).Scan(&userID)
+		req.Username, hash, req.FullName, req.Email, req.LocationCode, employeeCodeVal, req.Department, fullNameTHVal).Scan(&userID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusConflict, "username already exists or constraint error")
 	}
@@ -261,7 +350,7 @@ func (h *UsersHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      Update user
-// @Description  Update user profile information
+// @Description  Update user profile information. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th is optional: omitted = keep stored value, empty string = clear (NULL), max 200 characters. department (free-text position) and dept_code are separate fields.
 // @Tags         Users
 // @Security     BearerAuth
 // @Accept       json
@@ -281,6 +370,32 @@ func (h *UsersHandler) Update(c *fiber.Ctx) error {
 	var req models.UpdateUserRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	fullName, err := validateFullName(req.FullName)
+	if err != nil {
+		return err
+	}
+	req.FullName = fullName
+	fullNameTH, err := normalizeFullNameTH(req.FullNameTH)
+	if err != nil {
+		return err
+	}
+	thProvided := fullNameTH != nil
+	var fullNameTHVal *string // NULL when cleared
+	if thProvided && *fullNameTH != "" {
+		fullNameTHVal = fullNameTH
+	}
+	employeeCode, err := normalizeEmployeeCode(req.EmployeeCode)
+	if err != nil {
+		return err
+	}
+	ecProvided := employeeCode != nil
+	var employeeCodeVal *string // NULL when cleared
+	if ecProvided && *employeeCode != "" {
+		employeeCodeVal = employeeCode
+		if err := h.ensureEmployeeCodeFree(context.Background(), *employeeCode, id); err != nil {
+			return err
+		}
 	}
 
 	if req.DeptCode != nil {
@@ -312,9 +427,11 @@ func (h *UsersHandler) Update(c *fiber.Ctx) error {
 
 	tag, err := tx.Exec(context.Background(), `
 		UPDATE users
-		SET full_name=$1, email=$2, location_code=$3, employee_code=$4, department=$5, dept_code=COALESCE($6, dept_code), updated_at=NOW()
+		SET full_name=$1, email=$2, location_code=$3, department=$5, dept_code=COALESCE($6, dept_code),
+		    full_name_th = CASE WHEN $8::boolean THEN $9::varchar ELSE full_name_th END,
+		    employee_code = CASE WHEN $10::boolean THEN $4::varchar ELSE employee_code END, updated_at=NOW()
 		WHERE id=$7`,
-		req.FullName, req.Email, req.LocationCode, req.EmployeeCode, req.Department, req.DeptCode, id)
+		req.FullName, req.Email, req.LocationCode, employeeCodeVal, req.Department, req.DeptCode, id, thProvided, fullNameTHVal, ecProvided)
 	if err != nil {
 		return fiber.NewError(fiber.StatusConflict, "failed to update user")
 	}

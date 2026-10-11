@@ -1905,7 +1905,7 @@ type icReturnPlan struct {
 
 // SubmitReturnLines godoc
 // @Summary      Submit this round's PO line-item return (stock or cost source)
-// @Description  One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly por_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type="RETURN" (plus the reloaded lines).
+// @Description  One DB transaction. Locks the PO and each touched purchase_order_line (SELECT ... FOR UPDATE), requires purchase_order.status = 'APPROVED' (400 otherwise), validates return_qty against the line's current qty_received, then subtracts from stock_item/stock_transaction (order_type='stock') or, for order_type='cost', first from the ic_project_receipt_pool available balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item (ref_type PO row), 400 with both available quantities if the total is short, and recomputes purchase_order.status_receive. Does not touch receive_no. Also creates one ic_po_return_document (RT-YYYYMM-NNNN from its own monthly ret_number_counter; optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id (pool RETURN rows carry no link column - derive them from ic_po_return_line). A duplicate line_id in one request is rejected. Response: return_id, return_no, doc_type="RETURN" (plus the reloaded lines).
 // @Tags         IC
 // @Security     BearerAuth
 // @Accept       json
@@ -2014,10 +2014,12 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 	}
 
 	// Phase 2 — allocate the RT number right before the header INSERT, same tx.
-	returnNo, err := nextICDocNo(ctx, tx, "RT")
+	rtNow := bangkokNow()
+	rtSeq, err := nextMonthlyNumber(ctx, tx, "ret_number_counter", rtNow)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถออกเลขที่เอกสารคืนสินค้าได้ กรุณาลองใหม่อีกครั้ง")
 	}
+	returnNo := formatRTNo(rtNow, rtSeq)
 	var returnID int64
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO ic_po_return_document (po_id, return_no, return_date, remarks, created_by)

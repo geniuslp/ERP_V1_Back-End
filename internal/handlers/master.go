@@ -339,7 +339,7 @@ func (h *MasterHandler) GetMaterial(c *fiber.Ctx) error {
 
 // GetMaterialPriceHistory godoc
 // @Summary      Historical purchase price for a material
-// @Description  Returns past PO lines for the given mat_code, most recent first, for the "ดูราคาที่เคยซื้อ" price-history panel on the PO line-item picker. Excludes CANCELLED POs.
+// @Description  Returns past PO lines for the given mat_code, most recent first, for the "ดูราคาที่เคยซื้อ" price-history panel on the PO line-item picker. Excludes CANCELLED POs. Each row also carries the PO header's project_code and project_name (LEFT JOIN project; null when the PO has no project).
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
@@ -382,13 +382,15 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 	}
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT pol.mat_code, mn.mat_name, ss.spec_description AS spec_name, s.supplier_name, po.po_date, pol.unit_price, po.po_no
+		SELECT pol.mat_code, mn.mat_name, ss.spec_description AS spec_name, s.supplier_name, po.po_date, pol.unit_price, po.po_no,
+		       NULLIF(po.project_code, '') AS project_code, NULLIF(p.project_name, '') AS project_name
 		FROM purchase_order_line pol
 		JOIN purchase_order po       ON po.id = pol.po_id
 		JOIN material_code mc        ON mc.mat_code = pol.mat_code
 		JOIN mat_name mn             ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size ss       ON ss.id = mc.spec_id
 		LEFT JOIN supplier s         ON s.id = po.supplier_id
+		LEFT JOIN project p          ON p.project_code = po.project_code
 		WHERE pol.mat_code = $1
 		  AND pol.status != 'CANCELLED'
 		  AND po.status != 'CANCELLED'
@@ -410,12 +412,14 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 		PODate       time.Time `json:"po_date"`
 		UnitPrice    float64   `json:"unit_price"`
 		PONo         string    `json:"po_no"`
+		ProjectCode  *string   `json:"project_code"` // purchasing project of the PO header; null when none
+		ProjectName  *string   `json:"project_name"`
 	}
 
 	items := []PriceHistoryRow{}
 	for rows.Next() {
 		var r PriceHistoryRow
-		if err := rows.Scan(&r.MatCode, &r.MatName, &r.SpecName, &r.SupplierName, &r.PODate, &r.UnitPrice, &r.PONo); err != nil {
+		if err := rows.Scan(&r.MatCode, &r.MatName, &r.SpecName, &r.SupplierName, &r.PODate, &r.UnitPrice, &r.PONo, &r.ProjectCode, &r.ProjectName); err != nil {
 			return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
 		}
 		items = append(items, r)
@@ -1296,13 +1300,54 @@ func isEligibleApproverPick(ctx context.Context, q interface {
 	return ok, err
 }
 
+// userRoleBrief is the display-oriented role shape used by approver pickers / approval chains.
+type userRoleBrief struct {
+	RoleCode string `json:"role_code"`
+	RoleName string `json:"role_name"`
+}
+
+// loadActiveRolesByUser returns every active role per user id (user_roles LEFT-style: users with
+// no roles are simply absent from the map) plus the comma-joined role_name string for display.
+func loadActiveRolesByUser(ctx context.Context, db *pgxpool.Pool, userIDs []int64) (map[int64][]userRoleBrief, map[int64]string, error) {
+	roles := map[int64][]userRoleBrief{}
+	names := map[int64]string{}
+	if len(userIDs) == 0 {
+		return roles, names, nil
+	}
+	rows, err := db.Query(ctx, `
+		SELECT ur.user_id, r.role_code, r.role_name
+		FROM user_roles ur
+		JOIN roles r ON r.id = ur.role_id AND r.is_active = true
+		WHERE ur.user_id = ANY($1)
+		ORDER BY ur.user_id, r.id`, userIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid int64
+		var rb userRoleBrief
+		if err := rows.Scan(&uid, &rb.RoleCode, &rb.RoleName); err != nil {
+			return nil, nil, err
+		}
+		roles[uid] = append(roles[uid], rb)
+		if names[uid] == "" {
+			names[uid] = rb.RoleName
+		} else {
+			names[uid] += ", " + rb.RoleName
+		}
+	}
+	return roles, names, rows.Err()
+}
+
 // ListEligibleApprovers godoc
 // @Summary      List users eligible to approve a given doc_type
 // @Description  Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's "ผู้อนุมัติ" field) so only users actually eligible to approve that doc_type are offered.
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Param        doc_type  query  string  true  "Document type, e.g. MEMO"
+// @Description  Each item keeps value/label/dept (existing dropdown contract) and also returns user_id, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.
+// @Param        doc_type  query  string  true  "Document type, e.g. MEMO or PETTY_CASH"
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
 // @Router       /master/eligible-approvers [get]
@@ -1313,7 +1358,7 @@ func (h *MasterHandler) ListEligibleApprovers(c *fiber.Ctx) error {
 	}
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT DISTINCT u.id, u.full_name, u.dept_code, d.dept_name
+		SELECT DISTINCT u.id, u.full_name, u.dept_code, d.dept_name, u.employee_code, u.full_name_th, u.is_active
 		FROM users u
 		LEFT JOIN departments d ON d.dept_code = u.dept_code
 		WHERE `+eligibleApproverCond+`
@@ -1324,23 +1369,47 @@ func (h *MasterHandler) ListEligibleApprovers(c *fiber.Ctx) error {
 	defer rows.Close()
 
 	type approverItem struct {
-		Value int64   `json:"value"`
-		Label string  `json:"label"`
-		Dept  *string `json:"dept"`
+		Value        int64           `json:"value"`
+		Label        string          `json:"label"`
+		Dept         *string         `json:"dept"`
+		UserID       int64           `json:"user_id"`
+		EmployeeCode *string         `json:"employee_code"`
+		FullName     string          `json:"full_name"`
+		FullNameTH   *string         `json:"full_name_th"`
+		IsActive     bool            `json:"is_active"`
+		Roles        []userRoleBrief `json:"roles"`
+		RoleNames    string          `json:"role_names"`
 	}
 	items := []approverItem{}
+	ids := []int64{}
 	for rows.Next() {
 		var it approverItem
 		var deptCode, deptName *string
-		if err := rows.Scan(&it.Value, &it.Label, &deptCode, &deptName); err != nil {
+		if err := rows.Scan(&it.Value, &it.Label, &deptCode, &deptName, &it.EmployeeCode, &it.FullNameTH, &it.IsActive); err != nil {
 			return err
 		}
+		it.UserID, it.FullName = it.Value, it.Label
 		if deptName != nil {
 			it.Dept = deptName
 		} else {
 			it.Dept = deptCode
 		}
 		items = append(items, it)
+		ids = append(ids, it.Value)
+	}
+	if err := rows.Err(); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายชื่อผู้อนุมัติได้")
+	}
+	rolesByUser, namesByUser, err := loadActiveRolesByUser(context.Background(), h.db, ids)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดบทบาทของผู้อนุมัติได้")
+	}
+	for i := range items {
+		items[i].Roles = rolesByUser[items[i].UserID]
+		if items[i].Roles == nil {
+			items[i].Roles = []userRoleBrief{}
+		}
+		items[i].RoleNames = namesByUser[items[i].UserID]
 	}
 	return c.JSON(fiber.Map{"success": true, "data": items})
 }

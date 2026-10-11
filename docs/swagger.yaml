@@ -68,6 +68,11 @@ definitions:
       temp_delivery_no:
         type: string
     type: object
+  handlers.SetSubgroupHeadReq:
+    properties:
+      is_head:
+        type: boolean
+    type: object
   handlers.SubmitReceiveDocumentRequest:
     properties:
       exchange_rate:
@@ -383,6 +388,11 @@ definitions:
   models.CancelMemoRequest:
     properties:
       comments:
+        type: string
+    type: object
+  models.CancelPaymentRequest:
+    properties:
+      reason:
         type: string
     type: object
   models.ChangePasswordRequest:
@@ -829,6 +839,11 @@ definitions:
         type: integer
       mat_code:
         type: string
+      memo_line_id:
+        description: |-
+          MemoLineID: optional — the memo_line (of this PR's memo_id) this PR line takes. One memo_line can be
+          taken by only one active PR.
+        type: integer
       qty_requested:
         type: number
       remarks:
@@ -892,6 +907,12 @@ definitions:
     type: object
   models.CreatePettyCashLineItem:
     properties:
+      amount:
+        description: |-
+          Amount (before VAT) is the new-style input; legacy callers may omit it and send qty*unit_price.
+          Qty/UnitPrice/Discount/DiscType/WhtRate are only read for that legacy fallback — new-style
+          lines are stored as qty=1, unit_price=amount, no discount; wht_rate comes from the income type.
+        type: number
       cost_subgroup_id:
         type: integer
       description:
@@ -900,7 +921,12 @@ definitions:
         type: string
       discount:
         type: number
+      has_tax_invoice:
+        type: boolean
+      has_wht:
+        type: boolean
       mat_code:
+        description: optional — the name goes in description when absent
         type: string
       project_code:
         type: string
@@ -908,33 +934,71 @@ definitions:
         type: number
       remarks:
         type: string
+      supplier_address:
+        type: string
+      supplier_id:
+        type: integer
+      supplier_name:
+        type: string
+      supplier_tax_id:
+        type: string
+      tax_form_code:
+        type: string
+      tax_invoice_date:
+        description: YYYY-MM-DD
+        type: string
+      tax_invoice_no:
+        type: string
       unit_price:
-        minimum: 0
         type: number
+      wht_base_amount:
+        type: number
+      wht_income_type_id:
+        type: integer
+      wht_pay_date:
+        description: YYYY-MM-DD
+        type: string
       wht_rate:
+        description: ignored — snapshot from wht_income_type.rate
         type: number
     required:
-    - mat_code
     - project_code
-    - qty
-    - unit_price
     type: object
   models.CreatePettyCashRequest:
     properties:
       approver_id:
         type: integer
+      branch_code:
+        type: string
       currency:
+        type: string
+      dept_code:
+        type: string
+      dept_name:
         type: string
       discount_amount:
         type: number
       discount_type:
         type: string
+      doc_type:
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.CreatePettyCashLineItem'
-        minItems: 1
         type: array
+      order_type:
+        type: string
+      payee_emp_code:
+        type: string
+      payee_name:
+        type: string
+      project_code:
+        type: string
+      project_name:
+        type: string
       purpose:
+        type: string
+      ref_doc_no:
         type: string
       remarks:
         type: string
@@ -947,8 +1011,6 @@ definitions:
         type: boolean
       use_wht:
         type: boolean
-    required:
-    - lines
     type: object
   models.CreateProjectReq:
     properties:
@@ -1242,6 +1304,9 @@ definitions:
       employee_code:
         type: string
       full_name:
+        maxLength: 200
+        type: string
+      full_name_th:
         maxLength: 200
         type: string
       location_code:
@@ -1715,6 +1780,8 @@ definitions:
         type: string
       project_name:
         type: string
+      remaining_lines:
+        type: integer
       requested_by:
         type: integer
       requested_by_name:
@@ -1734,10 +1801,16 @@ definitions:
         type: string
       status:
         type: string
+      taken_lines:
+        type: integer
       title:
         description: 'legacy: no longer collected, NULL for new memos; kept for old
           rows'
         type: string
+      total_lines:
+        description: Line-usage counts — only populated by GET /memo when exclude_used_by_pr=true
+          or include_used=true.
+        type: integer
       updated_at:
         type: string
       updated_by:
@@ -1783,6 +1856,11 @@ definitions:
     properties:
       description:
         type: string
+      id:
+        description: |-
+          ID identifies an existing memo_line on update (keeps its id stable so purchase_request_line.memo_line_id
+          references survive). Omit for new lines; ignored on create.
+        type: integer
       line_no:
         type: integer
       quantity:
@@ -2115,7 +2193,7 @@ definitions:
       doc_id:
         type: integer
       doc_type:
-        description: '''PO'' | ''WO'''
+        description: '''PO'' | ''WO'' | ''PC'''
         type: string
       paid_by:
         type: integer
@@ -2394,6 +2472,11 @@ definitions:
         type: integer
       mat_code:
         type: string
+      memo_line_id:
+        description: |-
+          MemoLineID: optional — the memo_line (of this PR's memo_id) this PR line takes. One memo_line can be
+          taken by only one active PR.
+        type: integer
       qty_requested:
         type: number
       remarks:
@@ -2448,18 +2531,37 @@ definitions:
     properties:
       approver_id:
         type: integer
+      branch_code:
+        type: string
       currency:
+        type: string
+      dept_code:
+        type: string
+      dept_name:
         type: string
       discount_amount:
         type: number
       discount_type:
         type: string
+      doc_type:
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.CreatePettyCashLineItem'
-        minItems: 1
         type: array
+      order_type:
+        type: string
+      payee_emp_code:
+        type: string
+      payee_name:
+        type: string
+      project_code:
+        type: string
+      project_name:
+        type: string
       purpose:
+        type: string
+      ref_doc_no:
         type: string
       remarks:
         type: string
@@ -2472,8 +2574,6 @@ definitions:
         type: boolean
       use_wht:
         type: boolean
-    required:
-    - lines
     type: object
   models.UpdateProjectReq:
     properties:
@@ -2587,6 +2687,10 @@ definitions:
       full_name:
         maxLength: 200
         type: string
+      full_name_th:
+        description: nil = absent (keep stored value); "" = clear
+        maxLength: 200
+        type: string
       location_code:
         type: string
       role_id:
@@ -2668,6 +2772,8 @@ definitions:
       employee_code:
         type: string
       full_name:
+        type: string
+      full_name_th:
         type: string
       id:
         type: integer
@@ -3200,6 +3306,67 @@ paths:
       summary: Reject a document (generic, config-driven)
       tags:
       - Approvals
+  /approval/PETTY_CASH/{id}/approve:
+    put:
+      consumes:
+      - application/json
+      description: 'One transaction: approval_request, document status, petty_cash_status_log,
+        approval_log (APPROVE, with comments + ip). Caller must be the assigned approver
+        (403 otherwise); an already decided document returns 409. Also reachable as
+        PUT /approval/PETTY_CASH/{docId}/approve.'
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Optional comments
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/models.ApprovalActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approve a petty cash requisition (PENDING_APPROVAL → APPROVED)
+      tags:
+      - Petty Cash
+  /approval/PETTY_CASH/{id}/reject:
+    put:
+      consumes:
+      - application/json
+      description: Same as approve, but comments are required (400). Also reachable
+        as PUT /approval/PETTY_CASH/{docId}/reject.
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: comments required
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ApprovalActionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Reject a petty cash requisition (PENDING_APPROVAL → REJECTED)
+      tags:
+      - Petty Cash
   /approvals/audit:
     get:
       parameters:
@@ -3304,8 +3471,8 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/fiber.Map'
-        "401":
-          description: Unauthorized
+        "429":
+          description: Too Many Requests
           schema:
             $ref: '#/definitions/fiber.Map'
       security:
@@ -3669,7 +3836,7 @@ paths:
         PARTIALLY_RECEIVED or NOT_RECEIVED (null for WO), computed live from
         purchase_order_line.qty_received vs qty_ordered, not from grn or status_receive.
       parameters:
-      - description: PO or WO
+      - description: PO, WO or PC
         in: query
         name: doc_type
         required: true
@@ -3703,12 +3870,16 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: List PO or WO headers with paid/remaining amounts
+      summary: List PO, WO or PC (petty cash) headers with paid/remaining amounts
       tags:
       - Finance
     post:
       consumes:
       - application/json
+      description: |-
+        New payments only (amount_paid > 0). Locks the document row, requires status APPROVED,
+        rejects a fully-paid document and any amount above the remaining balance. Reversals
+        are no longer accepted here (reverses_id -> 400); use POST /finance/payments/{id}/cancel.
       parameters:
       - description: Payment data
         in: body
@@ -3729,13 +3900,44 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Record a payment (or reversal) against a PO or WO
+      summary: Record a new payment against a PO, WO or PC
+      tags:
+      - Finance
+  /finance/payments/{doc_type}/{doc_id}:
+    get:
+      description: No status filter (a non-APPROVED document is returned so the screen
+        can say why it is not payable).
+      parameters:
+      - description: PO, WO or PC
+        in: path
+        name: doc_type
+        required: true
+        type: string
+      - description: document id
+        in: path
+        name: doc_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Get one PO, WO or PC in the same shape as a ListPayableDocs row
       tags:
       - Finance
   /finance/payments/{doc_type}/{doc_id}/log:
     get:
       parameters:
-      - description: PO or WO
+      - description: PO, WO or PC
         in: path
         name: doc_type
         required: true
@@ -3758,7 +3960,42 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Get payment_log history for one PO or WO
+      summary: Get payment_log history for one PO, WO or PC
+      tags:
+      - Finance
+  /finance/payments/{id}/cancel:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        The reversal amount is -original.amount_paid taken from the stored row, never from the client.
+        Rejects an empty reason, a payment that is itself a reversal, and a payment already reversed.
+      parameters:
+      - description: payment_log id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Reason
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CancelPaymentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cancel one payment by inserting a linked negative reversal row
       tags:
       - Finance
   /grn:
@@ -4663,13 +4900,13 @@ paths:
         balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item
         (ref_type PO row), 400 with both available quantities if the total is short,
         and recomputes purchase_order.status_receive. Does not touch receive_no. Also
-        creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly
-        por_number_counter; optional return_date, default today Bangkok; optional
-        remarks) plus its ic_po_return_line rows in the same transaction, and links
-        the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id
-        (pool RETURN rows carry no link column - derive them from ic_po_return_line).
-        A duplicate line_id in one request is rejected. Response: return_id, return_no,
-        doc_type="RETURN" (plus the reloaded lines).'
+        creates one ic_po_return_document (RT-YYYYMM-NNNN from its own monthly ret_number_counter;
+        optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line
+        rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction
+        rows to it via return_document_id (pool RETURN rows carry no link column -
+        derive them from ic_po_return_line). A duplicate line_id in one request is
+        rejected. Response: return_id, return_no, doc_type="RETURN" (plus the reloaded
+        lines).'
       parameters:
       - description: purchase_order.id
         in: path
@@ -4718,13 +4955,13 @@ paths:
         balance (qty_received - qty_issued; RETURN row) and any remainder from ic_project_cost_item
         (ref_type PO row), 400 with both available quantities if the total is short,
         and recomputes purchase_order.status_receive. Does not touch receive_no. Also
-        creates one ic_po_return_document (RT-YYYYMM-NNNN from the shared monthly
-        por_number_counter; optional return_date, default today Bangkok; optional
-        remarks) plus its ic_po_return_line rows in the same transaction, and links
-        the stock_transaction / ic_project_cost_item_transaction rows to it via return_document_id
-        (pool RETURN rows carry no link column - derive them from ic_po_return_line).
-        A duplicate line_id in one request is rejected. Response: return_id, return_no,
-        doc_type="RETURN" (plus the reloaded lines).'
+        creates one ic_po_return_document (RT-YYYYMM-NNNN from its own monthly ret_number_counter;
+        optional return_date, default today Bangkok; optional remarks) plus its ic_po_return_line
+        rows in the same transaction, and links the stock_transaction / ic_project_cost_item_transaction
+        rows to it via return_document_id (pool RETURN rows carry no link column -
+        derive them from ic_po_return_line). A duplicate line_id in one request is
+        rejected. Response: return_id, return_no, doc_type="RETURN" (plus the reloaded
+        lines).'
       parameters:
       - description: purchase_order.id
         in: path
@@ -4836,10 +5073,11 @@ paths:
     get:
       description: For the ToCostCode dropdown — :projectCode here is the TARGET project
         (ToProject), re-called whenever the user changes it, not the movement's own
-        project. Returns every cost_subgroup under any job_code assigned to this project.
-        Each project.job_codes entry (e.g. "MP") is matched by reconstructing it as
-        cost_subject.subject_code || cost_job.job_code (subject_code is 1 char, cost_job.job_code
-        is 1 char) — the same decomposition ListAvailableMaterials uses, since cost_job.job_code
+        project. Returns every non-Head cost_subgroup under any job_code assigned
+        to this project (Head/roll-up subgroups are excluded). Each project.job_codes
+        entry (e.g. "MP") is matched by reconstructing it as cost_subject.subject_code
+        || cost_job.job_code (subject_code is 1 char, cost_job.job_code is 1 char)
+        — the same decomposition ListAvailableMaterials uses, since cost_job.job_code
         alone is a different, single-letter code space.
       parameters:
       - description: target project.project_code (ToProject)
@@ -5008,9 +5246,9 @@ paths:
       - application/json
       description: Validates doc_type and that job_code is assigned to this project
         (server-side re-check against project.job_codes), generates doc_no (IS-YYYYMM-NNNN
-        for ISSUE, TF-YYYYMM-NNNN for TRANSFER, from the same shared monthly por_number_counter
-        sequence as ic_po_receive_document.receive_no (IC-) and PO returns (RT-)),
-        and inserts the row with status=DRAFT.
+        for ISSUE, TF-YYYYMM-NNNN for TRANSFER, each prefix with its own monthly sequence
+        in doc_number_counter, separate from IC- receive numbers and from RT- returns,
+        which use ret_number_counter), and inserts the row with status=DRAFT.
       parameters:
       - description: project.project_code
         in: path
@@ -5180,15 +5418,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Validates qty against ic_project_receipt_pool remaining = qty_received
-        - qty_issued (locked FOR UPDATE) for (project_code, mat_code, cost_subgroup_id)
-        and rejects with 400 if insufficient. For doc_type='ISSUE' the destination
-        is forced to (movement.project_code, the line's own cost_subgroup_id) and
-        any to_project_code/to_cost_subgroup_id in the body is ignored; for 'TRANSFER'
-        both are required. Only DRAFT movements accept new lines. Does NOT deduct
-        qty_on_hand here — deduction happens only when the whole movement document
-        is confirmed/submitted (a separate, not-yet-built step). Inserts with the
-        next line_no for this movement.
+      description: |-
+        Validates qty against ic_project_receipt_pool remaining = qty_received - qty_issued (locked FOR UPDATE) for (project_code, mat_code, cost_subgroup_id) and rejects with 400 if insufficient. For doc_type='ISSUE' the destination is forced to (movement.project_code, the line's own cost_subgroup_id) and any to_project_code/to_cost_subgroup_id in the body is ignored; for 'TRANSFER' both are required. Only DRAFT movements accept new lines. Does NOT deduct qty_on_hand here — deduction happens only when the whole movement document is confirmed/submitted (a separate, not-yet-built step). Inserts with the next line_no for this movement.
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
       parameters:
       - description: movement's own project.project_code
         in: path
@@ -5343,14 +5575,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: 'For when the document does not exist yet. ONE DB transaction:
-        creates the header (same validation and doc_no generation as POST .../movements,
-        status DRAFT), inserts the lines, then runs the exact same submit logic as
-        POST .../movements/{id}/submit (lock, re-validate qty against on-hand/pool,
-        deduct, credit, status POSTED). Any failure rolls back everything including
-        the header — no orphan DRAFT. project_code in the header is taken from the
-        path. Error codes (e.g. LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED, LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED)
-        are identical to the id-based endpoints. lines is required and must be non-empty.'
+      description: |-
+        For when the document does not exist yet. ONE DB transaction: creates the header (same validation and doc_no generation as POST .../movements, status DRAFT), inserts the lines, then runs the exact same submit logic as POST .../movements/{id}/submit (lock, re-validate qty against on-hand/pool, deduct, credit, status POSTED). Any failure rolls back everything including the header — no orphan DRAFT. project_code in the header is taken from the path. Error codes (e.g. LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED, LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED) are identical to the id-based endpoints. lines is required and must be non-empty.
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
       parameters:
       - description: movement's own project.project_code
         in: path
@@ -5939,6 +6166,11 @@ paths:
         in: query
         name: scope
         type: string
+      - description: true = also return Head (roll-up) subgroups; default false hides
+          them. Every row carries is_head.
+        in: query
+        name: include_head
+        type: boolean
       produces:
       - application/json
       responses:
@@ -6148,7 +6380,7 @@ paths:
   /master/cost-code/options:
     get:
       description: Returns id + combined code (subject+job+group+subgroup) + subgroup_name
-        for every active cost_subgroup.
+        for every active, non-Head cost_subgroup (Head subgroups are not selectable).
       produces:
       - application/json
       responses:
@@ -6177,11 +6409,20 @@ paths:
       - CostCode
   /master/cost-code/subgroups:
     get:
+      description: Rows keep their keys (id, group_id, subgroup_code, subgroup_name,
+        is_active, created_at, updated_at) and gain is_head (bool, always present).
+        Head (roll-up) subgroups are hidden unless include_head=true; the master cost-code
+        page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id},
+        .../{id}/deactivate and .../{id}/head.
       parameters:
       - description: group_id filter
         in: query
         name: group_id
         type: integer
+      - description: true = also return Head subgroups (default false hides them)
+        in: query
+        name: include_head
+        type: boolean
       produces:
       - application/json
       responses:
@@ -6287,6 +6528,49 @@ paths:
       summary: Deactivate a cost subgroup (is_active=false)
       tags:
       - CostCode
+  /master/cost-code/subgroups/{id}/head:
+    patch:
+      consumes:
+      - application/json
+      description: 'Same access as the other cost-code master edits (JWT only; no
+        extra role guard). Setting is_head=true is always allowed, even when the subgroup
+        is already used — existing data is left untouched, only NEW selections are
+        blocked. The response carries the updated row (incl. is_head) and in_use:
+        {pr_lines, po_lines, materials} counts so the UI can warn. Setting false just
+        un-hides it.'
+      parameters:
+      - description: Subgroup ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: is_head
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.SetSubgroupHeadReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Mark / unmark a cost subgroup as Head (roll-up node, not selectable
+        on documents)
+      tags:
+      - CostCode
   /master/cost-code/subjects:
     get:
       produces:
@@ -6303,13 +6587,11 @@ paths:
       - CostCode
   /master/eligible-approvers:
     get:
-      description: Union of role-based approvers (approval_config.approver_role_id,
-        joined via user_roles) and extra approvers (approval_delegation, doc_type
-        match or NULL = applies to all), deduplicated. Used to populate approver-selection
-        dropdowns (e.g. Memo's "ผู้อนุมัติ" field) so only users actually eligible
-        to approve that doc_type are offered.
+      description: |-
+        Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's "ผู้อนุมัติ" field) so only users actually eligible to approve that doc_type are offered.
+        Each item keeps value/label/dept (existing dropdown contract) and also returns user_id, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.
       parameters:
-      - description: Document type, e.g. MEMO
+      - description: Document type, e.g. MEMO or PETTY_CASH
         in: query
         name: doc_type
         required: true
@@ -8321,7 +8603,8 @@ paths:
     get:
       description: Returns past PO lines for the given mat_code, most recent first,
         for the "ดูราคาที่เคยซื้อ" price-history panel on the PO line-item picker.
-        Excludes CANCELLED POs.
+        Excludes CANCELLED POs. Each row also carries the PO header's project_code
+        and project_name (LEFT JOIN project; null when the PO has no project).
       parameters:
       - description: mat_code
         in: path
@@ -8421,6 +8704,18 @@ paths:
       - description: true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)
         in: query
         name: my_approvals
+        type: string
+      - description: true = (PR memo panel) hide memos with no available line left;
+          adds total_lines/taken_lines/remaining_lines. A line is taken by a live
+          PR (not CANCELLED, not soft-deleted); a memo linked by a live PR that has
+          no memo_line_id lines (legacy whole-memo link) counts as fully used
+        in: query
+        name: exclude_used_by_pr
+        type: string
+      - description: true = with exclude_used_by_pr, return fully-used memos too (still
+          adds the line counts)
+        in: query
+        name: include_used
         type: string
       - description: หน้า (default 1)
         in: query
@@ -8561,6 +8856,43 @@ paths:
       security:
       - BearerAuth: []
       summary: อนุมัติหรือปฏิเสธ Memo
+      tags:
+      - Memo
+  /memo/{id}/available-lines:
+    get:
+      description: Every line of the Memo plus taken / taken_by_pr_id / taken_by_pr_no.
+        A line is taken when a purchase_request_line references it (memo_line_id)
+        on a PR that is not CANCELLED and not soft-deleted. exclude_pr_id (optional)
+        makes lines taken by that PR report as not taken — used when editing that
+        PR.
+      parameters:
+      - description: Memo ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Treat lines taken by this PR as free (PR edit screen)
+        in: query
+        name: exclude_pr_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List a Memo's lines with their "taken by PR" state
       tags:
       - Memo
   /memo/{id}/cancel:
@@ -8711,8 +9043,9 @@ paths:
       consumes:
       - application/json
       description: status starts as DRAFT unless status=PENDING_APPROVAL is passed
-        (requires approver_id). Each line picks its own project_code — the document
-        itself has no single project.
+        (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines.
+        pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored.
+        A line with an empty project_code falls back to the header project_code.
       parameters:
       - description: Petty cash requisition data
         in: body
@@ -8782,6 +9115,9 @@ paths:
     put:
       consumes:
       - application/json
+      description: Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost
+        Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED
+        vs what the document already stores.
       parameters:
       - description: Petty cash requisition ID
         in: path
@@ -8810,10 +9146,38 @@ paths:
       summary: Update a petty cash requisition (only while DRAFT or REJECTED)
       tags:
       - Petty Cash
+  /petty-cash/{id}/approval-chain:
+    get:
+      description: 'One row per approval step: approver user id, employee_code, step_no,
+        full_name, full_name_th, level (highest roles.level the user holds), roles
+        [{role_code, role_name}] and role_names (comma-joined, for display) and approval
+        status (null = not yet requested | PENDING | APPROVED | REJECTED).'
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Approval chain of a petty cash requisition
+      tags:
+      - Petty Cash
   /petty-cash/{id}/approve:
     post:
       consumes:
       - application/json
+      description: 'One transaction: approval_request, document status, petty_cash_status_log,
+        approval_log (APPROVE, with comments + ip). Caller must be the assigned approver
+        (403 otherwise); an already decided document returns 409. Also reachable as
+        PUT /approval/PETTY_CASH/{docId}/approve.'
       parameters:
       - description: Petty cash requisition ID
         in: path
@@ -8835,6 +9199,109 @@ paths:
       security:
       - BearerAuth: []
       summary: Approve a petty cash requisition (PENDING_APPROVAL → APPROVED)
+      tags:
+      - Petty Cash
+  /petty-cash/{id}/attachments:
+    get:
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List attachments of a petty cash requisition
+      tags:
+      - Petty Cash
+    post:
+      consumes:
+      - multipart/form-data
+      description: multipart/form-data, field "file". Only while the document is DRAFT
+        (or REJECTED, same rule as Update). Max 10 MB; pdf, jpg, jpeg, png, doc, docx,
+        xls, xlsx. The file is written to uploads/petty-cash/{id}/ under a generated
+        name, then the row is inserted; if the insert fails the file is removed. file_path
+        in the response is an absolute URL.
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Attachment file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Upload an attachment straight to a petty cash requisition
+      tags:
+      - Petty Cash
+  /petty-cash/{id}/attachments/{attId}:
+    delete:
+      description: Same DRAFT/REJECTED-only rule as upload. Removes the row and the
+        file on disk (a missing file is ignored). The attachment must belong to the
+        document.
+      parameters:
+      - description: Petty cash requisition ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Attachment ID
+        in: path
+        name: attId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a petty cash attachment
       tags:
       - Petty Cash
   /petty-cash/{id}/cancel:
@@ -8861,6 +9328,8 @@ paths:
     post:
       consumes:
       - application/json
+      description: Same as approve, but comments are required (400). Also reachable
+        as PUT /approval/PETTY_CASH/{docId}/reject.
       parameters:
       - description: Petty cash requisition ID
         in: path
@@ -8916,6 +9385,55 @@ paths:
       summary: Submit for approval (DRAFT/REJECTED → PENDING_APPROVAL)
       tags:
       - Petty Cash
+  /petty-cash/line-options:
+    get:
+      description: tax_forms (ภ.ง.ด.3 / ภ.ง.ด.53), active wht_income_types ordered
+        by sort_order, and the fixed vat_rate (percent) used by the line calculation.
+        Static route — registered before /:id.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Dropdown options for the petty cash line modal
+      tags:
+      - Petty Cash
+  /petty-cash/pending-approval:
+    get:
+      description: status = PENDING_APPROVAL with a PENDING approval_request assigned
+        to the caller. Paginated; search matches pc_no. vendor_names is the distinct
+        supplier names on the lines, comma-joined. submitted_at = latest SUBMIT approval_log,
+        else latest PENDING_APPROVAL status-log entry, else the approval_request creation
+        time.
+      parameters:
+      - description: default 1
+        in: query
+        name: page
+        type: integer
+      - description: default 20, max 100
+        in: query
+        name: page_size
+        type: integer
+      - description: pc_no contains
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+      security:
+      - BearerAuth: []
+      summary: Petty cash documents waiting for the current user's approval
+      tags:
+      - Petty Cash
   /po:
     get:
       parameters:
@@ -8966,6 +9484,8 @@ paths:
       - application/json
       description: |-
         Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request. job_code is required overall — if omitted and pr_id is set, it's auto-filled from the source PR's job_code (an explicit job_code in the body always wins). lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are optional free text, unvalidated.
+        Submit gate: when the resulting status is PENDING_APPROVAL, every line must have a cost_subgroup_id (after PR-line auto-fill) or the call fails with 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not affected.
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
         po_no is generated server-side at save time (po_number_counter, inside the create transaction); any po_no in the body is ignored. Response data includes po_id and po_no (PO-YYYYMM-NNNN).
       parameters:
       - description: PO data
@@ -9050,15 +9570,10 @@ paths:
     put:
       consumes:
       - application/json
-      description: 'Replaces header fields and all lines of a PO that is still in
-        DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved
-        for APPROVED POs; other statuses cannot be edited). Line totals and the PO
-        total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code
-        auto-fill rules as POST /po. job_code: omit to keep the PO''s current value;
-        an explicit value (or the linked PR''s job_code, if pr_id is (re)sent) always
-        overrides it. lines[].cost_subgroup_id: same precedence as POST /po — an explicit
-        value always wins over the auto-fill from lines[].pr_line_id. receiver_name/receiver_phone
-        are optional free text, unvalidated.'
+      description: |-
+        Replaces header fields and all lines of a PO that is still in DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved for APPROVED POs; other statuses cannot be edited). Line totals and the PO total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code auto-fill rules as POST /po. job_code: omit to keep the PO's current value; an explicit value (or the linked PR's job_code, if pr_id is (re)sent) always overrides it. lines[].cost_subgroup_id: same precedence as POST /po — an explicit value always wins over the auto-fill from lines[].pr_line_id. receiver_name/receiver_phone are optional free text, unvalidated.
+        Submit gate: when the resulting status is PENDING_APPROVAL, every line must have a cost_subgroup_id (after PR-line auto-fill) or the call fails with 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not affected.
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
       parameters:
       - description: PO ID
         in: path
@@ -9277,18 +9792,10 @@ paths:
     put:
       consumes:
       - application/json
-      description: 'Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL,
-        provided the PO''s created_at is less than 1 year old. Requires a mandatory
-        non-empty reason, logged to po_edit_log. Replaces header fields and all lines,
-        recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens
-        the PO''s existing approval_request row (same approval_id / assigned_to —
-        not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL:
-        repeated saves before the approver acts just keep re-editing and re-pending
-        the same approval_request, so the frontend can call this endpoint for every
-        save in this flow, not just the first. lines[].cost_subgroup_id: an explicit
-        value always wins; if omitted and lines[].pr_line_id is set, it''s auto-filled
-        from that PR line''s cost_subgroup_id. receiver_name/receiver_phone are editable
-        here too, same as payment_terms/remarks.'
+      description: |-
+        Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are editable here too, same as payment_terms/remarks.
+        Re-submits the PO (-> PENDING_REAPPROVAL), so every line must have a cost_subgroup_id after the edit (after PR-line auto-fill) or the call fails with 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)".
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
       parameters:
       - description: PO ID
         in: path
@@ -9325,12 +9832,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: 'Inserts purchase_order_line rows. For lines that reference a pr_line_id,
-        increments purchase_request_line.qty_ordered and re-evaluates the parent PR
-        status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT
-        ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking.
-        lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id
-        is set, it''s auto-filled from that PR line''s cost_subgroup_id.'
+      description: |-
+        Inserts purchase_order_line rows. For lines that reference a pr_line_id, increments purchase_request_line.qty_ordered and re-evaluates the parent PR status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id.
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
       parameters:
       - description: PO ID
         in: path
@@ -9600,12 +10104,13 @@ paths:
       - Purchase Order
   /po/available-prs:
     get:
-      description: Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least
-        one line with remaining (qty_requested - qty_reserved - qty_ordered) > 0 —
-        same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already
-        has an active PO — split ordering lets the same PR line be divided across
-        multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id}
-        for the per-line remaining breakdown.
+      description: Each row also carries project_code and project_name (LEFT JOIN
+        project; null when the PR has no project). Returns COMPLETED and PARTIALLY_FILLED
+        PRs that still have at least one line with remaining (qty_requested - qty_reserved
+        - qty_ordered) > 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear
+        here even if it already has an active PO — split ordering lets the same PR
+        line be divided across multiple POs/suppliers as long as some quantity is
+        left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
       produces:
       - application/json
       responses:
@@ -9661,6 +10166,13 @@ paths:
         at the line level: only lines matching the filter appear in "lines", and a PO is dropped
         from the result entirely if none of its lines match. Pagination (page/page_size)
         paginates POs, not lines.
+        Each line also carries cost_subgroup_id, cost_code, cost_name, head_subgroup_id,
+        head_cost_code, head_cost_name (the Head of the line's cost group; the line's own
+        subgroup when it is itself the Head; null when the group has no Head), qty_received
+        (purchase_order_line.qty_received, already net of IC returns), qty_outstanding
+        (>= 0, 0 for a cancelled line) and line_receiving_status (NOT_RECEIVED | PARTIAL |
+        COMPLETE; null for a cancelled line). Each PO carries receiving_status derived from its
+        non-cancelled lines (null when none).
       parameters:
       - description: po_date >= (YYYY-MM-DD)
         in: query
@@ -9687,6 +10199,20 @@ paths:
         in: query
         name: project_code
         type: string
+      - description: 'header receiving status: NOT_RECEIVED | PARTIAL | COMPLETE (derived
+          from non-cancelled lines, same rule as Finance)'
+        in: query
+        name: receiving_status
+        type: string
+      - description: PO matches when at least one line has exactly this cost_subgroup_id
+        in: query
+        name: cost_subgroup_id
+        type: integer
+      - description: id of a Head subgroup; PO matches when at least one line's cost
+          subgroup is in that Head's group
+        in: query
+        name: head_subgroup_id
+        type: integer
       - default: 1
         description: page (paginates POs)
         in: query
@@ -9826,6 +10352,7 @@ paths:
         required_date or the code doesn't resolve to a live row.
         Each item also carries has_remaining (bool) — true if any line has
         qty_requested - qty_reserved - qty_ordered > 0 (same expression as the PO-create pickers).
+        linked_pos: [{po_id, po_no, status}] — every non-CANCELLED PO with a line referencing this PR (distinct, by po_no, [] when none).
         Each item also carries has_active_po_link (bool) — true if any of this PR's
         lines are referenced by a purchase_order_line belonging to a non-CANCELLED PO.
         Same condition the PR detail page's blocking-PO warning banner and the Update
@@ -9889,6 +10416,7 @@ paths:
       description: |-
         job_code is required — one of the 12 fixed job type codes (MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G).
         lines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty. false skips deduction entirely — the whole qty routes to qty_to_order for PO.
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
         pr_no is generated server-side at save time (pr_number_counter, inside the create transaction); any pr_no in the body is ignored. Response data: {"id": <int>, "pr_no": "PRYYYYMM-NNNN"}.
       parameters:
       - description: PR data
@@ -9956,7 +10484,8 @@ paths:
         dept_name is resolved from dept_code via the departments table, and memo_no is
         resolved from memo_id via the memo table — both null when the PR has no
         dept_code/memo_id or the code doesn't resolve to a live row. Also carries
-        required_date and created_at.
+        required_date and created_at. Every line carries deduct_stock (bool, stored per line). linked_pos: [{po_id, po_no, status}] of every non-CANCELLED PO
+        that has a line referencing this PR (distinct, ordered by po_no; [] when none).
       parameters:
       - description: PR ID
         in: path
@@ -9983,16 +10512,18 @@ paths:
       consumes:
       - application/json
       description: |-
-        Only allowed while status='DRAFT' (including PRs freshly reopened via
-        PUT /pr/{id}/reopen, which itself guarantees no active PO references any of
-        this PR's lines — see Reopen). Because that guard already holds by the time a
-        PR can reach DRAFT, editing here is fully free: lines are deleted and
-        reinserted from the payload with no FK-safety restrictions. Logs the edit to
-        erp_audit_log. Status stays DRAFT afterward — the user must explicitly call
-        POST /pr/{id}/submit to re-run deductStockOnSubmit against the new
-        qty_requested values and go back to COMPLETED.
+        Allowed from DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED; CANCELLED -> 400.
+        Returns 409 (plain Thai message) if any line is referenced by an active PO (status != CANCELLED),
+        before any write. A non-DRAFT PR is first brought back to DRAFT exactly like PUT /pr/{id}/reopen
+        (stock/project-credit reversal, which itself returns 409 if the project already consumed the
+        material), then lines are saved: a line sent with its id is updated IN PLACE (cost_subgroup_id, qty, ...
+        persist on the existing row; mat_code of an existing line cannot change -> 400), a line without id is inserted,
+        and existing lines missing from the payload are deleted (409 if the line ever credited a project's stock).
+        The stock/project-credit reversal always uses the cost code stored before the edit; the re-submit reserves under the new one.
+        status=COMPLETED in the body re-submits in the same tx. Cost code may be blank on DRAFT, required on COMPLETED.
         job_code: omit to keep the PR's current value; job_code must be one of the 12 fixed job type codes if sent.
         lines[].deduct_stock (optional, default true): whether Submit should reserve this line against stock_item.qty.
+        Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
       parameters:
       - description: PR ID
         in: path
@@ -10020,9 +10551,14 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/fiber.Map'
+        "409":
+          description: active PO linked to this PR, or stock already consumed
+          schema:
+            $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Edit a DRAFT PR's header and lines
+      summary: Edit a PR's header and lines (any status except CANCELLED, never while
+        a PO is linked)
       tags:
       - Purchase Request
   /pr/{id}/attachments:
@@ -10174,12 +10710,9 @@ paths:
   /pr/{id}/reopen:
     put:
       description: |-
-        Only allowed when status='COMPLETED'. Blocks with 400 if any PO derived from this
-        PR's lines (via purchase_order_line.pr_line_id) is not yet "closed" — closed means
-        status='CANCELLED' OR status_receive='RECEIVED' (a fully-received PO has already
-        served its purpose and no longer needs to block PR edits). The system does not
-        auto-cancel/auto-close anything; the user must get the referencing PO(s) to one of
-        those states manually first. Reverses any stock
+        Allowed from COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED. Blocks with 409 if any
+        active PO (status != CANCELLED, incl. fully received) references this PR's lines via
+        purchase_order_line.pr_line_id. The system does not auto-cancel anything. Reverses any stock
         deducted by deductStockOnSubmit (stock_transaction rows with ref_doc_type='PR',
         ref_doc_id=id, txn_type='OUT') by restoring stock_item.qty and recording an
         offsetting 'IN' transaction, then sets status back to DRAFT. For cost PRs it also
@@ -10209,13 +10742,20 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/fiber.Map'
+        "409":
+          description: active PO linked to this PR, or stock already consumed
+          schema:
+            $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Reopen a COMPLETED PR back to DRAFT for editing
+      summary: Reopen a non-DRAFT PR back to DRAFT for editing
       tags:
       - Purchase Request
   /pr/{id}/submit:
     post:
+      description: Every line must have a cost_subgroup_id, otherwise 400 "กรุณาระบุ
+        Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not
+        affected. The same rule applies to POST /pr and PUT /pr/{id} when status=COMPLETED.
       parameters:
       - description: PR ID
         in: path
@@ -10230,7 +10770,12 @@ paths:
           schema:
             $ref: '#/definitions/fiber.Map'
         "400":
-          description: Bad Request
+          description: missing cost code on one or more lines, or other validation
+            error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: active PO linked to this PR
           schema:
             $ref: '#/definitions/fiber.Map'
       security:
@@ -11821,7 +12366,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: Create a new user account, optionally assigning roles
+      description: 'Create a new user account, optionally assigning roles. full_name
+        (English name) is required (trimmed, max 200). employee_code is optional:
+        trimmed, max 30, empty stored as NULL, 409 if another user already has it.
+        full_name_th (Thai name) is optional: trimmed, max 200 characters (else 400),
+        empty string stored as NULL.'
       parameters:
       - description: User data
         in: body
@@ -11901,7 +12450,11 @@ paths:
     put:
       consumes:
       - application/json
-      description: Update user profile information
+      description: 'Update user profile information. full_name (English name) is required
+        (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored
+        as NULL, 409 if another user already has it. full_name_th is optional: omitted
+        = keep stored value, empty string = clear (NULL), max 200 characters. department
+        (free-text position) and dept_code are separate fields.'
       parameters:
       - description: User ID
         in: path

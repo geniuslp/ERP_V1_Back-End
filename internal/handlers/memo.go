@@ -169,6 +169,8 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 // @Param        date_from    query  string  false  "วันที่เริ่ม (YYYY-MM-DD)"
 // @Param        date_to      query  string  false  "วันที่สิ้นสุด (YYYY-MM-DD)"
 // @Param        my_approvals query  string  false  "true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)"
+// @Param        exclude_used_by_pr query string false "true = (PR memo panel) hide memos with no available line left; adds total_lines/taken_lines/remaining_lines. A line is taken by a live PR (not CANCELLED, not soft-deleted); a memo linked by a live PR that has no memo_line_id lines (legacy whole-memo link) counts as fully used"
+// @Param        include_used query  string  false  "true = with exclude_used_by_pr, return fully-used memos too (still adds the line counts)"
 // @Param        page         query  int     false  "หน้า (default 1)"
 // @Param        page_size    query  int     false  "จำนวนต่อหน้า (default 20)"
 // @Success      200  {object}  models.PaginatedResponse
@@ -220,11 +222,36 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 		args = append(args, f.Status)
 		i++
 	}
-	if f.ExcludeUsedByPR == "true" {
-		where += ` AND NOT EXISTS (
-			SELECT 1 FROM public.purchase_request pr
-			WHERE pr.memo_id = m.id
-		)`
+	// Line-level usage (PR memo panel). Only when asked for — every other caller keeps the exact
+	// SQL and response it had before. A line is "taken" by a live PR (not CANCELLED, deleted_at IS
+	// NULL). A live PR with memo_id and no memo_line_id lines is a legacy whole-memo link: that
+	// memo counts as fully used (taken = total, remaining = 0).
+	withCounts := f.ExcludeUsedByPR == "true" || f.IncludeUsed == "true"
+	countJoins := ""
+	if withCounts {
+		countJoins = `
+		LEFT JOIN LATERAL (
+		    SELECT COUNT(*)::int AS total_lines,
+		           COUNT(*) FILTER (WHERE EXISTS (
+		               SELECT 1 FROM public.purchase_request_line prl
+		               JOIN public.purchase_request pr ON pr.id = prl.pr_id
+		               WHERE prl.memo_line_id = ml.id
+		                 AND pr.status <> 'CANCELLED' AND pr.deleted_at IS NULL
+		           ))::int AS taken_lines
+		    FROM public.memo_line ml WHERE ml.memo_id = m.id
+		) lc ON true
+		LEFT JOIN LATERAL (
+		    SELECT EXISTS (
+		        SELECT 1 FROM public.purchase_request pr
+		        WHERE pr.memo_id = m.id AND pr.status <> 'CANCELLED' AND pr.deleted_at IS NULL
+		          AND NOT EXISTS (SELECT 1 FROM public.purchase_request_line prl
+		                          WHERE prl.pr_id = pr.id AND prl.memo_line_id IS NOT NULL)
+		    ) AS legacy_used
+		) lg ON true
+		`
+		if f.ExcludeUsedByPR == "true" && f.IncludeUsed != "true" {
+			where += ` AND NOT lg.legacy_used AND lc.total_lines - lc.taken_lines > 0`
+		}
 	}
 
 	isAdmin := slices.Contains(claims.Roles, "ADMIN_CENTER")
@@ -247,9 +274,17 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 	ctx := context.Background()
 
 	var total int64
-	countSQL := `SELECT COUNT(*) FROM public.memo m ` + where
+	countSQL := `SELECT COUNT(*) FROM public.memo m ` + countJoins + where
 	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
 		return err
+	}
+
+	countSelect := ""
+	if withCounts {
+		countSelect = `,
+		       lc.total_lines,
+		       CASE WHEN lg.legacy_used THEN lc.total_lines ELSE lc.taken_lines END AS taken_lines,
+		       CASE WHEN lg.legacy_used THEN 0 ELSE lc.total_lines - lc.taken_lines END AS remaining_lines`
 	}
 
 	dataSQL := `
@@ -260,7 +295,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 		       u.full_name   AS requested_by_name,
 		       au.full_name  AS approver_name,
 		       p.project_name,
-		       msl.changed_at AS approved_at
+		       msl.changed_at AS approved_at` + countSelect + `
 		FROM public.memo m
 		JOIN public.users    u  ON u.id  = m.requested_by
 		LEFT JOIN public.users au ON au.id = m.approver_id
@@ -271,7 +306,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 		    WHERE memo_id = m.id AND to_status = 'APPROVED'
 		    ORDER BY changed_at DESC LIMIT 1
 		) msl ON true
-		` + where + `
+		` + countJoins + where + `
 		ORDER BY m.created_at DESC
 		LIMIT $` + fmt.Sprintf("%d", i) + ` OFFSET $` + fmt.Sprintf("%d", i+1)
 
@@ -287,14 +322,22 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		var m models.Memo
 		var siteDeliveryDate *time.Time
-		if err := rows.Scan(
+		dest := []any{
 			&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
 			&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation,
 			&siteDeliveryDate, &m.ResponsibleFactory, &m.Note, &m.Status,
 			&m.CreatedAt, &m.UpdatedAt,
 			&m.RequestedByName, &m.ApproverName, &m.ProjectName, &m.ApprovedAt,
-		); err != nil {
+		}
+		var totalLines, takenLines, remainingLines int
+		if withCounts {
+			dest = append(dest, &totalLines, &takenLines, &remainingLines)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return err
+		}
+		if withCounts {
+			m.TotalLines, m.TakenLines, m.RemainingLines = &totalLines, &takenLines, &remainingLines
 		}
 		if siteDeliveryDate != nil {
 			s := siteDeliveryDate.Format("2006-01-02")
@@ -599,19 +642,10 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	if _, err = tx.Exec(ctx, `DELETE FROM public.memo_line WHERE memo_id=$1`, id); err != nil {
+	// Lines are synced in place (not deleted and re-inserted) so memo_line ids stay stable —
+	// purchase_request_line.memo_line_id points at them. See syncMemoLines.
+	if err = syncMemoLines(ctx, tx, int64(id), req.Lines); err != nil {
 		return err
-	}
-	for _, l := range req.Lines {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO public.memo_line
-			    (memo_id, line_no, description, unit, quantity, remark)
-			VALUES ($1,$2,$3,$4,$5,$6)`,
-			id, l.LineNo, l.Description, l.Unit, l.Quantity, l.Remark,
-		)
-		if err != nil {
-			return err
-		}
 	}
 
 	if _, err = tx.Exec(ctx, `DELETE FROM public.memo_attachment WHERE memo_id=$1`, id); err != nil {
@@ -667,7 +701,19 @@ func (h *MemoHandler) Delete(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "cannot delete memo: referenced by purchase request")
 	}
 
-	result, err := h.db.Exec(ctx, `DELETE FROM public.memo WHERE id=$1`, id)
+	// The guard above only counts live PRs; CANCELLED/soft-deleted ones may still point at this
+	// memo's lines, which would block the cascade — release those references in the same tx.
+	delTx, err := h.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer delTx.Rollback(ctx)
+	if _, err := delTx.Exec(ctx, `
+		UPDATE purchase_request_line SET memo_line_id = NULL
+		WHERE memo_line_id IN (SELECT id FROM public.memo_line WHERE memo_id=$1)`, id); err != nil {
+		return err
+	}
+	result, err := delTx.Exec(ctx, `DELETE FROM public.memo WHERE id=$1`, id)
 	if err != nil {
 		return err
 	}

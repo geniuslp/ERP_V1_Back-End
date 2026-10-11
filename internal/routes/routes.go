@@ -85,6 +85,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Patch("/cost-code/groups/:id/deactivate", costCodeH.DeactivateGroup)
 	master.Get("/cost-code/subgroups", costCodeH.ListSubgroupsByGroup)
 	master.Post("/cost-code/subgroups", costCodeH.CreateSubgroup)
+	master.Patch("/cost-code/subgroups/:id/head", costCodeH.SetSubgroupHead)
 	master.Patch("/cost-code/subgroups/:id", costCodeH.UpdateSubgroup)
 	master.Patch("/cost-code/subgroups/:id/deactivate", costCodeH.DeactivateSubgroup)
 	master.Get("/cost-code/full", costCodeH.ListFull)
@@ -209,6 +210,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	memo := api.Group("/memo", jwt)
 	memo.Get("/", memoH.List)
 	memo.Post("/", memoH.Create)
+	memo.Get("/:id/available-lines", memoH.AvailableLines)
 	memo.Get("/:id", memoH.GetByID)
 	memo.Put("/:id", memoH.Update)
 	memo.Delete("/:id", memoH.Delete)
@@ -220,8 +222,14 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Material picker reuses GET /master/allMaterial (extended with an optional
 	// project_code param for stock_on_hand) — no petty-cash-specific search endpoint.
 	pc := api.Group("/petty-cash", jwt)
+	pc.Get("/line-options", pettyCashH.LineOptions) // static — must stay before /:id
+	pc.Get("/pending-approval", pettyCashH.PendingApproval) // static - must stay before /:id
 	pc.Get("/", pettyCashH.List)
 	pc.Post("/", pettyCashH.Create)
+	pc.Get("/:id/attachments", pettyCashH.ListAttachments)
+	pc.Post("/:id/attachments", pettyCashH.AddAttachment)
+	pc.Delete("/:id/attachments/:attId", pettyCashH.DeleteAttachment)
+	pc.Get("/:id/approval-chain", pettyCashH.ApprovalChain)
 	pc.Get("/:id", pettyCashH.Get)
 	pc.Put("/:id", pettyCashH.Update)
 	pc.Delete("/:id", pettyCashH.Delete)
@@ -256,6 +264,10 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// the old handlers are left registered and unused-by-frontend for now (rollback safety).
 	genericApprovalH := handlers.NewGenericApprovalHandler(db)
 	genericApproval := api.Group("/approval", jwt)
+	// PETTY_CASH is handled by its own Approve/Reject (writes approval_log + approver remark, Thai errors);
+	// registered BEFORE the generic /:docType routes so Fiber matches these first.
+	genericApproval.Put("/PETTY_CASH/:docId/approve", pettyCashH.Approve)
+	genericApproval.Put("/PETTY_CASH/:docId/reject", pettyCashH.Reject)
 	genericApproval.Put("/:docType/:docId/approve", genericApprovalH.Approve)
 	genericApproval.Put("/:docType/:docId/reject", genericApprovalH.Reject)
 
@@ -396,7 +408,9 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	finance := api.Group("/finance", jwt)
 	finance.Get("/payments", financeH.ListPayableDocs)
 	finance.Post("/payments", financeH.RecordPayment)
+	finance.Post("/payments/:id/cancel", financeH.CancelPayment)
 	finance.Get("/payments/:doc_type/:doc_id/log", financeH.GetPaymentLog)
+	finance.Get("/payments/:doc_type/:doc_id", financeH.GetPayableDoc)
 
 	// Stock Transfer (ย้ายคลัง)
 	stockTransferH := handlers.NewStockTransferHandler(db)

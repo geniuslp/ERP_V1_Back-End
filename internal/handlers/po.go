@@ -316,6 +316,17 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 	})
 }
 
+// poHeaderReceivingSQL derives a PO's receiving status from its non-cancelled lines (outer alias po):
+// COMPLETE when every line is fully received, PARTIAL when anything was received, else NOT_RECEIVED;
+// NULL when there are no non-cancelled lines. Same rule as Finance's receiving_status
+// (poReceivingStatusSelect), only with the labels COMPLETE/PARTIAL instead of FULLY_RECEIVED/PARTIALLY_RECEIVED.
+const poHeaderReceivingSQL = `SELECT CASE
+		WHEN COUNT(*) = 0 THEN NULL
+		WHEN BOOL_AND(COALESCE(rl.qty_received, 0) >= rl.qty_ordered) THEN 'COMPLETE'
+		WHEN BOOL_OR(COALESCE(rl.qty_received, 0) > 0) THEN 'PARTIAL'
+		ELSE 'NOT_RECEIVED' END
+	FROM purchase_order_line rl WHERE rl.po_id = po.id AND rl.status <> 'CANCELLED'`
+
 // ListLineItems godoc
 // @Summary      List approved POs with their line items (grouped by PO)
 // @Description  Cross-PO report — every PO with status=APPROVED (approval status only; status_receive is
@@ -323,6 +334,13 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 // @Description  at the line level: only lines matching the filter appear in "lines", and a PO is dropped
 // @Description  from the result entirely if none of its lines match. Pagination (page/page_size)
 // @Description  paginates POs, not lines.
+// @Description  Each line also carries cost_subgroup_id, cost_code, cost_name, head_subgroup_id,
+// @Description  head_cost_code, head_cost_name (the Head of the line's cost group; the line's own
+// @Description  subgroup when it is itself the Head; null when the group has no Head), qty_received
+// @Description  (purchase_order_line.qty_received, already net of IC returns), qty_outstanding
+// @Description  (>= 0, 0 for a cancelled line) and line_receiving_status (NOT_RECEIVED | PARTIAL |
+// @Description  COMPLETE; null for a cancelled line). Each PO carries receiving_status derived from its
+// @Description  non-cancelled lines (null when none).
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -332,6 +350,9 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 // @Param        mat_code     query  string  false  "mat_code ILIKE filter — only matching lines are kept, POs with no match are excluded"
 // @Param        requested_by query  int     false  "requested_by user id filter"
 // @Param        project_code query  string  false  "po.project_code filter"
+// @Param        receiving_status query string false "header receiving status: NOT_RECEIVED | PARTIAL | COMPLETE (derived from non-cancelled lines, same rule as Finance)"
+// @Param        cost_subgroup_id query int    false  "PO matches when at least one line has exactly this cost_subgroup_id"
+// @Param        head_subgroup_id query int    false  "id of a Head subgroup; PO matches when at least one line's cost subgroup is in that Head's group"
 // @Param        page         query  int     false  "page (paginates POs)"  default(1)
 // @Param        page_size    query  int     false  "page_size (POs per page)"  default(20)
 // @Success      200  {object}  models.PaginatedResponse
@@ -380,6 +401,28 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		conditions = append(conditions, fmt.Sprintf("po.project_code = $%d", len(args)))
 	}
 
+	// receiving_status is a header-level filter on the status derived from all non-cancelled lines.
+	if v := strings.ToUpper(strings.TrimSpace(c.Query("receiving_status"))); v != "" {
+		if v != "NOT_RECEIVED" && v != "PARTIAL" && v != "COMPLETE" {
+			return fiber.NewError(fiber.StatusBadRequest, "receiving_status ต้องเป็น NOT_RECEIVED, PARTIAL หรือ COMPLETE")
+		}
+		args = append(args, v)
+		conditions = append(conditions, fmt.Sprintf("(%s) = $%d", poHeaderReceivingSQL, len(args)))
+	}
+	// cost filters: a PO matches when at least one of its lines matches (all lines are still returned).
+	if v := c.QueryInt("cost_subgroup_id", 0); v > 0 {
+		args = append(args, v)
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (SELECT 1 FROM purchase_order_line pc1
+			WHERE pc1.po_id = po.id AND pc1.cost_subgroup_id = $%d)`, len(args)))
+	}
+	if v := c.QueryInt("head_subgroup_id", 0); v > 0 {
+		args = append(args, v)
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (SELECT 1 FROM purchase_order_line pc2
+			JOIN cost_subgroup cs2 ON cs2.id = pc2.cost_subgroup_id
+			WHERE pc2.po_id = po.id
+			  AND cs2.group_id = (SELECT hd.group_id FROM cost_subgroup hd WHERE hd.id = $%d AND hd.is_head))`, len(args)))
+	}
+
 	if len(lineFilterSQL) > 0 {
 		existsConds := make([]string, len(lineFilterSQL))
 		for i, col := range lineFilterSQL {
@@ -405,7 +448,8 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 	poRows, err := h.db.Query(context.Background(), `
 		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name, s.contact_phone,
 		       COALESCE(u.full_name, ''), po.project_code, po.status,
-		       po.total_amount, po.discount_amount, po.vat_amount, po.net_amount, po.currency
+		       po.total_amount, po.discount_amount, po.vat_amount, po.net_amount, po.currency,
+		       (`+poHeaderReceivingSQL+`) AS receiving_status
 		FROM purchase_order po
 		LEFT JOIN users    u ON u.id = po.requested_by
 		LEFT JOIN supplier s ON s.id = po.supplier_id
@@ -423,24 +467,35 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		QtyOrdered float64 `json:"qty_ordered"`
 		UnitPrice  float64 `json:"unit_price"`
 		Amount     float64 `json:"amount"`
+
+		CostSubgroupID      *int64  `json:"cost_subgroup_id"`
+		CostCode            *string `json:"cost_code"`
+		CostName            *string `json:"cost_name"`
+		HeadSubgroupID      *int64  `json:"head_subgroup_id"`
+		HeadCostCode        *string `json:"head_cost_code"`
+		HeadCostName        *string `json:"head_cost_name"`
+		QtyReceived         float64 `json:"qty_received"`
+		QtyOutstanding      float64 `json:"qty_outstanding"`
+		LineReceivingStatus *string `json:"line_receiving_status"`
 	}
 
 	type POGroup struct {
-		POID           int64         `json:"po_id"`
-		PONo           string        `json:"po_no"`
-		PODate         time.Time     `json:"po_date"`
-		SupplierID     *int64        `json:"supplier_id,omitempty"`
-		SupplierName   *string       `json:"supplier_name,omitempty"`
-		ContactPhone   *string       `json:"contact_phone,omitempty"`
-		RequestedBy    string        `json:"requested_by"`
-		ProjectCode    *string       `json:"project_code,omitempty"`
-		Status         string        `json:"status"`
-		TotalAmount    float64       `json:"total_amount"`
-		DiscountAmount float64       `json:"discount_amount"`
-		VATAmount      float64       `json:"vat_amount"`
-		NetAmount      float64       `json:"net_amount"`
-		Currency       string        `json:"currency"`
-		Lines          []LineItemRow `json:"lines"`
+		POID            int64         `json:"po_id"`
+		PONo            string        `json:"po_no"`
+		PODate          time.Time     `json:"po_date"`
+		SupplierID      *int64        `json:"supplier_id,omitempty"`
+		SupplierName    *string       `json:"supplier_name,omitempty"`
+		ContactPhone    *string       `json:"contact_phone,omitempty"`
+		RequestedBy     string        `json:"requested_by"`
+		ProjectCode     *string       `json:"project_code,omitempty"`
+		Status          string        `json:"status"`
+		TotalAmount     float64       `json:"total_amount"`
+		DiscountAmount  float64       `json:"discount_amount"`
+		VATAmount       float64       `json:"vat_amount"`
+		NetAmount       float64       `json:"net_amount"`
+		Currency        string        `json:"currency"`
+		ReceivingStatus *string       `json:"receiving_status"`
+		Lines           []LineItemRow `json:"lines"`
 	}
 
 	var groups []POGroup
@@ -450,7 +505,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		var g POGroup
 		if err := poRows.Scan(&g.POID, &g.PONo, &g.PODate, &g.SupplierID, &g.SupplierName, &g.ContactPhone,
 			&g.RequestedBy, &g.ProjectCode, &g.Status,
-			&g.TotalAmount, &g.DiscountAmount, &g.VATAmount, &g.NetAmount, &g.Currency); err != nil {
+			&g.TotalAmount, &g.DiscountAmount, &g.VATAmount, &g.NetAmount, &g.Currency, &g.ReceivingStatus); err != nil {
 			return err
 		}
 		g.Lines = []LineItemRow{}
@@ -470,10 +525,31 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		}
 		lineQueryWhere := strings.Join(lineQueryConds, " AND ")
 		lineRows, err := h.db.Query(context.Background(), `
-			SELECT pol.po_id, pol.mat_code, mn.mat_name, pol.qty_ordered, pol.unit_price, pol.amount
+			SELECT pol.po_id, pol.mat_code, mn.mat_name, pol.qty_ordered, pol.unit_price, pol.amount,
+			       pol.cost_subgroup_id,
+			       csb.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
+			       cs.subgroup_name AS cost_name,
+			       hd.id AS head_subgroup_id,
+			       csb.subject_code || cj.job_code || cg.group_code || hd.subgroup_code AS head_cost_code,
+			       hd.subgroup_name AS head_cost_name,
+			       COALESCE(pol.qty_received, 0) AS qty_received,
+			       CASE WHEN pol.status = 'CANCELLED' THEN 0
+			            ELSE GREATEST(pol.qty_ordered - COALESCE(pol.qty_received, 0), 0) END AS qty_outstanding,
+			       CASE WHEN pol.status = 'CANCELLED' THEN NULL
+			            WHEN COALESCE(pol.qty_received, 0) >= pol.qty_ordered THEN 'COMPLETE'
+			            WHEN COALESCE(pol.qty_received, 0) > 0 THEN 'PARTIAL'
+			            ELSE 'NOT_RECEIVED' END AS line_receiving_status
 			FROM purchase_order_line pol
 			LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
 			LEFT JOIN mat_name      mn ON mn.id = mc.mat_name_id
+			LEFT JOIN cost_subgroup cs  ON cs.id = pol.cost_subgroup_id
+			LEFT JOIN cost_group    cg  ON cg.id = cs.group_id
+			LEFT JOIN cost_job      cj  ON cj.id = cg.job_id
+			LEFT JOIN cost_subject  csb ON csb.id = cj.subject_id
+			LEFT JOIN LATERAL (
+			    SELECT h.id, h.subgroup_code, h.subgroup_name FROM cost_subgroup h
+			    WHERE h.group_id = cs.group_id AND h.is_head ORDER BY h.id LIMIT 1
+			) hd ON true
 			WHERE `+lineQueryWhere+`
 			ORDER BY pol.po_id, pol.line_no`, lineQueryArgs...)
 		if err != nil {
@@ -484,7 +560,9 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		for lineRows.Next() {
 			var poID int64
 			var l LineItemRow
-			if err := lineRows.Scan(&poID, &l.MatCode, &l.MatName, &l.QtyOrdered, &l.UnitPrice, &l.Amount); err != nil {
+			if err := lineRows.Scan(&poID, &l.MatCode, &l.MatName, &l.QtyOrdered, &l.UnitPrice, &l.Amount,
+				&l.CostSubgroupID, &l.CostCode, &l.CostName, &l.HeadSubgroupID, &l.HeadCostCode, &l.HeadCostName,
+				&l.QtyReceived, &l.QtyOutstanding, &l.LineReceivingStatus); err != nil {
 				return err
 			}
 			if g, ok := groupByID[poID]; ok {
@@ -913,6 +991,8 @@ func resolveLineCostSubgroupID(explicitCostSubgroupID, prLineID *int64, prLineCo
 // CreatePO godoc
 // @Summary      Create purchase order
 // @Description  Creates a PO as DRAFT or PENDING_APPROVAL. If pr_id is set, the referenced PR must be COMPLETED and any pr_line_id must belong to it. Line totals and the PO total are always computed server-side. Submitting with status=PENDING_APPROVAL opens a step-1 approval_request. job_code is required overall — if omitted and pr_id is set, it's auto-filled from the source PR's job_code (an explicit job_code in the body always wins). lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are optional free text, unvalidated.
+// @Description  Submit gate: when the resulting status is PENDING_APPROVAL, every line must have a cost_subgroup_id (after PR-line auto-fill) or the call fails with 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not affected.
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Accept       json
@@ -1024,6 +1104,26 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, effectiveOrderType, err := h.resolvePOAutoFields(ctx, req.PRID, req.OrderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
 		return err
+	}
+	{
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		}
+		if err := requireNonHeadCostCodes(ctx, h.db, ids, nil); err != nil {
+			return err
+		}
+	}
+	// Submit gate: DRAFT saves stay permissive; PENDING_APPROVAL needs a cost code on every
+	// line (after PR-line auto-fill), checked before any write.
+	if status == "PENDING_APPROVAL" {
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		}
+		if err := validateLinesHaveCostCode(ids); err != nil {
+			return err
+		}
 	}
 	// resolvePOAutoFields already makes order_type authoritative from the linked PR when
 	// pr_id is set (same precedence as project_code/warehouse_code/job_code below) — but a
@@ -1335,7 +1435,7 @@ const sqlPRPickerStatuses = `pr.status IN ('COMPLETED','PARTIALLY_FILLED')`
 
 // GetAvailablePRs godoc
 // @Summary      List PRs eligible to be linked to a new PO
-// @Description  Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least one line with remaining (qty_requested - qty_reserved - qty_ordered) > 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
+// @Description  Each row also carries project_code and project_name (LEFT JOIN project; null when the PR has no project). Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least one line with remaining (qty_requested - qty_reserved - qty_ordered) > 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -1349,9 +1449,12 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		    pr.status,
 		    pr.requested_by,
 		    u.full_name AS requested_by_name,
-		    pr.created_at
+		    pr.created_at,
+		    NULLIF(pr.project_code, '') AS project_code,
+		    NULLIF(p.project_name, '') AS project_name
 		FROM purchase_request pr
 		LEFT JOIN users u ON u.id = pr.requested_by
+		LEFT JOIN project p ON p.project_code = pr.project_code
 		WHERE `+sqlPRPickerStatuses+` AND pr.deleted_at IS NULL
 		  AND `+sqlPRHasOrderableLine+`
 		ORDER BY pr.created_at DESC`)
@@ -1367,12 +1470,14 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		RequestedBy     *int64    `json:"requested_by,omitempty"`
 		RequestedByName *string   `json:"requested_by_name,omitempty"`
 		CreatedAt       time.Time `json:"created_at"`
+		ProjectCode     *string   `json:"project_code"` // null for PRs without a project (e.g. OH order types)
+		ProjectName     *string   `json:"project_name"`
 	}
 
 	items := []AvailablePR{}
 	for rows.Next() {
 		var r AvailablePR
-		if err := rows.Scan(&r.PRID, &r.PRNo, &r.Status, &r.RequestedBy, &r.RequestedByName, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.PRID, &r.PRNo, &r.Status, &r.RequestedBy, &r.RequestedByName, &r.CreatedAt, &r.ProjectCode, &r.ProjectName); err != nil {
 			return err
 		}
 		items = append(items, r)
@@ -1455,6 +1560,8 @@ func (h *POHandler) GetPRLinesForPO(c *fiber.Ctx) error {
 // UpdatePO godoc
 // @Summary      Update a DRAFT purchase order
 // @Description  Replaces header fields and all lines of a PO that is still in DRAFT status. Not usable once the PO has left DRAFT (use PUT /po/{id}/edit-approved for APPROVED POs; other statuses cannot be edited). Line totals and the PO total are always recomputed server-side. Same pr_id/project_code/requested_by/warehouse_code auto-fill rules as POST /po. job_code: omit to keep the PO's current value; an explicit value (or the linked PR's job_code, if pr_id is (re)sent) always overrides it. lines[].cost_subgroup_id: same precedence as POST /po — an explicit value always wins over the auto-fill from lines[].pr_line_id. receiver_name/receiver_phone are optional free text, unvalidated.
+// @Description  Submit gate: when the resulting status is PENDING_APPROVAL, every line must have a cost_subgroup_id (after PR-line auto-fill) or the call fails with 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not affected.
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Accept       json
@@ -1587,6 +1694,29 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, effectiveOrderType, err := h.resolvePOAutoFields(ctx, req.PRID, orderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
 		return err
+	}
+	{
+		stored, err := storedCostSubgroupIDs(ctx, h.db, "purchase_order_line", poID)
+		if err != nil {
+			return err
+		}
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		}
+		if err := requireNonHeadCostCodes(ctx, h.db, ids, stored); err != nil {
+			return err
+		}
+	}
+	// Submit gate (same as Create): PENDING_APPROVAL needs a cost code on every line.
+	if newStatus == "PENDING_APPROVAL" {
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		}
+		if err := validateLinesHaveCostCode(ids); err != nil {
+			return err
+		}
 	}
 	// Same authoritative-from-PR precedence and explicit-conflict rejection as Create — see
 	// the comment there. This was previously discarded (`_`) and the UPDATE below wrote the
@@ -1903,6 +2033,8 @@ func (h *POHandler) Approve(c *fiber.Ctx) error {
 // EditApprovedPO godoc
 // @Summary      Edit an already-approved PO (requires reason, triggers re-approval)
 // @Description  Allows editing a PO with status=APPROVED or PENDING_REAPPROVAL, provided the PO's created_at is less than 1 year old. Requires a mandatory non-empty reason, logged to po_edit_log. Replaces header fields and all lines, recomputes totals server-side, sets status to PENDING_REAPPROVAL, and reopens the PO's existing approval_request row (same approval_id / assigned_to — not a fresh approver lookup). Idempotent while already PENDING_REAPPROVAL: repeated saves before the approver acts just keep re-editing and re-pending the same approval_request, so the frontend can call this endpoint for every save in this flow, not just the first. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id. receiver_name/receiver_phone are editable here too, same as payment_terms/remarks.
+// @Description  Re-submits the PO (-> PENDING_REAPPROVAL), so every line must have a cost_subgroup_id after the edit (after PR-line auto-fill) or the call fails with 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)".
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Accept       json
@@ -2005,6 +2137,30 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 				prLineCostSubgroup[id] = costSubgroupID
 			}
 			rows.Close()
+		}
+	}
+
+	{
+		stored, err := storedCostSubgroupIDs(ctx, h.db, "purchase_order_line", poID)
+		if err != nil {
+			return err
+		}
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		}
+		if err := requireNonHeadCostCodes(ctx, h.db, ids, stored); err != nil {
+			return err
+		}
+	}
+	// Edit-approved always re-submits (-> PENDING_REAPPROVAL): every line needs a cost code.
+	{
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		}
+		if err := validateLinesHaveCostCode(ids); err != nil {
+			return err
 		}
 	}
 
@@ -2462,6 +2618,7 @@ func (h *POHandler) Send(c *fiber.Ctx) error {
 // AddLines godoc
 // @Summary      Add lines to an existing purchase order
 // @Description  Inserts purchase_order_line rows. For lines that reference a pr_line_id, increments purchase_request_line.qty_ordered and re-evaluates the parent PR status to PARTIALLY_FILLED or FULFILLED. Runs in one transaction with SELECT ... FOR UPDATE on the touched PR lines to prevent concurrent double-booking. lines[].cost_subgroup_id: an explicit value always wins; if omitted and lines[].pr_line_id is set, it's auto-filled from that PR line's cost_subgroup_id.
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Accept       json
@@ -2579,6 +2736,19 @@ func (h *POHandler) AddLines(c *fiber.Ctx) error {
 		return err
 	}
 
+	{
+		stored, err := storedCostSubgroupIDs(ctx, tx, "purchase_order_line", poID)
+		if err != nil {
+			return err
+		}
+		ids := make([]*int64, len(req.Lines))
+		for i, l := range req.Lines {
+			ids[i] = resolveLineCostSubgroupID(l.CostSubgroupID, l.PRLineID, prLineCostSubgroup)
+		}
+		if err := requireNonHeadCostCodes(ctx, tx, ids, stored); err != nil {
+			return err
+		}
+	}
 	insertedIDs := make([]int64, 0, len(req.Lines))
 	for i, l := range req.Lines {
 		desc, err := normalizeDescription(l.Description)

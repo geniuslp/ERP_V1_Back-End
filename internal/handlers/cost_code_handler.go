@@ -271,44 +271,43 @@ func (h *CostCodeHandler) DeactivateGroup(c *fiber.Ctx) error {
 
 // ListSubgroupsByGroup godoc
 // @Summary      List cost subgroups filtered by group_id
+// @Description  Rows keep their keys (id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at) and gain is_head (bool, always present). Head (roll-up) subgroups are hidden unless include_head=true; the master cost-code page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id}, .../{id}/deactivate and .../{id}/head.
 // @Tags         CostCode
 // @Security     BearerAuth
 // @Produce      json
-// @Param        group_id  query  int  false  "group_id filter"
+// @Param        group_id      query  int   false  "group_id filter"
+// @Param        include_head  query  bool  false  "true = also return Head subgroups (default false hides them)"
 // @Success      200  {object}  fiber.Map
 // @Router       /master/cost-code/subgroups [get]
 func (h *CostCodeHandler) ListSubgroupsByGroup(c *fiber.Ctx) error {
 	groupID := c.QueryInt("group_id", 0)
+	includeHead := c.QueryBool("include_head", false)
 
-	var rows pgx.Rows
-	var err error
-	if groupID > 0 {
-		rows, err = h.db.Query(context.Background(),
-			`SELECT id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at
-			 FROM cost_subgroup WHERE group_id = $1 ORDER BY subgroup_code`, groupID)
-	} else {
-		rows, err = h.db.Query(context.Background(),
-			`SELECT id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at
-			 FROM cost_subgroup ORDER BY subgroup_code`)
-	}
+	// $1 = group_id (0 = all groups), $2 = include_head. Ordering unchanged.
+	rows, err := h.db.Query(context.Background(),
+		`SELECT id, group_id, subgroup_code, subgroup_name, is_active, is_head, created_at, updated_at
+		 FROM cost_subgroup
+		 WHERE ($1::int = 0 OR group_id = $1) AND ($2::bool OR NOT is_head)
+		 ORDER BY subgroup_code`, groupID, includeHead)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
 	type subgroup struct {
-		ID           int64  `json:"id"`
-		GroupID      int64  `json:"group_id"`
-		SubgroupCode string `json:"subgroup_code"`
-		SubgroupName string `json:"subgroup_name"`
-		IsActive     bool   `json:"is_active"`
+		ID           int64     `json:"id"`
+		GroupID      int64     `json:"group_id"`
+		SubgroupCode string    `json:"subgroup_code"`
+		SubgroupName string    `json:"subgroup_name"`
+		IsActive     bool      `json:"is_active"`
+		IsHead       bool      `json:"is_head"`
 		CreatedAt    time.Time `json:"created_at"`
 		UpdatedAt    time.Time `json:"updated_at"`
 	}
 	var items []subgroup
 	for rows.Next() {
 		var s subgroup
-		if err := rows.Scan(&s.ID, &s.GroupID, &s.SubgroupCode, &s.SubgroupName, &s.IsActive, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.GroupID, &s.SubgroupCode, &s.SubgroupName, &s.IsActive, &s.IsHead, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return err
 		}
 		items = append(items, s)
@@ -440,6 +439,7 @@ type CostCodeFull struct {
 	SubgroupCode string `json:"subgroup_code"`
 	SubgroupName string `json:"subgroup_name"`
 	IsActive     bool   `json:"is_active"`
+	IsHead       bool   `json:"is_head"` // Head = roll-up node, not selectable on documents
 }
 
 const costCodeFullQuery = `
@@ -450,7 +450,7 @@ const costCodeFullQuery = `
 		j.job_code, j.job_name,
 		g.group_code, g.group_name,
 		sg.subgroup_code, sg.subgroup_name,
-		sg.is_active
+		sg.is_active, sg.is_head
 	FROM cost_subgroup sg
 	JOIN cost_group g ON g.id = sg.group_id
 	JOIN cost_job j ON j.id = g.job_id
@@ -464,15 +464,22 @@ const costCodeFullQuery = `
 // @Security     BearerAuth
 // @Produce      json
 // @Param        scope  query  string  false  "oh = only OH/General active subgroups"
+// @Param        include_head  query  bool  false  "true = also return Head (roll-up) subgroups; default false hides them. Every row carries is_head."
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
 // @Router       /master/cost-code/full [get]
 func (h *CostCodeHandler) ListFull(c *fiber.Ctx) error {
-	query := costCodeFullQuery + ` ORDER BY cost_code`
+	// Head subgroups (is_head) are roll-up nodes, not selectable: hidden unless include_head=true
+	// (used by the master cost-code page).
+	headFilter := ` NOT sg.is_head`
+	if c.QueryBool("include_head", false) {
+		headFilter = ` TRUE`
+	}
+	query := costCodeFullQuery + ` WHERE` + headFilter + ` ORDER BY cost_code`
 	switch scope := c.Query("scope"); scope {
 	case "":
 	case "oh":
-		query = costCodeFullQuery + ` WHERE sub.subject_code = 'OH' AND sg.is_active ORDER BY cost_code`
+		query = costCodeFullQuery + ` WHERE sub.subject_code = 'OH' AND sg.is_active AND` + headFilter + ` ORDER BY cost_code`
 	default:
 		return fiber.NewError(fiber.StatusBadRequest, "scope ต้องเป็น oh หรือไม่ระบุ")
 	}
@@ -487,7 +494,7 @@ func (h *CostCodeHandler) ListFull(c *fiber.Ctx) error {
 		var f CostCodeFull
 		if err := rows.Scan(&f.SubgroupID, &f.CostCode, &f.SubjectCode, &f.SubjectName,
 			&f.JobCode, &f.JobName, &f.GroupCode, &f.GroupName,
-			&f.SubgroupCode, &f.SubgroupName, &f.IsActive); err != nil {
+			&f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead); err != nil {
 			return err
 		}
 		items = append(items, f)
@@ -540,7 +547,7 @@ func (h *CostCodeHandler) ExportCostCode(c *fiber.Ctx) error {
 		var fr CostCodeFull
 		if err := rows.Scan(&fr.SubgroupID, &fr.CostCode, &fr.SubjectCode, &fr.SubjectName,
 			&fr.JobCode, &fr.JobName, &fr.GroupCode, &fr.GroupName,
-			&fr.SubgroupCode, &fr.SubgroupName, &fr.IsActive); err != nil {
+			&fr.SubgroupCode, &fr.SubgroupName, &fr.IsActive, &fr.IsHead); err != nil {
 			return err
 		}
 		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIdx), fr.SubjectCode)
@@ -908,7 +915,7 @@ type CostCodeOption struct {
 
 // GetCostCodeOptions godoc
 // @Summary      Flat list of active cost codes for a PR-line Cost Code dropdown
-// @Description  Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active cost_subgroup.
+// @Description  Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active, non-Head cost_subgroup (Head subgroups are not selectable).
 // @Tags         CostCode
 // @Security     BearerAuth
 // @Produce      json
@@ -916,7 +923,7 @@ type CostCodeOption struct {
 // @Router       /master/cost-code/options [get]
 func (h *CostCodeHandler) GetCostCodeOptions(c *fiber.Ctx) error {
 	rows, err := h.db.Query(context.Background(), costCodeFullQuery+`
-		WHERE sg.is_active = true
+		WHERE sg.is_active = true AND NOT sg.is_head
 		ORDER BY cost_code`)
 	if err != nil {
 		return err
@@ -928,7 +935,7 @@ func (h *CostCodeHandler) GetCostCodeOptions(c *fiber.Ctx) error {
 		var f CostCodeFull
 		if err := rows.Scan(&f.SubgroupID, &f.CostCode, &f.SubjectCode, &f.SubjectName,
 			&f.JobCode, &f.JobName, &f.GroupCode, &f.GroupName,
-			&f.SubgroupCode, &f.SubgroupName, &f.IsActive); err != nil {
+			&f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead); err != nil {
 			return err
 		}
 		opts = append(opts, CostCodeOption{ID: f.SubgroupID, CostCode: f.CostCode, SubgroupName: f.SubgroupName})
@@ -937,4 +944,61 @@ func (h *CostCodeHandler) GetCostCodeOptions(c *fiber.Ctx) error {
 		opts = []CostCodeOption{}
 	}
 	return c.JSON(fiber.Map{"success": true, "data": opts})
+}
+
+// ─── Head toggle ─────────────────────────────────────────────────────────────
+
+type SetSubgroupHeadReq struct {
+	IsHead *bool `json:"is_head"`
+}
+
+// SetSubgroupHead godoc
+// @Summary      Mark / unmark a cost subgroup as Head (roll-up node, not selectable on documents)
+// @Description  Same access as the other cost-code master edits (JWT only; no extra role guard). Setting is_head=true is always allowed, even when the subgroup is already used — existing data is left untouched, only NEW selections are blocked. The response carries the updated row (incl. is_head) and in_use: {pr_lines, po_lines, materials} counts so the UI can warn. Setting false just un-hides it.
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int                 true  "Subgroup ID"
+// @Param        body  body  SetSubgroupHeadReq  true  "is_head"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /master/cost-code/subgroups/{id}/head [patch]
+func (h *CostCodeHandler) SetSubgroupHead(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req SetSubgroupHeadReq
+	if err := c.BodyParser(&req); err != nil || req.IsHead == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "is_head (true/false) is required")
+	}
+	ctx := context.Background()
+	tag, err := h.db.Exec(ctx, `UPDATE cost_subgroup SET is_head=$1, updated_at=NOW() WHERE id=$2`, *req.IsHead, id)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if tag.RowsAffected() == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "subgroup not found")
+	}
+	var f CostCodeFull
+	if err := h.db.QueryRow(ctx, costCodeFullQuery+` WHERE sg.id = $1`, id).Scan(
+		&f.SubgroupID, &f.CostCode, &f.SubjectCode, &f.SubjectName, &f.JobCode, &f.JobName,
+		&f.GroupCode, &f.GroupName, &f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead); err != nil {
+		return err
+	}
+	var prLines, poLines, materials int64
+	if err := h.db.QueryRow(ctx, `
+		SELECT (SELECT COUNT(*) FROM purchase_request_line WHERE cost_subgroup_id = $1),
+		       (SELECT COUNT(*) FROM purchase_order_line WHERE cost_subgroup_id = $1),
+		       (SELECT COUNT(*) FROM material_code WHERE cost_subgroup_id = $1)`, id,
+	).Scan(&prLines, &poLines, &materials); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"subgroup_id": f.SubgroupID, "cost_code": f.CostCode, "subgroup_code": f.SubgroupCode,
+		"subgroup_name": f.SubgroupName, "is_active": f.IsActive, "is_head": f.IsHead,
+		"in_use": fiber.Map{"pr_lines": prLines, "po_lines": poLines, "materials": materials},
+	}})
 }

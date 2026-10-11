@@ -8,6 +8,7 @@ type User struct {
 	ID           int64          `json:"id" db:"id"`
 	Username     string         `json:"username" db:"username"`
 	FullName     string         `json:"full_name" db:"full_name"`
+	FullNameTH   *string        `json:"full_name_th,omitempty" db:"full_name_th"`
 	Email        *string        `json:"email,omitempty" db:"email"`
 	PasswordHash string         `json:"-" db:"password_hash"`
 	LocationCode *string        `json:"location_code,omitempty" db:"location_code"`
@@ -26,6 +27,7 @@ type CreateUserRequest struct {
 	Username     string   `json:"username" validate:"required,max=50"`
 	Password     string   `json:"password" validate:"required,min=6"`
 	FullName     string   `json:"full_name" validate:"required,max=200"`
+	FullNameTH   *string  `json:"full_name_th,omitempty" validate:"omitempty,max=200"`
 	Email        *string  `json:"email,omitempty"`
 	LocationCode *string  `json:"location_code,omitempty"`
 	EmployeeCode *string  `json:"employee_code,omitempty"`
@@ -35,6 +37,7 @@ type CreateUserRequest struct {
 
 type UpdateUserRequest struct {
 	FullName     string  `json:"full_name" validate:"required,max=200"`
+	FullNameTH   *string `json:"full_name_th,omitempty" validate:"omitempty,max=200"` // nil = absent (keep stored value); "" = clear
 	Email        *string `json:"email,omitempty"`
 	LocationCode *string `json:"location_code,omitempty"`
 	EmployeeCode *string `json:"employee_code,omitempty"`
@@ -904,6 +907,9 @@ type CreatePRLine struct {
 	// DeductStock: whether Submit should reserve this line against stock_item.qty.
 	// Omit (nil) to keep today's default behavior (true).
 	DeductStock *bool `json:"deduct_stock,omitempty"`
+	// MemoLineID: optional — the memo_line (of this PR's memo_id) this PR line takes. One memo_line can be
+	// taken by only one active PR.
+	MemoLineID *int64 `json:"memo_line_id,omitempty"`
 }
 
 // UpdatePRRequest edits a PR's header and lines. Only allowed while status='DRAFT' (including
@@ -939,6 +945,9 @@ type UpdatePRLine struct {
 	// DeductStock: whether Submit should reserve this line against stock_item.qty.
 	// Omit (nil) to keep today's default behavior (true).
 	DeductStock *bool `json:"deduct_stock,omitempty"`
+	// MemoLineID: optional — the memo_line (of this PR's memo_id) this PR line takes. One memo_line can be
+	// taken by only one active PR.
+	MemoLineID *int64 `json:"memo_line_id,omitempty"`
 }
 
 // ─── Purchase Order ───────────────────────────────────────────────────────────
@@ -1357,6 +1366,10 @@ type Memo struct {
 	ApproverName    *string          `json:"approver_name,omitempty"`
 	ProjectName     *string          `json:"project_name,omitempty"`
 	ApprovedAt      *time.Time       `json:"approved_at,omitempty"`
+	// Line-usage counts — only populated by GET /memo when exclude_used_by_pr=true or include_used=true.
+	TotalLines     *int             `json:"total_lines,omitempty"`
+	TakenLines     *int             `json:"taken_lines,omitempty"`
+	RemainingLines *int             `json:"remaining_lines,omitempty"`
 	Lines           []MemoLine       `json:"lines,omitempty"`
 	Attachments     []MemoAttachment `json:"attachments,omitempty"`
 
@@ -1416,6 +1429,9 @@ type CancelMemoRequest struct {
 }
 
 type MemoLineRequest struct {
+	// ID identifies an existing memo_line on update (keeps its id stable so purchase_request_line.memo_line_id
+	// references survive). Omit for new lines; ignored on create.
+	ID          *int64  `json:"id,omitempty"`
 	LineNo      int     `json:"line_no"`
 	Description string  `json:"description"`
 	Unit        string  `json:"unit"`
@@ -1433,6 +1449,7 @@ type MemoListFilter struct {
 	Status          string `query:"status"`
 	MyApprovals     string `query:"my_approvals"`
 	ExcludeUsedByPR string `query:"exclude_used_by_pr"`
+	IncludeUsed     string `query:"include_used"`
 	AllUsers        string `query:"all_users"`
 	Page            int    `query:"page"`
 	PageSize        int    `query:"page_size"`
@@ -1710,13 +1727,17 @@ type PaymentLog struct {
 	PaidBy     int64     `json:"paid_by"`
 	PaidByName *string   `json:"paid_by_name,omitempty"`
 	Remark     *string   `json:"remark,omitempty"`
-	ReversesID *int64    `json:"reverses_id,omitempty"`
+	ReversesID *int64    `json:"reverses_id"`
 	CreatedAt  time.Time `json:"created_at"`
 	CreatedBy  int64     `json:"created_by"`
 }
 
+type CancelPaymentRequest struct {
+	Reason string `json:"reason"`
+}
+
 type RecordPaymentRequest struct {
-	DocType    string  `json:"doc_type"` // 'PO' | 'WO'
+	DocType    string  `json:"doc_type"` // 'PO' | 'WO' | 'PC'
 	DocID      int64   `json:"doc_id"`
 	AmountPaid float64 `json:"amount_paid"`
 	PaidDate   *string `json:"paid_date,omitempty"`
@@ -1741,10 +1762,20 @@ type PayableDoc struct {
 	// doc type) — a live-computed aggregate over purchase_order_line vs grn_line, see
 	// FinanceHandler.ListPayableDocs. One of FULLY_RECEIVED/PARTIALLY_RECEIVED/NOT_RECEIVED.
 	ReceivingStatus *string `json:"receiving_status,omitempty"`
+	// ProjectCount/Projects list the distinct projects of the document: one header project for
+	// PO/WO, the distinct line projects (line order) for petty cash (doc_type 'PC').
+	// project_code/project_name above stay the primary (first) project.
+	ProjectCount int                 `json:"project_count"`
+	Projects     []PayableDocProject `json:"projects"`
+}
+
+type PayableDocProject struct {
+	ProjectCode string  `json:"project_code"`
+	ProjectName *string `json:"project_name"`
 }
 
 type PayableDocFilter struct {
-	DocType     string `query:"doc_type"` // required: PO | WO
+	DocType     string `query:"doc_type"` // required: PO | WO | PC
 	ProjectCode string `query:"project_code"`
 	// Status is intentionally not filterable — ListPayableDocs always fixes it to
 	// APPROVED, since only approved docs are payable.
@@ -1763,6 +1794,18 @@ type PayableDocFilter struct {
 // One document can span multiple projects — project_code lives on each line, not the header
 // (petty_cash_requisition has no project_code column; petty_cash_requisition_line.project_code
 // is NOT NULL). The header only ever shows an aggregate (ProjectCodes) built from its lines.
+
+// PettyCashAttachment is one file attached to a petty cash requisition (file_path is an absolute URL in responses).
+type PettyCashAttachment struct {
+	ID             int64     `json:"id"`
+	FileName       string    `json:"file_name"`
+	FilePath       string    `json:"file_path"`
+	FileSize       *int64    `json:"file_size"`
+	FileType       *string   `json:"file_type"`
+	UploadedAt     time.Time `json:"uploaded_at"`
+	UploadedBy     *int64    `json:"uploaded_by"`
+	UploadedByName *string   `json:"uploaded_by_name"`
+}
 
 type PettyCashRequisition struct {
 	ID             int64     `json:"id" db:"id"`
@@ -1788,11 +1831,26 @@ type PettyCashRequisition struct {
 	CreatedBy      int64     `json:"created_by" db:"created_by"`
 	UpdatedBy      *int64    `json:"updated_by,omitempty" db:"updated_by"`
 
+	// Tab A header fields
+	DocType         string  `json:"doc_type" db:"doc_type"`
+	BranchCode      *string `json:"branch_code,omitempty" db:"branch_code"`
+	PayeeEmpCode    *string `json:"payee_emp_code,omitempty" db:"payee_emp_code"`
+	PayeeName       *string `json:"payee_name,omitempty" db:"payee_name"`
+	ProjectCode     *string `json:"project_code,omitempty" db:"project_code"`
+	ProjectName     *string `json:"project_name,omitempty" db:"project_name"`
+	OrderType       *string `json:"order_type,omitempty" db:"order_type"`
+	DeptCode        *string `json:"dept_code,omitempty" db:"dept_code"`
+	DeptName        *string `json:"dept_name,omitempty" db:"dept_name"`
+	RefDocNo        *string `json:"ref_doc_no,omitempty" db:"ref_doc_no"`
+	ApproverRemarks *string `json:"approver_remarks,omitempty" db:"approver_remarks"`
+
 	// populated via JOIN/aggregate (ไม่ได้เก็บใน table)
 	ProjectCodes    []string        `json:"project_codes,omitempty"`
 	RequestedByName *string         `json:"requested_by_name,omitempty"`
 	ApproverName    *string         `json:"approver_name,omitempty"`
 	Lines           []PettyCashLine `json:"lines,omitempty"`
+	Attachments     []PettyCashAttachment `json:"attachments"`
+	ApprovalChain   any                   `json:"approval_chain,omitempty"` // detail endpoint only
 }
 
 type PettyCashLine struct {
@@ -1800,7 +1858,7 @@ type PettyCashLine struct {
 	PCID           int64    `json:"pc_id" db:"pc_id"`
 	LineNo         int      `json:"line_no" db:"line_no"`
 	ProjectCode    string   `json:"project_code" db:"project_code"`
-	MatCode        string   `json:"mat_code" db:"mat_code"`
+	MatCode        *string  `json:"mat_code,omitempty" db:"mat_code"`
 	CostSubgroupID *int64   `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
 	Description    *string  `json:"description,omitempty" db:"description"`
 	Qty            float64  `json:"qty" db:"qty"`
@@ -1814,6 +1872,25 @@ type PettyCashLine struct {
 	LineNet        float64  `json:"line_net" db:"line_net"`
 	WhtRate        *float64 `json:"wht_rate,omitempty" db:"wht_rate"`
 	Remarks        *string  `json:"remarks,omitempty" db:"remarks"`
+
+	// Free-form expense line fields (vendor / tax invoice / withholding tax live on the line).
+	SupplierID      *int64   `json:"supplier_id,omitempty" db:"supplier_id"`
+	SupplierName    *string  `json:"supplier_name,omitempty" db:"supplier_name"`
+	SupplierAddress *string  `json:"supplier_address,omitempty" db:"supplier_address"`
+	SupplierTaxID   *string  `json:"supplier_tax_id,omitempty" db:"supplier_tax_id"`
+	HasTaxInvoice   bool     `json:"has_tax_invoice" db:"has_tax_invoice"`
+	TaxInvoiceNo    *string  `json:"tax_invoice_no,omitempty" db:"tax_invoice_no"`
+	TaxInvoiceDate  *string  `json:"tax_invoice_date,omitempty"` // YYYY-MM-DD
+	HasWht          bool     `json:"has_wht" db:"has_wht"`
+	WhtBaseAmount   *float64 `json:"wht_base_amount,omitempty" db:"wht_base_amount"`
+	TaxFormCode     *string  `json:"tax_form_code,omitempty" db:"tax_form_code"`
+	WhtIncomeTypeID *int64   `json:"wht_income_type_id,omitempty" db:"wht_income_type_id"`
+	WhtPayDate      *string  `json:"wht_pay_date,omitempty"` // YYYY-MM-DD
+
+	// read-only, joined at read time
+	MatNameTH      *string `json:"mat_name_th,omitempty"`
+	CostCode       *string `json:"cost_code,omitempty"` // subject||job||group||subgroup
+	WhtIncomeLabel *string `json:"wht_income_label,omitempty"`
 
 	// display-only, joined at read time (never persisted on this table) — all resolved
 	// per-LINE from this line's own project_code, not the header.
@@ -1957,27 +2034,56 @@ type CreatePettyCashRequest struct {
 	ApproverID   *int64                    `json:"approver_id"`
 	Status       string                    `json:"status,omitempty"` // "DRAFT" | "PENDING_APPROVAL" — defaults to DRAFT
 	Remarks      string                    `json:"remarks"`
-	Lines        []CreatePettyCashLineItem `json:"lines" validate:"required,min=1"`
+	DocType      string                    `json:"doc_type"`
+	BranchCode   string                    `json:"branch_code"`
+	PayeeEmpCode string                    `json:"payee_emp_code"`
+	PayeeName    string                    `json:"payee_name"`
+	ProjectCode  string                    `json:"project_code"`
+	ProjectName  string                    `json:"project_name"`
+	OrderType    string                    `json:"order_type"`
+	DeptCode     string                    `json:"dept_code"`
+	DeptName     string                    `json:"dept_name"`
+	RefDocNo     string                    `json:"ref_doc_no"`
+	Lines        []CreatePettyCashLineItem `json:"lines"`
 }
 
 type CreatePettyCashLineItem struct {
 	ProjectCode    string   `json:"project_code" validate:"required"`
-	MatCode        string   `json:"mat_code" validate:"required"`
+	MatCode        string   `json:"mat_code"` // optional — the name goes in description when absent
 	CostSubgroupID *int64   `json:"cost_subgroup_id"`
 	Description    string   `json:"description"`
-	Qty            float64  `json:"qty" validate:"required,gt=0"`
-	UnitPrice      float64  `json:"unit_price" validate:"required,gte=0"`
-	Discount       float64  `json:"discount"`
-	DiscType       string   `json:"disc_type"`
-	WhtRate        *float64 `json:"wht_rate"`
-	Remarks        *string  `json:"remarks"`
+	// Amount (before VAT) is the new-style input; legacy callers may omit it and send qty*unit_price.
+	// Qty/UnitPrice/Discount/DiscType/WhtRate are only read for that legacy fallback — new-style
+	// lines are stored as qty=1, unit_price=amount, no discount; wht_rate comes from the income type.
+	Amount    *float64 `json:"amount"`
+	Qty       float64  `json:"qty"`
+	UnitPrice float64  `json:"unit_price"`
+	Discount  float64  `json:"discount"`
+	DiscType  string   `json:"disc_type"`
+	WhtRate   *float64 `json:"wht_rate"` // ignored — snapshot from wht_income_type.rate
+	Remarks   *string  `json:"remarks"`
+
+	SupplierID      *int64   `json:"supplier_id"`
+	SupplierName    string   `json:"supplier_name"`
+	SupplierAddress string   `json:"supplier_address"`
+	SupplierTaxID   string   `json:"supplier_tax_id"`
+	HasTaxInvoice   bool     `json:"has_tax_invoice"`
+	TaxInvoiceNo    string   `json:"tax_invoice_no"`
+	TaxInvoiceDate  string   `json:"tax_invoice_date"` // YYYY-MM-DD
+	HasWht          bool     `json:"has_wht"`
+	WhtBaseAmount   *float64 `json:"wht_base_amount"`
+	TaxFormCode     string   `json:"tax_form_code"`
+	WhtIncomeTypeID *int64   `json:"wht_income_type_id"`
+	WhtPayDate      string   `json:"wht_pay_date"` // YYYY-MM-DD
 }
 
 type UpdatePettyCashRequest = CreatePettyCashRequest
 
 type PettyCashListFilter struct {
 	Status      string `query:"status"`
-	ProjectCode string `query:"project_code"` // matches any line's project_code
+	ProjectCode string `query:"project_code"` // header project_code OR any line's project_code
+	DeptCode    string `query:"dept_code"`
+	OrderType   string `query:"order_type"`
 	DateFrom    string `query:"date_from"`
 	DateTo      string `query:"date_to"`
 	Page        int    `query:"page"`

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -51,53 +53,360 @@ func NewPettyCashHandler(db *pgxpool.Pool) *PettyCashHandler {
 	return &PettyCashHandler{db: db}
 }
 
-func (h *PettyCashHandler) generatePCNo(ctx context.Context) (string, error) {
-	var seq int64
-	if err := h.db.QueryRow(ctx,
-		`SELECT COALESCE(MAX(id), 0)+1 FROM petty_cash_requisition`,
-	).Scan(&seq); err != nil {
-		return "", err
+// pcHeaderLimits are the varchar limits of the Tab A header columns (verified against
+// information_schema); lengths are counted in runes, not bytes, because most of this text is Thai.
+var pcHeaderLimits = []struct {
+	label string
+	max   int
+	get   func(r *models.CreatePettyCashRequest) string
+}{
+	{"doc_type", 30, func(r *models.CreatePettyCashRequest) string { return r.DocType }},
+	{"branch_code", 20, func(r *models.CreatePettyCashRequest) string { return r.BranchCode }},
+	{"payee_emp_code", 30, func(r *models.CreatePettyCashRequest) string { return r.PayeeEmpCode }},
+	{"payee_name", 200, func(r *models.CreatePettyCashRequest) string { return r.PayeeName }},
+	{"project_code", 20, func(r *models.CreatePettyCashRequest) string { return r.ProjectCode }},
+	{"project_name", 200, func(r *models.CreatePettyCashRequest) string { return r.ProjectName }},
+	{"dept_code", 20, func(r *models.CreatePettyCashRequest) string { return r.DeptCode }},
+	{"dept_name", 200, func(r *models.CreatePettyCashRequest) string { return r.DeptName }},
+	{"ref_doc_no", 50, func(r *models.CreatePettyCashRequest) string { return r.RefDocNo }},
+	{"currency", 10, func(r *models.CreatePettyCashRequest) string { return r.Currency }},
+}
+
+func pcNilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
 	}
-	return fmt.Sprintf("PC-%s-%06d", time.Now().Format("2006"), seq), nil
+	return &s
 }
 
-type pcLineCalc struct {
-	base, discAmt, afterDisc, vatAmt, whtAmt, net float64
-	discType                                      string
-}
-
-// calcPettyCashLines mirrors POHandler.Create's discount/VAT/WHT calculation exactly (po.go ~line 605).
-func calcPettyCashLines(lines []models.CreatePettyCashLineItem, useDiscount, useVat, useWht bool) ([]pcLineCalc, float64, float64, float64) {
-	calcs := make([]pcLineCalc, len(lines))
-	var totalAmount, discountAmount, whtAmount float64
-	for i, l := range lines {
-		lc := pcLineCalc{base: l.Qty * l.UnitPrice}
-		lc.discType = l.DiscType
-		if lc.discType == "" {
-			lc.discType = "pct"
+// prepareHeader trims and validates the Tab A header fields before any SQL runs, applies the
+// doc_type default, and pushes the header project_code down into lines that left theirs empty.
+func (h *PettyCashHandler) prepareHeader(ctx context.Context, req *models.CreatePettyCashRequest) error {
+	req.DocType = strings.TrimSpace(req.DocType)
+	req.BranchCode = strings.TrimSpace(req.BranchCode)
+	req.PayeeEmpCode = strings.TrimSpace(req.PayeeEmpCode)
+	req.PayeeName = strings.TrimSpace(req.PayeeName)
+	req.ProjectCode = strings.TrimSpace(req.ProjectCode)
+	req.ProjectName = strings.TrimSpace(req.ProjectName)
+	req.OrderType = strings.TrimSpace(req.OrderType)
+	req.DeptCode = strings.TrimSpace(req.DeptCode)
+	req.DeptName = strings.TrimSpace(req.DeptName)
+	req.RefDocNo = strings.TrimSpace(req.RefDocNo)
+	req.Currency = strings.TrimSpace(req.Currency)
+	if req.DocType == "" {
+		req.DocType = "PETTY_CASH"
+	}
+	for _, f := range pcHeaderLimits {
+		if n := utf8.RuneCountInString(f.get(req)); n > f.max {
+			return fiber.NewError(fiber.StatusBadRequest,
+				fmt.Sprintf("%s ยาวเกินกำหนด (สูงสุด %d ตัวอักษร, ส่งมา %d)", f.label, f.max, n))
 		}
-		if useDiscount && l.Discount != 0 {
-			if lc.discType == "amt" {
-				lc.discAmt = l.Discount
-			} else {
-				lc.discAmt = lc.base * l.Discount / 100
+	}
+	if req.OrderType != "" {
+		if err := validateOrderType(req.OrderType); err != nil {
+			return err
+		}
+	}
+	if req.ProjectCode != "" {
+		var exists bool
+		if err := h.db.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, req.ProjectCode,
+		).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusBadRequest, "ไม่พบโครงการที่ระบุ (project_code ไม่ถูกต้อง)")
+		}
+	}
+	for i := range req.Lines {
+		req.Lines[i].ProjectCode = strings.TrimSpace(req.Lines[i].ProjectCode)
+		if req.Lines[i].ProjectCode == "" {
+			req.Lines[i].ProjectCode = req.ProjectCode
+		}
+	}
+	return nil
+}
+
+const pcRemarksRequiredMsg = "กรุณากรอกหมายเหตุผู้เบิก"
+const pcLinesRequiredMsg = "กรุณาเพิ่มรายการอย่างน้อย 1 รายการ"
+
+// pcVatRate is the fixed VAT rate. po.go has no shared constant — it repeats the literal 0.07 inline
+// (lines ~1166/1180 etc.) — so this is the one definition petty cash uses; PO is left untouched.
+// pcVatRatePercent is the same value as a whole percent for the line-options response; both are
+// untyped constants, so 0.07*100 is exactly 7.
+const (
+	pcVatRate        = 0.07
+	pcVatRatePercent = pcVatRate * 100
+)
+
+// pcTaxForms is the single list of allowed tax_form_code values: used by validation and by
+// GET /petty-cash/line-options (the DB CHECK chk_pcl_tax_form allows the same two codes).
+var pcTaxForms = []struct {
+	Code    string `json:"code"`
+	LabelTH string `json:"label_th"`
+}{
+	{"PND3", "ภ.ง.ด.3 (บุคคลธรรมดา)"},
+	{"PND53", "ภ.ง.ด.53 (นิติบุคคล)"},
+}
+
+func isPCTaxForm(code string) bool {
+	for _, f := range pcTaxForms {
+		if f.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// pcLine is one fully validated, calculated line, ready to INSERT.
+type pcLine struct {
+	projectCode                             string
+	matCode                                 *string
+	costSubgroupID                          *int64
+	description, remarks                    *string
+	amount, vat, wht, net                   float64
+	supplierID                              *int64
+	supplierName, supplierAddr, supplierTax *string
+	hasTaxInvoice                           bool
+	taxInvoiceNo                            *string
+	taxInvoiceDate                          *time.Time
+	hasWht                                  bool
+	whtBase, whtRate                        *float64
+	taxForm                                 *string
+	whtIncomeTypeID                         *int64
+	whtPayDate                              *time.Time
+}
+
+type pcTotals struct {
+	total, vat, wht, net float64
+	useVat, useWht       bool
+}
+
+func pcParseDate(s string) (*time.Time, bool) {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return nil, false
+	}
+	return &t, true
+}
+
+// resolveLines validates every line (Thai errors, with the line number, before any write) and
+// calculates it. PO's no-Go-rounding behaviour is kept: numeric(18,4) rounds on INSERT.
+// prepareHeader must run first so empty line project_codes already fell back to the header's.
+func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreatePettyCashRequest) ([]pcLine, pcTotals, error) {
+	var tot pcTotals
+	out := make([]pcLine, 0, len(req.Lines))
+
+	// per-request lookup caches so a 50-line doc doesn't run 50 identical existence checks
+	projOK := map[string]bool{}
+	matOK := map[string]bool{}
+	costOK := map[int64]bool{}
+
+	for i, l := range req.Lines {
+		n := i + 1
+		bad := func(msg string) error {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("รายการที่ %d: %s", n, msg))
+		}
+		var ln pcLine
+
+		// ── project ──
+		ln.projectCode = strings.TrimSpace(l.ProjectCode)
+		if ln.projectCode == "" {
+			return nil, tot, bad("กรุณาระบุโครงการ (project_code) ที่หัวเอกสารหรือที่รายการ")
+		}
+		if _, ok := projOK[ln.projectCode]; !ok {
+			var ex bool
+			if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, ln.projectCode).Scan(&ex); err != nil {
+				return nil, tot, err
+			}
+			projOK[ln.projectCode] = ex
+		}
+		if !projOK[ln.projectCode] {
+			return nil, tot, bad("ไม่พบโครงการที่ระบุ")
+		}
+
+		// ── name / material / cost code ──
+		mat := strings.TrimSpace(l.MatCode)
+		desc := strings.TrimSpace(l.Description)
+		if mat == "" && desc == "" {
+			return nil, tot, bad("กรุณาระบุรหัสวัสดุหรือรายละเอียดรายการ")
+		}
+		if utf8.RuneCountInString(mat) > 20 {
+			return nil, tot, bad("รหัสวัสดุยาวเกินกำหนด (สูงสุด 20 ตัวอักษร)")
+		}
+		if mat != "" {
+			if _, ok := matOK[mat]; !ok {
+				var ex bool
+				if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM material_code WHERE mat_code=$1)`, mat).Scan(&ex); err != nil {
+					return nil, tot, err
+				}
+				matOK[mat] = ex
+			}
+			if !matOK[mat] {
+				return nil, tot, bad("ไม่พบรหัสวัสดุที่ระบุ")
 			}
 		}
-		lc.afterDisc = lc.base - lc.discAmt
-		if useVat {
-			lc.vatAmt = lc.afterDisc * 0.07
+		ln.matCode = pcNilIfEmpty(mat)
+		ln.description = pcNilIfEmpty(desc)
+		ln.remarks = l.Remarks
+		if l.CostSubgroupID != nil {
+			id := *l.CostSubgroupID
+			if _, ok := costOK[id]; !ok {
+				var ex bool
+				if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cost_subgroup WHERE id=$1)`, id).Scan(&ex); err != nil {
+					return nil, tot, err
+				}
+				costOK[id] = ex
+			}
+			if !costOK[id] {
+				return nil, tot, bad("ไม่พบรหัสต้นทุน (Cost Code) ที่ระบุ")
+			}
+			ln.costSubgroupID = l.CostSubgroupID
 		}
-		if useWht && l.WhtRate != nil {
-			lc.whtAmt = lc.afterDisc * (*l.WhtRate) / 100
-		}
-		lc.net = lc.afterDisc + lc.vatAmt - lc.whtAmt
-		calcs[i] = lc
 
-		totalAmount += lc.base
-		discountAmount += lc.discAmt
-		whtAmount += lc.whtAmt
+		// ── amount (before VAT) ──
+		var amount float64
+		switch {
+		case l.Amount != nil:
+			amount = *l.Amount
+		case l.Qty > 0 && l.UnitPrice > 0: // legacy callers: amount = qty*unit_price
+			amount = l.Qty * l.UnitPrice
+		}
+		if amount <= 0 {
+			return nil, tot, bad("จำนวนเงินต้องมากกว่า 0")
+		}
+		ln.amount = amount
+
+		// ── vendor ──
+		if l.SupplierID != nil && *l.SupplierID > 0 {
+			var name string
+			var taxID, addr *string
+			err := h.db.QueryRow(ctx, `SELECT supplier_name, tax_id, address FROM supplier WHERE id=$1`, *l.SupplierID).
+				Scan(&name, &taxID, &addr)
+			if err == pgx.ErrNoRows {
+				return nil, tot, bad("ไม่พบผู้ขายที่ระบุ")
+			}
+			if err != nil {
+				return nil, tot, err
+			}
+			// the server snapshots the supplier master; client-sent name/address/tax id are ignored
+			ln.supplierID = l.SupplierID
+			ln.supplierName, ln.supplierTax, ln.supplierAddr = pcNilIfEmpty(strings.TrimSpace(name)), taxID, addr
+			if ln.supplierTax != nil && utf8.RuneCountInString(*ln.supplierTax) > 50 {
+				ln.supplierTax = nil
+			}
+		} else {
+			name := strings.TrimSpace(l.SupplierName)
+			tax := strings.TrimSpace(l.SupplierTaxID)
+			if utf8.RuneCountInString(name) > 200 {
+				return nil, tot, bad("ชื่อผู้ขายยาวเกินกำหนด (สูงสุด 200 ตัวอักษร)")
+			}
+			if utf8.RuneCountInString(tax) > 50 {
+				return nil, tot, bad("เลขประจำตัวผู้เสียภาษีของผู้ขายยาวเกินกำหนด (สูงสุด 50 ตัวอักษร)")
+			}
+			ln.supplierName = pcNilIfEmpty(name)
+			ln.supplierAddr = pcNilIfEmpty(strings.TrimSpace(l.SupplierAddress))
+			ln.supplierTax = pcNilIfEmpty(tax)
+		}
+
+		// ── tax invoice / VAT ──
+		if l.HasTaxInvoice {
+			no := strings.TrimSpace(l.TaxInvoiceNo)
+			if no == "" {
+				return nil, tot, bad("กรุณากรอกเลขที่ใบกำกับภาษี")
+			}
+			if utf8.RuneCountInString(no) > 50 {
+				return nil, tot, bad("เลขที่ใบกำกับภาษียาวเกินกำหนด (สูงสุด 50 ตัวอักษร)")
+			}
+			if strings.TrimSpace(l.TaxInvoiceDate) == "" {
+				return nil, tot, bad("กรุณากรอกวันที่ใบกำกับภาษี")
+			}
+			d, ok := pcParseDate(strings.TrimSpace(l.TaxInvoiceDate))
+			if !ok {
+				return nil, tot, bad("วันที่ใบกำกับภาษีไม่ถูกต้อง (รูปแบบ YYYY-MM-DD)")
+			}
+			ln.hasTaxInvoice, ln.taxInvoiceNo, ln.taxInvoiceDate = true, &no, d
+			ln.vat = amount * pcVatRate
+		}
+
+		// ── withholding tax ──
+		if l.HasWht {
+			form := strings.TrimSpace(l.TaxFormCode)
+			if !isPCTaxForm(form) {
+				return nil, tot, bad("กรุณาเลือกแบบ ภ.ง.ด. ให้ถูกต้อง (PND3 หรือ PND53)")
+			}
+			if l.WhtIncomeTypeID == nil || *l.WhtIncomeTypeID <= 0 {
+				return nil, tot, bad("กรุณาเลือกประเภทเงินได้ที่หัก ณ ที่จ่าย")
+			}
+			var rate float64
+			var active bool
+			err := h.db.QueryRow(ctx, `SELECT rate, is_active FROM wht_income_type WHERE id=$1`, *l.WhtIncomeTypeID).Scan(&rate, &active)
+			if err == pgx.ErrNoRows || (err == nil && !active) {
+				return nil, tot, bad("ประเภทเงินได้ที่หัก ณ ที่จ่ายไม่ถูกต้องหรือถูกปิดใช้งาน")
+			}
+			if err != nil {
+				return nil, tot, err
+			}
+			base := amount
+			if l.WhtBaseAmount != nil {
+				base = *l.WhtBaseAmount
+			}
+			if base <= 0 {
+				return nil, tot, bad("ฐานภาษีหัก ณ ที่จ่ายต้องมากกว่า 0")
+			}
+			if base > amount {
+				return nil, tot, bad("ฐานภาษีหัก ณ ที่จ่ายต้องไม่เกินจำนวนเงิน")
+			}
+			if s := strings.TrimSpace(l.WhtPayDate); s != "" {
+				d, ok := pcParseDate(s)
+				if !ok {
+					return nil, tot, bad("วันที่จ่ายเงินไม่ถูกต้อง (รูปแบบ YYYY-MM-DD)")
+				}
+				ln.whtPayDate = d
+			}
+			ln.hasWht, ln.taxForm, ln.whtIncomeTypeID = true, &form, l.WhtIncomeTypeID
+			ln.whtBase, ln.whtRate = &base, &rate // rate is the server-side snapshot, never the client's
+			ln.wht = base * rate / 100
+		}
+
+		ln.net = amount + ln.vat - ln.wht
+		tot.total += ln.amount
+		tot.vat += ln.vat
+		tot.wht += ln.wht
+		tot.net += ln.net
+		tot.useVat = tot.useVat || ln.hasTaxInvoice
+		tot.useWht = tot.useWht || ln.hasWht
+		out = append(out, ln)
 	}
-	return calcs, totalAmount, discountAmount, whtAmount
+	return out, tot, nil
+}
+
+// insertLines writes the resolved lines. New-style lines are stored as qty=1, unit_price=amount,
+// no discount (the line modal has no qty/price).
+func insertPCLines(ctx context.Context, tx pgx.Tx, pcID int64, lines []pcLine) error {
+	for i, ln := range lines {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO petty_cash_requisition_line
+			  (pc_id, line_no, project_code, mat_code, cost_subgroup_id, description, qty, unit_price, amount,
+			   discount, disc_type, line_discount, line_vat, line_wht, line_net, wht_rate, remarks,
+			   supplier_id, supplier_name, supplier_address, supplier_tax_id,
+			   has_tax_invoice, tax_invoice_no, tax_invoice_date,
+			   has_wht, wht_base_amount, tax_form_code, wht_income_type_id, wht_pay_date)
+			VALUES ($1,$2,$3,$4,$5,$6,1,$7,$7,0,'pct',0,$8,$9,$10,$11,$12,
+			        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+			pcID, i+1, ln.projectCode, ln.matCode, ln.costSubgroupID, ln.description, ln.amount,
+			ln.vat, ln.wht, ln.net, ln.whtRate, ln.remarks,
+			ln.supplierID, ln.supplierName, ln.supplierAddr, ln.supplierTax,
+			ln.hasTaxInvoice, ln.taxInvoiceNo, ln.taxInvoiceDate,
+			ln.hasWht, ln.whtBase, ln.taxForm, ln.whtIncomeTypeID, ln.whtPayDate,
+		); err != nil {
+			if pgErr, ok := err.(*pgconn.PgError); ok && (pgErr.Code == "23503" || pgErr.Code == "23514") {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("รายการที่ %d: ข้อมูลไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง", i+1))
+			}
+			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("รายการที่ %d: บันทึกไม่สำเร็จ", i+1))
+		}
+	}
+	return nil
 }
 
 func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.PettyCashRequisition, error) {
@@ -108,6 +417,8 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		       pc.use_vat, pc.vat_amount, pc.use_wht, pc.wht_amount, pc.net_amount,
 		       pc.status, pc.approver_id, pc.remarks,
 		       pc.created_at, pc.updated_at, pc.created_by, pc.updated_by,
+		       pc.doc_type, pc.branch_code, pc.payee_emp_code, pc.payee_name, pc.project_code, pc.project_name,
+		       pc.order_type, pc.dept_code, pc.dept_name, pc.ref_doc_no, pc.approver_remarks,
 		       u.full_name AS requested_by_name, au.full_name AS approver_name
 		FROM petty_cash_requisition pc
 		LEFT JOIN users u ON u.id = pc.requested_by
@@ -119,6 +430,8 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		&pc.UseVat, &pc.VatAmount, &pc.UseWht, &pc.WhtAmount, &pc.NetAmount,
 		&pc.Status, &pc.ApproverID, &pc.Remarks,
 		&pc.CreatedAt, &pc.UpdatedAt, &pc.CreatedBy, &pc.UpdatedBy,
+		&pc.DocType, &pc.BranchCode, &pc.PayeeEmpCode, &pc.PayeeName, &pc.ProjectCode, &pc.ProjectName,
+		&pc.OrderType, &pc.DeptCode, &pc.DeptName, &pc.RefDocNo, &pc.ApproverRemarks,
 		&pc.RequestedByName, &pc.ApproverName,
 	)
 	if err != nil {
@@ -127,14 +440,27 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 
 	rows, err := h.db.Query(ctx, `
 		SELECT pcl.id, pcl.pc_id, pcl.line_no, pcl.project_code, pcl.mat_code, pcl.cost_subgroup_id, pcl.description,
-		       pcl.qty, pcl.unit_price, pcl.amount, pcl.discount, pcl.disc_type,
+		       pcl.qty, pcl.unit_price, COALESCE(pcl.amount, pcl.qty * pcl.unit_price), pcl.discount, pcl.disc_type,
 		       pcl.line_discount, pcl.line_vat, pcl.line_wht, pcl.line_net, pcl.wht_rate, pcl.remarks,
+		       pcl.supplier_id, pcl.supplier_name, pcl.supplier_address, pcl.supplier_tax_id,
+		       pcl.has_tax_invoice, pcl.tax_invoice_no, to_char(pcl.tax_invoice_date, 'YYYY-MM-DD'),
+		       pcl.has_wht, pcl.wht_base_amount, pcl.tax_form_code, pcl.wht_income_type_id,
+		       to_char(pcl.wht_pay_date, 'YYYY-MM-DD'),
+		       mn.mat_name AS mat_name_th,
+		       CASE WHEN pcl.cost_subgroup_id IS NULL THEN NULL
+		            ELSE csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code END AS cost_code,
+		       wit.label_th,
 		       p.project_name, mn.mat_name, u.unit_name, COALESCE(ps.qty_on_hand, 0)
 		FROM petty_cash_requisition_line pcl
 		LEFT JOIN project p ON p.project_code = pcl.project_code
 		LEFT JOIN material_code mc ON mc.mat_code = pcl.mat_code
 		LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
 		LEFT JOIN unit u ON u.id = mc.unit_id
+		LEFT JOIN cost_subgroup csg ON csg.id = pcl.cost_subgroup_id
+		LEFT JOIN cost_group cg ON cg.id = csg.group_id
+		LEFT JOIN cost_job cj ON cj.id = cg.job_id
+		LEFT JOIN cost_subject csub ON csub.id = cj.subject_id
+		LEFT JOIN wht_income_type wit ON wit.id = pcl.wht_income_type_id
 		LEFT JOIN LATERAL (
 			SELECT qty_on_hand FROM project_stock
 			WHERE project_code = pcl.project_code AND mat_code = pcl.mat_code
@@ -154,6 +480,10 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 			&l.ID, &l.PCID, &l.LineNo, &l.ProjectCode, &l.MatCode, &l.CostSubgroupID, &l.Description,
 			&l.Qty, &l.UnitPrice, &l.Amount, &l.Discount, &l.DiscType,
 			&l.LineDiscount, &l.LineVat, &l.LineWht, &l.LineNet, &l.WhtRate, &l.Remarks,
+			&l.SupplierID, &l.SupplierName, &l.SupplierAddress, &l.SupplierTaxID,
+			&l.HasTaxInvoice, &l.TaxInvoiceNo, &l.TaxInvoiceDate,
+			&l.HasWht, &l.WhtBaseAmount, &l.TaxFormCode, &l.WhtIncomeTypeID, &l.WhtPayDate,
+			&l.MatNameTH, &l.CostCode, &l.WhtIncomeLabel,
 			&l.ProjectName, &l.ItemName, &l.Unit, &l.StockOnHand,
 		); err != nil {
 			return nil, err
@@ -164,6 +494,12 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 			pc.ProjectCodes = append(pc.ProjectCodes, l.ProjectCode)
 		}
 	}
+
+	atts, err := h.listAttachments(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	pc.Attachments = atts
 
 	return &pc, nil
 }
@@ -203,11 +539,24 @@ func (h *PettyCashHandler) List(c *fiber.Ctx) error {
 		i++
 	}
 	if f.ProjectCode != "" {
-		where += fmt.Sprintf(` AND EXISTS (
+		where += fmt.Sprintf(` AND (pc.project_code = $%d OR EXISTS (
 			SELECT 1 FROM petty_cash_requisition_line pcl2
 			WHERE pcl2.pc_id = pc.id AND pcl2.project_code = $%d
-		)`, i)
+		))`, i, i)
 		args = append(args, f.ProjectCode)
+		i++
+	}
+	if f.DeptCode != "" {
+		where += fmt.Sprintf(" AND pc.dept_code = $%d", i)
+		args = append(args, f.DeptCode)
+		i++
+	}
+	if f.OrderType != "" {
+		if err := validateOrderType(f.OrderType); err != nil {
+			return err
+		}
+		where += fmt.Sprintf(" AND pc.order_type = $%d", i)
+		args = append(args, f.OrderType)
 		i++
 	}
 	if f.DateFrom != "" {
@@ -236,6 +585,8 @@ func (h *PettyCashHandler) List(c *fiber.Ctx) error {
 		SELECT pc.id, pc.pc_no, pc.pc_date, pc.requested_by, pc.purpose,
 		       pc.currency, pc.total_amount, pc.status, pc.approver_id, pc.net_amount,
 		       pc.created_at,
+		       pc.doc_type, pc.branch_code, pc.project_code, pc.project_name, pc.payee_name,
+		       pc.dept_code, pc.dept_name, pc.ref_doc_no, pc.order_type,
 		       u.full_name AS requested_by_name, au.full_name AS approver_name,
 		       pcodes.codes
 		FROM petty_cash_requisition pc
@@ -262,6 +613,8 @@ func (h *PettyCashHandler) List(c *fiber.Ctx) error {
 			&pc.ID, &pc.PCNo, &pc.PCDate, &pc.RequestedBy, &pc.Purpose,
 			&pc.Currency, &pc.TotalAmount, &pc.Status, &pc.ApproverID, &pc.NetAmount,
 			&pc.CreatedAt,
+			&pc.DocType, &pc.BranchCode, &pc.ProjectCode, &pc.ProjectName, &pc.PayeeName,
+			&pc.DeptCode, &pc.DeptName, &pc.RefDocNo, &pc.OrderType,
 			&pc.RequestedByName, &pc.ApproverName,
 			&pc.ProjectCodes,
 		); err != nil {
@@ -270,7 +623,7 @@ func (h *PettyCashHandler) List(c *fiber.Ctx) error {
 		items = append(items, pc)
 	}
 
-	totalPages := int(total)/f.PageSize + 1
+	totalPages := (int(total) + f.PageSize - 1) / f.PageSize
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": models.PaginatedResponse{
@@ -297,33 +650,69 @@ func (h *PettyCashHandler) Get(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "petty cash requisition not found")
 	}
+	chain, err := h.loadApprovalChain(context.Background(), int64(id))
+	if err != nil {
+		return err
+	}
+	pc.ApprovalChain = chain
 	return c.JSON(fiber.Map{"success": true, "data": pc})
 }
 
-func validatePettyCashRequest(req *models.CreatePettyCashRequest) error {
-	if len(req.Lines) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "at least 1 line is required")
+// LineOptions godoc
+// @Summary      Dropdown options for the petty cash line modal
+// @Description  tax_forms (ภ.ง.ด.3 / ภ.ง.ด.53), active wht_income_types ordered by sort_order, and the fixed vat_rate (percent) used by the line calculation. Static route — registered before /:id.
+// @Tags         Petty Cash
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /petty-cash/line-options [get]
+func (h *PettyCashHandler) LineOptions(c *fiber.Ctx) error {
+	rows, err := h.db.Query(context.Background(),
+		`SELECT id, code, label_th, rate FROM wht_income_type WHERE is_active = true ORDER BY sort_order, id`)
+	if err != nil {
+		return err
 	}
-	for i, l := range req.Lines {
-		if l.ProjectCode == "" {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: project_code is required", i))
+	defer rows.Close()
+
+	type incomeType struct {
+		ID      int     `json:"id"`
+		Code    string  `json:"code"`
+		LabelTH string  `json:"label_th"`
+		Rate    float64 `json:"rate"`
+	}
+	types := []incomeType{}
+	for rows.Next() {
+		var t incomeType
+		if err := rows.Scan(&t.ID, &t.Code, &t.LabelTH, &t.Rate); err != nil {
+			return err
 		}
-		if l.MatCode == "" {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: mat_code is required", i))
-		}
-		if l.Qty <= 0 {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: qty must be > 0", i))
-		}
-		if l.UnitPrice < 0 {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: unit_price must be >= 0", i))
-		}
+		types = append(types, t)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"tax_forms":        pcTaxForms,
+		"wht_income_types": types,
+		"vat_rate":         float64(pcVatRatePercent),
+	}})
+}
+
+// requireSubmittable enforces the rules for entering PENDING_APPROVAL: ≥1 line and a requester
+// remark (หมายเหตุผู้เบิก).
+func requireSubmittable(lineCount int, remarks string) error {
+	if lineCount == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, pcLinesRequiredMsg)
+	}
+	if strings.TrimSpace(remarks) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, pcRemarksRequiredMsg)
 	}
 	return nil
 }
 
 // Create godoc
 // @Summary      Create a petty cash requisition
-// @Description  status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id). Each line picks its own project_code — the document itself has no single project.
+// @Description  status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code.
 // @Tags         Petty Cash
 // @Security     BearerAuth
 // @Accept       json
@@ -337,8 +726,22 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if err := validatePettyCashRequest(&req); err != nil {
+	ctx := context.Background()
+	if err := h.prepareHeader(ctx, &req); err != nil {
 		return err
+	}
+	lines, tot, err := h.resolveLines(ctx, &req)
+	if err != nil {
+		return err
+	}
+	{
+		ids := make([]*int64, len(lines))
+		for i, l := range lines {
+			ids[i] = l.costSubgroupID
+		}
+		if err := requireNonHeadCostCodes(ctx, h.db, ids, nil); err != nil {
+			return err
+		}
 	}
 
 	status := req.Status
@@ -348,12 +751,16 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 	if status != "DRAFT" && status != "PENDING_APPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
-	if status == "PENDING_APPROVAL" && req.ApproverID == nil {
-		return fiber.NewError(fiber.StatusBadRequest, "approver_id is required to submit directly")
+	if status == "PENDING_APPROVAL" {
+		if req.ApproverID == nil {
+			return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกผู้อนุมัติ")
+		}
+		if err := requireSubmittable(len(req.Lines), req.Remarks); err != nil {
+			return err
+		}
 	}
 
 	claims := middleware.GetClaims(c)
-	ctx := context.Background()
 
 	if req.ApproverID != nil {
 		var approverExists bool
@@ -363,34 +770,29 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 			return err
 		}
 		if !approverExists {
-			return fiber.NewError(fiber.StatusBadRequest, "approver not found")
+			return fiber.NewError(fiber.StatusBadRequest, "ไม่พบผู้อนุมัติที่เลือก")
+		}
+	}
+	if status == "PENDING_APPROVAL" {
+		var hasConfig bool
+		if err := h.db.QueryRow(ctx, `
+			SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PETTY_CASH' AND step_no=1 AND is_active=true)`,
+		).Scan(&hasConfig); err != nil {
+			return err
+		}
+		if !hasConfig {
+			return fiber.NewError(fiber.StatusBadRequest, "ยังไม่ได้ตั้งค่าขั้นตอนการอนุมัติสำหรับใบเบิกเงินสดย่อย กรุณาติดต่อผู้ดูแลระบบ")
 		}
 	}
 
-	useDiscount := req.UseDiscount
-	useVat := req.UseVat
-	useWht := req.UseWht
-	discountType := req.DiscountType
-	if discountType == "" {
-		discountType = "pct"
-	}
+	// Header totals are sums of the per-line figures (VAT/WHT are per line now, not a header rate).
+	// Header flags are derived from the lines; any client-sent header flags are ignored.
+	useDiscount, useVat, useWht := false, tot.useVat, tot.useWht
+	discountType, discountAmount := "pct", 0.0
+	totalAmount, vatAmount, whtAmount, netAmount := tot.total, tot.vat, tot.wht, tot.net
 	currency := req.Currency
 	if currency == "" {
 		currency = "THB"
-	}
-
-	calcs, totalAmount, discountAmount, whtAmount := calcPettyCashLines(req.Lines, useDiscount, useVat, useWht)
-	vatAmount := totalAmount - discountAmount
-	if useVat {
-		vatAmount *= 0.07
-	} else {
-		vatAmount = 0
-	}
-	netAmount := totalAmount - discountAmount + vatAmount - whtAmount
-
-	pcNo, err := h.generatePCNo(ctx)
-	if err != nil {
-		return err
 	}
 
 	tx, err := h.db.Begin(ctx)
@@ -399,50 +801,38 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	var remarks *string
-	if req.Remarks != "" {
-		remarks = &req.Remarks
+	// Allocated on the create tx, right before the header INSERT: a failed save gives the number back.
+	now := bangkokNow()
+	seq, err := nextMonthlyNumber(ctx, tx, "pc_number_counter", now)
+	if err != nil {
+		return err
 	}
-	var purpose *string
-	if req.Purpose != "" {
-		purpose = &req.Purpose
-	}
+	pcNo := formatPCNo(now, seq)
 
 	var pcID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO petty_cash_requisition
 		  (pc_no, pc_date, requested_by, purpose, currency, total_amount,
 		   use_discount, discount_type, discount_amount, use_vat, vat_amount, use_wht, wht_amount,
-		   net_amount, status, approver_id, remarks, created_by, updated_by)
-		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
+		   net_amount, status, approver_id, remarks, created_by, updated_by,
+		   doc_type, branch_code, payee_emp_code, payee_name, project_code, project_name,
+		   order_type, dept_code, dept_name, ref_doc_no)
+		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17,
+		        $18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		RETURNING id`,
-		pcNo, claims.UserID, purpose, currency, totalAmount,
+		pcNo, claims.UserID, pcNilIfEmpty(req.Purpose), currency, totalAmount,
 		useDiscount, discountType, discountAmount, useVat, vatAmount, useWht, whtAmount,
-		netAmount, status, req.ApproverID, remarks, claims.UserID,
+		netAmount, status, req.ApproverID, pcNilIfEmpty(req.Remarks), claims.UserID,
+		req.DocType, pcNilIfEmpty(req.BranchCode), pcNilIfEmpty(req.PayeeEmpCode), pcNilIfEmpty(req.PayeeName),
+		pcNilIfEmpty(req.ProjectCode), pcNilIfEmpty(req.ProjectName),
+		pcNilIfEmpty(req.OrderType), pcNilIfEmpty(req.DeptCode), pcNilIfEmpty(req.DeptName), pcNilIfEmpty(req.RefDocNo),
 	).Scan(&pcID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create petty cash requisition: "+err.Error())
 	}
 
-	for i, line := range req.Lines {
-		lc := calcs[i]
-		var desc *string
-		if line.Description != "" {
-			desc = &line.Description
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO petty_cash_requisition_line
-			  (pc_id, line_no, project_code, mat_code, cost_subgroup_id, description, qty, unit_price, amount,
-			   discount, disc_type, line_discount, line_vat, line_wht, line_net, wht_rate, remarks)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-			pcID, i+1, line.ProjectCode, line.MatCode, line.CostSubgroupID, desc, line.Qty, line.UnitPrice, lc.base,
-			line.Discount, lc.discType, lc.discAmt, lc.vatAmt, lc.whtAmt, lc.net, line.WhtRate, line.Remarks,
-		); err != nil {
-			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid project_code or mat_code", i))
-			}
-			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("line %d insert error: %s", i+1, err.Error()))
-		}
+	if err := insertPCLines(ctx, tx, pcID, lines); err != nil {
+		return err
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -453,20 +843,12 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 	}
 
 	if status == "PENDING_APPROVAL" {
-		var hasConfig bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PETTY_CASH' AND step_no=1 AND is_active=true)`,
-		).Scan(&hasConfig); err != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
+			VALUES ('PETTY_CASH',$1,$2,1,$3,$4,'PENDING',$5)`,
+			pcID, pcNo, claims.UserID, *req.ApproverID, totalAmount,
+		); err != nil {
 			return err
-		}
-		if hasConfig {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
-				VALUES ('PETTY_CASH',$1,$2,1,$3,$4,'PENDING',$5)`,
-				pcID, pcNo, claims.UserID, *req.ApproverID, totalAmount,
-			); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -483,6 +865,7 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      Update a petty cash requisition (only while DRAFT or REJECTED)
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Petty Cash
 // @Security     BearerAuth
 // @Accept       json
@@ -501,12 +884,29 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if err := validatePettyCashRequest(&req); err != nil {
+	ctx := context.Background()
+	if err := h.prepareHeader(ctx, &req); err != nil {
 		return err
+	}
+	lines, tot, err := h.resolveLines(ctx, &req)
+	if err != nil {
+		return err
+	}
+	{
+		stored, err := storedCostSubgroupIDs(ctx, h.db, "petty_cash_requisition_line", int64(id))
+		if err != nil {
+			return err
+		}
+		ids := make([]*int64, len(lines))
+		for i, l := range lines {
+			ids[i] = l.costSubgroupID
+		}
+		if err := requireNonHeadCostCodes(ctx, h.db, ids, stored); err != nil {
+			return err
+		}
 	}
 
 	claims := middleware.GetClaims(c)
-	ctx := context.Background()
 
 	var currentStatus string
 	if err := h.db.QueryRow(ctx,
@@ -531,26 +931,10 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	useDiscount := req.UseDiscount
-	useVat := req.UseVat
-	useWht := req.UseWht
-	discountType := req.DiscountType
-	if discountType == "" {
-		discountType = "pct"
-	}
-	currency := req.Currency
-	if currency == "" {
-		currency = "THB"
-	}
-
-	calcs, totalAmount, discountAmount, whtAmount := calcPettyCashLines(req.Lines, useDiscount, useVat, useWht)
-	vatAmount := totalAmount - discountAmount
-	if useVat {
-		vatAmount *= 0.07
-	} else {
-		vatAmount = 0
-	}
-	netAmount := totalAmount - discountAmount + vatAmount - whtAmount
+	// Header totals/flags are derived from the per-line figures (see Create).
+	useDiscount, useVat, useWht := false, tot.useVat, tot.useWht
+	discountType, discountAmount := "pct", 0.0
+	totalAmount, vatAmount, whtAmount, netAmount := tot.total, tot.vat, tot.wht, tot.net
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
@@ -558,25 +942,24 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	var remarks *string
-	if req.Remarks != "" {
-		remarks = &req.Remarks
-	}
-	var purpose *string
-	if req.Purpose != "" {
-		purpose = &req.Purpose
-	}
-
+	// purpose and currency keep their stored value when absent from the request; the Tab A header
+	// fields are overwritten as sent (an empty value clears them). pc_no, pc_date, requested_by and
+	// status are never touched here.
 	if _, err := tx.Exec(ctx, `
 		UPDATE petty_cash_requisition
-		SET purpose=$1, currency=$2, total_amount=$3,
+		SET purpose=COALESCE($1, purpose), currency=COALESCE($2, currency), total_amount=$3,
 		    use_discount=$4, discount_type=$5, discount_amount=$6, use_vat=$7, vat_amount=$8,
 		    use_wht=$9, wht_amount=$10, net_amount=$11, approver_id=$12, remarks=$13,
-		    updated_at=NOW(), updated_by=$14
-		WHERE id=$15`,
-		purpose, currency, totalAmount,
+		    doc_type=$14, branch_code=$15, payee_emp_code=$16, payee_name=$17,
+		    project_code=$18, project_name=$19, order_type=$20, dept_code=$21, dept_name=$22, ref_doc_no=$23,
+		    updated_at=NOW(), updated_by=$24
+		WHERE id=$25`,
+		pcNilIfEmpty(req.Purpose), pcNilIfEmpty(req.Currency), totalAmount,
 		useDiscount, discountType, discountAmount, useVat, vatAmount,
-		useWht, whtAmount, netAmount, req.ApproverID, remarks,
+		useWht, whtAmount, netAmount, req.ApproverID, pcNilIfEmpty(req.Remarks),
+		req.DocType, pcNilIfEmpty(req.BranchCode), pcNilIfEmpty(req.PayeeEmpCode), pcNilIfEmpty(req.PayeeName),
+		pcNilIfEmpty(req.ProjectCode), pcNilIfEmpty(req.ProjectName),
+		pcNilIfEmpty(req.OrderType), pcNilIfEmpty(req.DeptCode), pcNilIfEmpty(req.DeptName), pcNilIfEmpty(req.RefDocNo),
 		claims.UserID, id,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update petty cash requisition: "+err.Error())
@@ -585,25 +968,8 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM petty_cash_requisition_line WHERE pc_id=$1`, id); err != nil {
 		return err
 	}
-	for i, line := range req.Lines {
-		lc := calcs[i]
-		var desc *string
-		if line.Description != "" {
-			desc = &line.Description
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO petty_cash_requisition_line
-			  (pc_id, line_no, project_code, mat_code, cost_subgroup_id, description, qty, unit_price, amount,
-			   discount, disc_type, line_discount, line_vat, line_wht, line_net, wht_rate, remarks)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-			id, i+1, line.ProjectCode, line.MatCode, line.CostSubgroupID, desc, line.Qty, line.UnitPrice, lc.base,
-			line.Discount, lc.discType, lc.discAmt, lc.vatAmt, lc.whtAmt, lc.net, line.WhtRate, line.Remarks,
-		); err != nil {
-			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: invalid project_code or mat_code", i))
-			}
-			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("line %d insert error: %s", i+1, err.Error()))
-		}
+	if err := insertPCLines(ctx, tx, int64(id), lines); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -693,21 +1059,32 @@ func (h *PettyCashHandler) Submit(c *fiber.Ctx) error {
 	var currentStatus string
 	var pcNo string
 	var approverID *int64
-	if err := h.db.QueryRow(ctx,
-		`SELECT status, pc_no, approver_id FROM petty_cash_requisition WHERE id=$1`, id,
-	).Scan(&currentStatus, &pcNo, &approverID); err != nil {
+	var remarks *string
+	var lineCount int
+	if err := h.db.QueryRow(ctx, `
+		SELECT pc.status, pc.pc_no, pc.approver_id, pc.remarks,
+		       (SELECT COUNT(*) FROM petty_cash_requisition_line WHERE pc_id = pc.id)
+		FROM petty_cash_requisition pc WHERE pc.id=$1`, id,
+	).Scan(&currentStatus, &pcNo, &approverID, &remarks, &lineCount); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "petty cash requisition not found")
 	}
 	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
 		return fiber.NewError(fiber.StatusBadRequest,
 			fmt.Sprintf("cannot submit petty cash requisition with status '%s' — must be DRAFT or REJECTED", currentStatus))
 	}
+	remarkText := ""
+	if remarks != nil {
+		remarkText = *remarks
+	}
+	if err := requireSubmittable(lineCount, remarkText); err != nil {
+		return err
+	}
 
 	if body.ApproverID != nil {
 		approverID = body.ApproverID
 	}
 	if approverID == nil {
-		return fiber.NewError(fiber.StatusBadRequest, "approver_id is required")
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกผู้อนุมัติ")
 	}
 	var approverExists bool
 	if err := h.db.QueryRow(ctx,
@@ -716,7 +1093,17 @@ func (h *PettyCashHandler) Submit(c *fiber.Ctx) error {
 		return err
 	}
 	if !approverExists {
-		return fiber.NewError(fiber.StatusBadRequest, "approver not found")
+		return fiber.NewError(fiber.StatusBadRequest, "ไม่พบผู้อนุมัติที่เลือก")
+	}
+
+	var hasConfig bool
+	if err := h.db.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PETTY_CASH' AND step_no=1 AND is_active=true)`,
+	).Scan(&hasConfig); err != nil {
+		return err
+	}
+	if !hasConfig {
+		return fiber.NewError(fiber.StatusBadRequest, "ยังไม่ได้ตั้งค่าขั้นตอนการอนุมัติสำหรับใบเบิกเงินสดย่อย กรุณาติดต่อผู้ดูแลระบบ")
 	}
 
 	tx, err := h.db.Begin(ctx)
@@ -741,111 +1128,159 @@ func (h *PettyCashHandler) Submit(c *fiber.Ctx) error {
 		return err
 	}
 
-	var hasConfig bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PETTY_CASH' AND step_no=1 AND is_active=true)`,
-	).Scan(&hasConfig); err != nil {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
+		SELECT 'PETTY_CASH', $1, $2, 1, $3, $4, 'PENDING', total_amount
+		FROM petty_cash_requisition WHERE id=$1`,
+		id, pcNo, claims.UserID, *approverID,
+	); err != nil {
 		return err
-	}
-	if hasConfig {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
-			SELECT 'PETTY_CASH', $1, $2, 1, $3, $4, 'PENDING', total_amount
-			FROM petty_cash_requisition WHERE id=$1`,
-			id, pcNo, claims.UserID, *approverID,
-		); err != nil {
-			return err
-		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	return c.JSON(fiber.Map{"success": true, "message": "Petty cash requisition submitted for approval"})
+	var approverName *string
+	_ = h.db.QueryRow(ctx, `SELECT full_name FROM users WHERE id=$1`, *approverID).Scan(&approverName)
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Petty cash requisition submitted for approval",
+		"data": fiber.Map{
+			"id":            id,
+			"doc_no":        pcNo,
+			"status":        "PENDING_APPROVAL",
+			"approver_id":   *approverID,
+			"approver_name": approverName,
+		},
+	})
 }
 
-// approvalDecide handles both Approve and Reject — mirrors MemoHandler.Approve.
-func (h *PettyCashHandler) approvalDecide(c *fiber.Ctx, action string) error {
+// ApprovalChain godoc
+// @Summary      Approval chain of a petty cash requisition
+// @Description  One row per approval step: approver user id, employee_code, step_no, full_name, full_name_th, level (highest roles.level the user holds), roles [{role_code, role_name}] and role_names (comma-joined, for display) and approval status (null = not yet requested | PENDING | APPROVED | REJECTED).
+// @Tags         Petty Cash
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "Petty cash requisition ID"
+// @Success      200  {object}  fiber.Map
+// @Router       /petty-cash/{id}/approval-chain [get]
+func (h *PettyCashHandler) ApprovalChain(c *fiber.Ctx) error {
 	id, err := c.ParamsInt("id")
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
 	}
-
-	var req models.ApprovalActionRequest
-	_ = c.BodyParser(&req)
-	if action == "REJECT" && (req.Comments == nil || strings.TrimSpace(*req.Comments) == "") {
-		return fiber.NewError(fiber.StatusBadRequest, "comments are required when rejecting")
-	}
-
-	claims := middleware.GetClaims(c)
 	ctx := context.Background()
 
-	var currentStatus string
+	var pcNo string
 	if err := h.db.QueryRow(ctx,
-		`SELECT status FROM petty_cash_requisition WHERE id=$1`, id,
-	).Scan(&currentStatus); err != nil {
+		`SELECT pc_no FROM petty_cash_requisition WHERE id=$1`, id,
+	).Scan(&pcNo); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "petty cash requisition not found")
 	}
-	if currentStatus != "PENDING_APPROVAL" {
-		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("cannot %s petty cash requisition with status '%s' — must be PENDING_APPROVAL", strings.ToLower(action), currentStatus))
-	}
-
-	// Menu permission (checked at the route layer) controls whether the approval screen/action
-	// exists for this user at all; this check controls whether THIS document is theirs to act
-	// on. Neither replaces the other — see isEligibleApprover's doc comment.
-	isAssigned, err := isEligibleApprover(ctx, h.db, "PETTY_CASH", 1, int64(id), claims.UserID)
+	rows, err := h.loadApprovalChain(ctx, int64(id))
 	if err != nil {
 		return err
 	}
-	if !isAssigned {
-		return fiber.NewError(fiber.StatusForbidden, "you are not the assigned approver for this petty cash requisition")
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"doc_no": pcNo, "approvers": rows}})
+}
+
+// pcChainRow is one approver in a petty cash approval chain.
+type pcChainRow struct {
+	UserID       *int64          `json:"user_id"`
+	EmployeeCode *string         `json:"employee_code"`
+	StepNo       int             `json:"step_no"`
+	FullName     *string         `json:"full_name"`
+	FullNameTH   *string         `json:"full_name_th"`
+	Level        *int            `json:"level"`
+	Roles        []userRoleBrief `json:"roles"`
+	RoleNames    string          `json:"role_names"`
+	Status       *string         `json:"status"`
+}
+
+// loadApprovalChain returns one row per approval step (latest approval_request per step), or the
+// chosen-but-not-yet-submitted approver as step 1 with a null status.
+func (h *PettyCashHandler) loadApprovalChain(ctx context.Context, id int64) ([]pcChainRow, error) {
+	var approverID *int64
+	if err := h.db.QueryRow(ctx,
+		`SELECT approver_id FROM petty_cash_requisition WHERE id=$1`, id,
+	).Scan(&approverID); err != nil {
+		return nil, fiber.NewError(fiber.StatusNotFound, "petty cash requisition not found")
 	}
 
-	newStatus := "APPROVED"
-	if action == "REJECT" {
-		newStatus = "REJECTED"
-	}
+	rows := []pcChainRow{}
 
-	tx, err := h.db.Begin(ctx)
+	// Latest approval_request per step (a resubmit after REJECT adds a new row for the same step).
+	r, err := h.db.Query(ctx, `
+		SELECT x.assigned_to, u.employee_code, x.step_no, u.full_name, u.full_name_th, lvl.level, x.status
+		FROM (
+			SELECT DISTINCT ON (step_no) step_no, assigned_to, status
+			FROM approval_request
+			WHERE doc_type='PETTY_CASH' AND doc_id=$1
+			ORDER BY step_no, id DESC
+		) x
+		LEFT JOIN users u ON u.id = x.assigned_to
+		LEFT JOIN LATERAL (
+			SELECT MAX(ro.level) AS level
+			FROM user_roles ur JOIN roles ro ON ro.id = ur.role_id AND ro.is_active = true
+			WHERE ur.user_id = u.id
+		) lvl ON true
+		ORDER BY x.step_no`, id)
 	if err != nil {
-		return err
+		return nil, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดสายการอนุมัติได้")
 	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE petty_cash_requisition SET status=$1, updated_at=NOW(), updated_by=$2 WHERE id=$3`,
-		newStatus, claims.UserID, id,
-	); err != nil {
-		return err
+	defer r.Close()
+	for r.Next() {
+		var row pcChainRow
+		if err := r.Scan(&row.UserID, &row.EmployeeCode, &row.StepNo, &row.FullName, &row.FullNameTH, &row.Level, &row.Status); err != nil {
+			return nil, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถอ่านสายการอนุมัติได้")
+		}
+		rows = append(rows, row)
 	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO petty_cash_status_log (pc_id, from_status, to_status, changed_by, remarks)
-		VALUES ($1,$2,$3,$4,$5)`,
-		id, currentStatus, newStatus, claims.UserID, req.Comments,
-	); err != nil {
-		return err
+	if err := r.Err(); err != nil {
+		return nil, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดสายการอนุมัติได้")
 	}
+	r.Close()
 
-	if _, err := tx.Exec(ctx, `
-		UPDATE approval_request SET status=$1, updated_at=NOW()
-		WHERE doc_type='PETTY_CASH' AND doc_id=$2 AND status='PENDING'`,
-		newStatus, id,
-	); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return err
+	// Not submitted yet (or no approval_config) - show the chosen approver with null status.
+	if len(rows) == 0 && approverID != nil {
+		var row pcChainRow
+		row.StepNo = 1
+		if err := h.db.QueryRow(ctx, `
+			SELECT u.id, u.employee_code, u.full_name, u.full_name_th,
+			       (SELECT MAX(ro.level) FROM user_roles ur JOIN roles ro ON ro.id=ur.role_id AND ro.is_active=true WHERE ur.user_id=u.id)
+			FROM users u WHERE u.id=$1`, *approverID,
+		).Scan(&row.UserID, &row.EmployeeCode, &row.FullName, &row.FullNameTH, &row.Level); err == nil {
+			rows = append(rows, row)
+		}
 	}
 
-	return c.JSON(fiber.Map{"success": true, "message": fmt.Sprintf("Petty cash requisition %s", newStatus)})
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		if row.UserID != nil {
+			ids = append(ids, *row.UserID)
+		}
+	}
+	rolesByUser, namesByUser, err := loadActiveRolesByUser(ctx, h.db, ids)
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดบทบาทของผู้อนุมัติได้")
+	}
+	for i := range rows {
+		rows[i].Roles = []userRoleBrief{}
+		if rows[i].UserID != nil {
+			if rs := rolesByUser[*rows[i].UserID]; rs != nil {
+				rows[i].Roles = rs
+			}
+			rows[i].RoleNames = namesByUser[*rows[i].UserID]
+		}
+	}
+	return rows, nil
 }
 
 // Approve godoc
 // @Summary      Approve a petty cash requisition (PENDING_APPROVAL → APPROVED)
+// @Description  One transaction: approval_request, document status, petty_cash_status_log, approval_log (APPROVE, with comments + ip). Caller must be the assigned approver (403 otherwise); an already decided document returns 409. Also reachable as PUT /approval/PETTY_CASH/{docId}/approve.
 // @Tags         Petty Cash
 // @Security     BearerAuth
 // @Accept       json
@@ -854,12 +1289,14 @@ func (h *PettyCashHandler) approvalDecide(c *fiber.Ctx, action string) error {
 // @Param        body  body  models.ApprovalActionRequest  false  "Optional comments"
 // @Success      200  {object}  fiber.Map
 // @Router       /petty-cash/{id}/approve [post]
+// @Router       /approval/PETTY_CASH/{id}/approve [put]
 func (h *PettyCashHandler) Approve(c *fiber.Ctx) error {
 	return h.approvalDecide(c, "APPROVE")
 }
 
 // Reject godoc
 // @Summary      Reject a petty cash requisition (PENDING_APPROVAL → REJECTED)
+// @Description  Same as approve, but comments are required (400). Also reachable as PUT /approval/PETTY_CASH/{docId}/reject.
 // @Tags         Petty Cash
 // @Security     BearerAuth
 // @Accept       json
@@ -868,6 +1305,7 @@ func (h *PettyCashHandler) Approve(c *fiber.Ctx) error {
 // @Param        body  body  models.ApprovalActionRequest  true  "comments required"
 // @Success      200  {object}  fiber.Map
 // @Router       /petty-cash/{id}/reject [post]
+// @Router       /approval/PETTY_CASH/{id}/reject [put]
 func (h *PettyCashHandler) Reject(c *fiber.Ctx) error {
 	return h.approvalDecide(c, "REJECT")
 }

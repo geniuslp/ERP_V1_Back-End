@@ -116,7 +116,7 @@ func fetchProjectJobCodes(ctx context.Context, db *pgxpool.Pool, projectCode str
 
 // CreateMovement godoc
 // @Summary      Create an IC Project Movement (Issue or Transfer) header
-// @Description  Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (IS-YYYYMM-NNNN for ISSUE, TF-YYYYMM-NNNN for TRANSFER, from the same shared monthly por_number_counter sequence as ic_po_receive_document.receive_no (IC-) and PO returns (RT-)), and inserts the row with status=DRAFT.
+// @Description  Validates doc_type and that job_code is assigned to this project (server-side re-check against project.job_codes), generates doc_no (IS-YYYYMM-NNNN for ISSUE, TF-YYYYMM-NNNN for TRANSFER, each prefix with its own monthly sequence in doc_number_counter, separate from IC- receive numbers and from RT- returns, which use ret_number_counter), and inserts the row with status=DRAFT.
 // @Tags         IC Project Movement
 // @Security     BearerAuth
 // @Accept       json
@@ -612,7 +612,7 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 
 // ListProjectCostCodes godoc
 // @Summary      List cost-subgroup codes for a project, across all of its job_codes
-// @Description  For the ToCostCode dropdown — :projectCode here is the TARGET project (ToProject), re-called whenever the user changes it, not the movement's own project. Returns every cost_subgroup under any job_code assigned to this project. Each project.job_codes entry (e.g. "MP") is matched by reconstructing it as cost_subject.subject_code || cost_job.job_code (subject_code is 1 char, cost_job.job_code is 1 char) — the same decomposition ListAvailableMaterials uses, since cost_job.job_code alone is a different, single-letter code space.
+// @Description  For the ToCostCode dropdown — :projectCode here is the TARGET project (ToProject), re-called whenever the user changes it, not the movement's own project. Returns every non-Head cost_subgroup under any job_code assigned to this project (Head/roll-up subgroups are excluded). Each project.job_codes entry (e.g. "MP") is matched by reconstructing it as cost_subject.subject_code || cost_job.job_code (subject_code is 1 char, cost_job.job_code is 1 char) — the same decomposition ListAvailableMaterials uses, since cost_job.job_code alone is a different, single-letter code space.
 // @Tags         IC Project Movement
 // @Security     BearerAuth
 // @Produce      json
@@ -637,6 +637,7 @@ func (h *IcProjectMovementHandler) ListProjectCostCodes(c *fiber.Ctx) error {
 		JOIN cost_subject csub ON csub.id = cj.subject_id
 		JOIN project p      ON p.project_code = $1
 		WHERE (csub.subject_code || cj.job_code) = ANY(p.job_codes)
+		  AND NOT csg.is_head -- Head (roll-up) subgroups are never selectable
 		ORDER BY 2`, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -658,6 +659,7 @@ func (h *IcProjectMovementHandler) ListProjectCostCodes(c *fiber.Ctx) error {
 // AddMovementLine godoc
 // @Summary      Add a line item to an IC Project Movement (staged, not yet deducted)
 // @Description  Validates qty against ic_project_receipt_pool remaining = qty_received - qty_issued (locked FOR UPDATE) for (project_code, mat_code, cost_subgroup_id) and rejects with 400 if insufficient. For doc_type='ISSUE' the destination is forced to (movement.project_code, the line's own cost_subgroup_id) and any to_project_code/to_cost_subgroup_id in the body is ignored; for 'TRANSFER' both are required. Only DRAFT movements accept new lines. Does NOT deduct qty_on_hand here — deduction happens only when the whole movement document is confirmed/submitted (a separate, not-yet-built step). Inserts with the next line_no for this movement.
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         IC Project Movement
 // @Security     BearerAuth
 // @Accept       json
@@ -738,6 +740,19 @@ func (h *IcProjectMovementHandler) AddMovementLine(c *fiber.Ctx) error {
 		}
 		if linkedWH != "" && dstLinked != "" {
 			return errLinkedToLinked("both source and destination are warehouse-linked; use Stock Transfer instead")
+		}
+	}
+
+	if docType == "TRANSFER" && dstLinked == "" {
+		// The destination cost code is a NEW selection and must not be a Head code. The source
+		// (cost_subgroup_id) is an existing balance, so it is deliberately not blocked here —
+		// otherwise stock sitting under a code that later became Head could never be moved out.
+		stored, serr := storedCostSubgroupIDs(ctx, tx, "ic_project_movement_line:to", movementID)
+		if serr != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, serr.Error())
+		}
+		if err := requireNonHeadCostCodes(ctx, tx, []*int64{ptrID(req.ToCostSubgroupID)}, stored); err != nil {
+			return err
 		}
 	}
 
@@ -938,6 +953,7 @@ func (h *IcProjectMovementHandler) SubmitMovement(c *fiber.Ctx) error {
 // SubmitMovementNew godoc
 // @Summary      Create + submit an IC Project Movement in one request (single-save flow)
 // @Description  For when the document does not exist yet. ONE DB transaction: creates the header (same validation and doc_no generation as POST .../movements, status DRAFT), inserts the lines, then runs the exact same submit logic as POST .../movements/{id}/submit (lock, re-validate qty against on-hand/pool, deduct, credit, status POSTED). Any failure rolls back everything including the header — no orphan DRAFT. project_code in the header is taken from the path. Error codes (e.g. LINKED_WAREHOUSE_ISSUE_NOT_SUPPORTED, LINKED_TO_LINKED_TRANSFER_NOT_SUPPORTED) are identical to the id-based endpoints. lines is required and must be non-empty.
+// @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         IC Project Movement
 // @Security     BearerAuth
 // @Accept       json
@@ -1037,6 +1053,19 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 	}
 	if len(bodyLines) > 0 {
 		claims := middleware.GetClaims(c)
+		if docType == "TRANSFER" {
+			stored, serr := storedCostSubgroupIDs(ctx, tx, "ic_project_movement_line:to", movementID)
+			if serr != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, serr.Error())
+			}
+			dst := make([]*int64, 0, len(bodyLines))
+			for _, ln := range bodyLines {
+				dst = append(dst, ptrID(ln.ToCostSubgroupID))
+			}
+			if err := requireNonHeadCostCodes(ctx, tx, dst, stored); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM ic_project_movement_line WHERE movement_id = $1`, movementID); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
