@@ -2559,7 +2559,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns only the lines posted under this one receive document — not all lines of the PO. Both order_type='cost' (ic_project_cost_item_transaction.receive_document_id) and order_type='stock' (stock_transaction.receive_document_id) now carry this FK and are scoped the same way, returning scoped_by_document=true. FALLBACK for stock-type only: rows written before this FK existed (or for a PO that historically had more than one document, since the backfill only linked POs with exactly one document) have receive_document_id IS NULL — if the scoped query returns nothing, this falls back to every 'IN' stock_transaction row for the whole PO that still has receive_document_id IS NULL, returning scoped_by_document=false with a warning field. This fallback path never mixes in rows that are already linked to a *different* document.",
+                "description": "Each line also carries cost_group_name, cost_group_code and cost_subgroup_name (null when the line has no cost subgroup), alongside the unchanged 4-level cost_code.\nReturns only the lines posted under this one receive document — not all lines of the PO. Both order_type='cost' (ic_project_cost_item_transaction.receive_document_id) and order_type='stock' (stock_transaction.receive_document_id) now carry this FK and are scoped the same way, returning scoped_by_document=true. FALLBACK for stock-type only: rows written before this FK existed (or for a PO that historically had more than one document, since the backfill only linked POs with exactly one document) have receive_document_id IS NULL — if the scoped query returns nothing, this falls back to every 'IN' stock_transaction row for the whole PO that still has receive_document_id IS NULL, returning scoped_by_document=false with a warning field. This fallback path never mixes in rows that are already linked to a *different* document.",
                 "produces": [
                     "application/json"
                 ],
@@ -2695,7 +2695,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns po_context (order_type, project_code), lines, and distinct mat_code/cost_code filter options for this PO's lines. receive_document_id is required and validated to belong to this PO — the remaining-balance figures (qty_received, bal_receive) are still computed cumulatively across ALL of the PO's receive documents (they read purchase_order_line.qty_received, a single PO-line-level running total), not scoped to just this one document.",
+                "description": "Each line also carries cost_group_name, cost_group_code and cost_subgroup_name (null when the line has no cost_subgroup_id), alongside the unchanged 4-level cost_code.\nReturns po_context (order_type, project_code), lines, and distinct mat_code/cost_code filter options for this PO's lines. receive_document_id is required and validated to belong to this PO — the remaining-balance figures (qty_received, bal_receive) are still computed cumulatively across ALL of the PO's receive documents (they read purchase_order_line.qty_received, a single PO-line-level running total), not scoped to just this one document.",
                 "produces": [
                     "application/json"
                 ],
@@ -2823,7 +2823,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Same shape as receive-lines, but for return: qty_received is the current cumulative received qty, which is the max returnable amount for the line. Requires purchase_order.status = 'APPROVED' (400 otherwise).",
+                "description": "Each line also carries cost_group_name, cost_group_code and cost_subgroup_name (null when the line has no cost_subgroup_id).\nSame shape as receive-lines, but for return: qty_received is the current cumulative received qty, which is the max returnable amount for the line. Requires purchase_order.status = 'APPROVED' (400 otherwise).",
                 "produces": [
                     "application/json"
                 ],
@@ -9846,6 +9846,87 @@ const docTemplate = `{
                 }
             }
         },
+        "/po/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same filters as GET /po/line-items (date_from, date_to, po_no, requested_by, project_code,\nreceiving_status, dept_code, search) but returns every matching PO, without pagination and\nwithout nested lines. total_amount is pre-VAT after discount (purchase_order.total_amount -\ndiscount_amount). credit is credit days parsed from supplier.payment_terms, or the raw text\nwhen it cannot be parsed. dept_code = department of the requester (falls back to the linked PR).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Export approved POs (one row per PO, no pagination)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "po_date \u003e= (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po_date \u003c= (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po_no ILIKE filter",
+                        "name": "po_no",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "requested_by user id filter",
+                        "name": "requested_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po.project_code filter",
+                        "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "NOT_RECEIVED | PARTIAL | COMPLETE",
+                        "name": "receiving_status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "department of the requester (fallback: linked PR dept_code)",
+                        "name": "dept_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "matches po_no or any linked pr_no (ILIKE)",
+                        "name": "search",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/po/line-items": {
             "get": {
                 "security": [
@@ -9917,6 +9998,18 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "department of the requester (fallback: linked PR dept_code when requested_by is NULL)",
+                        "name": "dept_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "matches po_no or any linked pr_no (ILIKE)",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "default": 1,
                         "description": "page (paginates POs)",
@@ -9936,6 +10029,81 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/list-export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same filters and same row fields as GET /po (status, order_type, my, date_from, date_to, dept_code,\nsearch), but returns every matching PO in one response. Intended for client-side .xlsx export.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Export purchase orders (no pagination, no implicit status filter)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "status filter — comma-separated for multiple",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "when true, only POs created by the current user",
+                        "name": "my",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "stock | cost | asset_machine | asset_office_equipment | asset_tools",
+                        "name": "order_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po_date \u003e= (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "po_date \u003c= (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "requester's department (fallback: linked PR dept_code)",
+                        "name": "dept_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "matches po_no or any linked pr_no (ILIKE)",
+                        "name": "search",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -10460,6 +10628,64 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/{id}/deposit-paid": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets deposit_paid. When true, stamps deposit_paid_at (Asia/Bangkok) and deposit_paid_by (current\nuser); when false, both are reset to NULL. Does not touch status or status_receive.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Mark a PO's deposit as paid / unpaid",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "PO ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "deposit_paid flag",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.setDepositPaidRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -15129,6 +15355,14 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.setDepositPaidRequest": {
+            "type": "object",
+            "properties": {
+                "deposit_paid": {
+                    "type": "boolean"
+                }
+            }
+        },
         "models.AddAttachmentRequest": {
             "type": "object",
             "required": [
@@ -17658,6 +17892,15 @@ const docTemplate = `{
                     "description": "CostCode/CostSubgroupName — resolved via cost_subgroup -\u003e cost_group -\u003e\ncost_job -\u003e cost_subject, same join/convention as pr_approval.go's\nPRLineItem.CostCode and PrintData's poPrintItem.Code. Nil when\nCostSubgroupID is nil (no cost code assigned to this line).",
                     "type": "string"
                 },
+                "cost_code_full": {
+                    "type": "string"
+                },
+                "cost_code_main": {
+                    "type": "string"
+                },
+                "cost_code_sub": {
+                    "type": "string"
+                },
                 "cost_subgroup_id": {
                     "description": "CostSubgroupID: explicit value wins; auto-filled from the source PR line's\ncost_subgroup_id when pr_line_id is set and no explicit value is sent — same\nprecedence pattern as PurchaseOrder.JobCode's auto-fill from PR.",
                     "type": "integer"
@@ -17722,7 +17965,14 @@ const docTemplate = `{
                 "spec": {
                     "type": "string"
                 },
+                "spec_name": {
+                    "type": "string"
+                },
                 "status": {
+                    "type": "string"
+                },
+                "unit_name": {
+                    "description": "Added for the PO list line-item modal (GET /po/:id only). All nil when the underlying\njoin is missing. SpecName duplicates ` + "`" + `spec` + "`" + `; CostCodeFull duplicates ` + "`" + `cost_code` + "`" + `.",
                     "type": "string"
                 },
                 "unit_price": {

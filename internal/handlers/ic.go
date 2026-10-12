@@ -990,6 +990,10 @@ type ICReceiveLine struct {
 	BalReceive  float64 `json:"bal_receive"`
 	Unit        *string `json:"unit"`
 	UnitPrice   float64 `json:"unit_price"`
+	// Cost-group / cost-subgroup display fields (null when the line has no cost_subgroup_id).
+	CostGroupName    *string `json:"cost_group_name"`
+	CostGroupCode    *string `json:"cost_group_code"`
+	CostSubgroupName *string `json:"cost_subgroup_name"`
 }
 
 const icReceiveLinesQuery = `
@@ -998,7 +1002,8 @@ const icReceiveLinesQuery = `
 	       pol.mat_code,
 	       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
 	       pol.description,
-	       pol.qty_ordered, pol.qty_received, u.unit_name, pol.unit_price
+	       pol.qty_ordered, pol.qty_received, u.unit_name, pol.unit_price,
+		       cg.group_name, cg.group_code, cs.subgroup_name
 	FROM purchase_order_line pol
 	LEFT JOIN cost_subgroup cs ON pol.cost_subgroup_id = cs.id
 	LEFT JOIN cost_group    cg ON cg.id = cs.group_id
@@ -1027,7 +1032,8 @@ func fetchICReceiveLines(ctx context.Context, querier interface {
 		var l ICReceiveLine
 		var composedDesc, rawDesc *string
 		if err := rows.Scan(&l.LineID, &l.LineNo, &l.CostCode, &l.MatCode, &composedDesc,
-			&rawDesc, &l.QtyOrdered, &l.QtyReceived, &l.Unit, &l.UnitPrice); err != nil {
+			&rawDesc, &l.QtyOrdered, &l.QtyReceived, &l.Unit, &l.UnitPrice,
+				&l.CostGroupName, &l.CostGroupCode, &l.CostSubgroupName); err != nil {
 			return nil, err
 		}
 		if composedDesc != nil {
@@ -1058,6 +1064,7 @@ func validateReceiveDocumentBelongsToPO(ctx context.Context, querier interface {
 
 // ListReceiveLines godoc
 // @Summary      List PO line items for the receiving ("รายการสินค้า") tab
+// @Description  Each line also carries cost_group_name, cost_group_code and cost_subgroup_name (null when the line has no cost_subgroup_id), alongside the unchanged 4-level cost_code.
 // @Description  Returns po_context (order_type, project_code), lines, and distinct mat_code/cost_code filter options for this PO's lines. receive_document_id is required and validated to belong to this PO — the remaining-balance figures (qty_received, bal_receive) are still computed cumulatively across ALL of the PO's receive documents (they read purchase_order_line.qty_received, a single PO-line-level running total), not scoped to just this one document.
 // @Tags         IC
 // @Security     BearerAuth
@@ -1406,10 +1413,15 @@ type ICDocumentLine struct {
 	Unit        *string `json:"unit"`
 	UnitPrice   float64 `json:"unit_price"`
 	Qty         float64 `json:"qty"`
+	// Cost-group / cost-subgroup display fields (null when the line has no cost_subgroup_id).
+	CostGroupName    *string `json:"cost_group_name"`
+	CostGroupCode    *string `json:"cost_group_code"`
+	CostSubgroupName *string `json:"cost_subgroup_name"`
 }
 
 // GetReceiveDocumentLines godoc
 // @Summary      List the lines actually received under one specific receive document (print feed)
+// @Description  Each line also carries cost_group_name, cost_group_code and cost_subgroup_name (null when the line has no cost subgroup), alongside the unchanged 4-level cost_code.
 // @Description  Returns only the lines posted under this one receive document — not all lines of the PO. Both order_type='cost' (ic_project_cost_item_transaction.receive_document_id) and order_type='stock' (stock_transaction.receive_document_id) now carry this FK and are scoped the same way, returning scoped_by_document=true. FALLBACK for stock-type only: rows written before this FK existed (or for a PO that historically had more than one document, since the backfill only linked POs with exactly one document) have receive_document_id IS NULL — if the scoped query returns nothing, this falls back to every 'IN' stock_transaction row for the whole PO that still has receive_document_id IS NULL, returning scoped_by_document=false with a warning field. This fallback path never mixes in rows that are already linked to a *different* document.
 // @Tags         IC
 // @Security     BearerAuth
@@ -1444,7 +1456,8 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	if orderType == "cost" {
 		rows, err := h.db.Query(ctx, `
 			SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code,
-			       t.qty, pool.mat_code, pool.item_name, COALESCE(u.unit_name, pool.unit), COALESCE(pol.unit_price, 0)
+			       t.qty, pool.mat_code, pool.item_name, COALESCE(u.unit_name, pool.unit), COALESCE(pol.unit_price, 0),
+			       cg.group_name, cg.group_code, cs.subgroup_name
 			FROM ic_project_receipt_pool_transaction t
 			JOIN ic_project_receipt_pool pool ON pool.id = t.receipt_pool_id
 			LEFT JOIN purchase_order_line pol ON pol.id = t.po_line_id
@@ -1464,7 +1477,8 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 		lines := []ICDocumentLine{}
 		for rows.Next() {
 			var l ICDocumentLine
-			if err := rows.Scan(&l.CostCode, &l.Qty, &l.MatCode, &l.Description, &l.Unit, &l.UnitPrice); err != nil {
+			if err := rows.Scan(&l.CostCode, &l.Qty, &l.MatCode, &l.Description, &l.Unit, &l.UnitPrice,
+				&l.CostGroupName, &l.CostGroupCode, &l.CostSubgroupName); err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, "failed to scan document line: "+err.Error())
 			}
 			lines = append(lines, l)
@@ -1488,7 +1502,8 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	// po_line_id column to stock_transaction would remove the ambiguity if it becomes a problem.
 	scopedRows, err := h.db.Query(ctx, `
 		SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
-		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty
+		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty,
+		       cg.group_name, cg.group_code, cs.subgroup_name
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
 		LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
@@ -1506,7 +1521,8 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	scopedLines := []ICDocumentLine{}
 	for scopedRows.Next() {
 		var l ICDocumentLine
-		if err := scopedRows.Scan(&l.CostCode, &l.MatCode, &l.Description, &l.Unit, &l.UnitPrice, &l.Qty); err != nil {
+		if err := scopedRows.Scan(&l.CostCode, &l.MatCode, &l.Description, &l.Unit, &l.UnitPrice, &l.Qty,
+				&l.CostGroupName, &l.CostGroupCode, &l.CostSubgroupName); err != nil {
 			scopedRows.Close()
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan document line: "+err.Error())
 		}
@@ -1528,7 +1544,8 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	// (receive_document_id IS NULL) rows only, never rows already linked to a different document.
 	rows, err := h.db.Query(ctx, `
 		SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
-		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty
+		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty,
+		       cg.group_name, cg.group_code, cs.subgroup_name
 		FROM stock_transaction st
 		JOIN stock_item si ON si.id = st.item_id
 		LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
@@ -1548,7 +1565,8 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	lines := []ICDocumentLine{}
 	for rows.Next() {
 		var l ICDocumentLine
-		if err := rows.Scan(&l.CostCode, &l.MatCode, &l.Description, &l.Unit, &l.UnitPrice, &l.Qty); err != nil {
+		if err := rows.Scan(&l.CostCode, &l.MatCode, &l.Description, &l.Unit, &l.UnitPrice, &l.Qty,
+			&l.CostGroupName, &l.CostGroupCode, &l.CostSubgroupName); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan document line: "+err.Error())
 		}
 		lines = append(lines, l)
@@ -1784,6 +1802,10 @@ type ICReturnLine struct {
 	Unit        *string `json:"unit"`
 	UnitPrice   float64 `json:"unit_price"`
 	QtyReceived float64 `json:"qty_received"`
+	// Cost-group / cost-subgroup display fields (null when the line has no cost_subgroup_id).
+	CostGroupName    *string `json:"cost_group_name"`
+	CostGroupCode    *string `json:"cost_group_code"`
+	CostSubgroupName *string `json:"cost_subgroup_name"`
 }
 
 const icReturnLinesQuery = `
@@ -1792,7 +1814,8 @@ const icReturnLinesQuery = `
 	       pol.mat_code,
 	       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
 	       pol.description,
-	       u.unit_name, pol.unit_price, pol.qty_received
+	       u.unit_name, pol.unit_price, pol.qty_received,
+		       cg.group_name, cg.group_code, cs.subgroup_name
 	FROM purchase_order_line pol
 	LEFT JOIN cost_subgroup cs ON pol.cost_subgroup_id = cs.id
 	LEFT JOIN cost_group    cg ON cg.id = cs.group_id
@@ -1819,7 +1842,8 @@ func fetchICReturnLines(ctx context.Context, querier interface {
 		var l ICReturnLine
 		var composedDesc, rawDesc *string
 		if err := rows.Scan(&l.LineID, &l.LineNo, &l.CostCode, &l.MatCode, &composedDesc,
-			&rawDesc, &l.Unit, &l.UnitPrice, &l.QtyReceived); err != nil {
+			&rawDesc, &l.Unit, &l.UnitPrice, &l.QtyReceived,
+				&l.CostGroupName, &l.CostGroupCode, &l.CostSubgroupName); err != nil {
 			return nil, err
 		}
 		if composedDesc != nil {
@@ -1834,6 +1858,7 @@ func fetchICReturnLines(ctx context.Context, querier interface {
 
 // ListReturnLines godoc
 // @Summary      List PO line items for the return ("คืนสินค้า") tab
+// @Description  Each line also carries cost_group_name, cost_group_code and cost_subgroup_name (null when the line has no cost_subgroup_id).
 // @Description  Same shape as receive-lines, but for return: qty_received is the current cumulative received qty, which is the max returnable amount for the line. Requires purchase_order.status = 'APPROVED' (400 otherwise).
 // @Tags         IC
 // @Security     BearerAuth

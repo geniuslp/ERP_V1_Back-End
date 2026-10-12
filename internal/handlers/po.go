@@ -147,41 +147,86 @@ func reconcilePRLineQty(ctx context.Context, tx pgx.Tx, oldLines, newLines []poL
 	return nil
 }
 
-// ListPO godoc
-// @Summary      List purchase orders
-// @Description  status accepts one or more comma-separated values (e.g. status=PENDING_APPROVAL,PENDING_REAPPROVAL) — matched via IN, not exact equality, so multiple statuses can be requested together (needed by the PO Approval page). page_size and limit are aliases for the same page-size parameter — page_size wins if both are sent.
-// @Tags         Purchase Order
-// @Security     BearerAuth
-// @Produce      json
-// @Param        status    query  string  false  "status filter — comma-separated for multiple, e.g. PENDING_APPROVAL,PENDING_REAPPROVAL"
-// @Param        supplier  query  string  false  "supplier_id filter"
-// @Param        my        query  bool    false  "when true, only POs created by the current user"
-// @Param        order_type query string  false  "filter: stock | cost | asset_machine | asset_office_equipment | asset_tools"
-// @Param        page      query  int     false  "page"  default(1)
-// @Param        page_size query  int     false  "page_size (alias: limit)"  default(20)
-// @Param        limit     query  int     false  "alias for page_size — used if page_size is not sent"
-// @Success      200  {object}  models.PaginatedResponse
-// @Router       /po [get]
-func (h *POHandler) List(c *fiber.Ctx) error {
-	page := max(c.QueryInt("page", 1), 1)
-	// page_size and limit are aliases for the same thing — the frontend has historically sent
-	// `limit` (matching the now-removed POApprovalHandler.List's contract) while this handler
-	// only ever read `page_size`, so `limit` was silently ignored and always fell back to the
-	// default 20. page_size wins if a caller sends both.
-	rawSize := c.QueryInt("page_size", 0)
-	if rawSize == 0 {
-		rawSize = c.QueryInt("limit", 20)
-	}
-	size := min(rawSize, 100)
-	offset := (page - 1) * size
+// poListRow is one row of GET /po and GET /po/export (identical fields).
+type poListRow struct {
+	POID           int64      `json:"po_id"`
+	PONo           string     `json:"po_no"`
+	PODate         time.Time  `json:"po_date"`
+	SupplierID     *int64     `json:"supplier_id,omitempty"`
+	SupplierName   *string    `json:"supplier_name,omitempty"`
+	Status         string     `json:"status"`
+	StatusReceive  string     `json:"status_receive"`
+	OrderType      string     `json:"order_type"`
+	JobCode        string     `json:"job_code"`
+	Currency       string     `json:"currency"`
+	TotalAmount    float64    `json:"total_amount"`
+	VATAmount      float64    `json:"vat_amount"`
+	NetAmount      float64    `json:"net_amount"`
+	ExpectedDate   *string    `json:"expected_date,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	ProjectCode    *string    `json:"project_code,omitempty"`
+	ProjectName    *string    `json:"project_name,omitempty"`
+	CreatedByName  string     `json:"created_by_name"`
+	UpdatedByName  string     `json:"updated_by_name"`
+	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+	ApprovedByName *string    `json:"approved_by_name,omitempty"`
+	JobNames       []string   `json:"job_names,omitempty"`
+	// RevisionRound is how many times this PO has been edited-and-resent for re-approval
+	// (COUNT of po_edit_log rows). 0 = original, never edited. po_no itself never changes;
+	// the frontend composes a display suffix like "#R2" from this when > 0.
+	RevisionRound int `json:"revision_round"`
+	// PRNos: distinct pr_no(s) this PO originated from. Resolved from BOTH the header-level
+	// link (purchase_order.pr_id) and the line-level link (purchase_order_line.pr_line_id ->
+	// purchase_request_line.pr_id) — neither relation alone is guaranteed complete, and nothing
+	// in the schema stops a PO's lines from referencing different PRs. Omitted when empty.
+	PRNos []string `json:"pr_nos,omitempty"`
+	// Credit: credit days parsed from supplier.payment_terms (int), else the raw payment_terms
+	// text, else null.
+	Credit      any     `json:"credit"`
+	DepositPaid bool    `json:"deposit_paid"`
+	Remarks     *string `json:"remarks"`
+	// DiscountAmount lets clients show "pre-VAT after discount" = total_amount - discount_amount
+	// (stored total_amount is the pre-discount sum of line bases).
+	DiscountAmount float64 `json:"discount_amount"`
+}
 
-	var conditions []string
+// poListSelectSQL is the shared SELECT ... FROM ... JOINs for GET /po and GET /po/export.
+// Every nullable FK is a LEFT JOIN. Callers append WHERE / ORDER BY / LIMIT.
+const poListSelectSQL = `
+		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name,
+		       po.status, po.status_receive, po.order_type, po.job_code, po.currency, po.total_amount, po.vat_amount, po.net_amount,
+		       po.expected_date::text, po.created_at, po.updated_at, po.project_code, pj.project_name,
+		       COALESCE(cu.full_name, '') AS created_by_name,
+		       COALESCE(uu.full_name, '') AS updated_by_name,
+		       al.action_at AS approved_at,
+		       au.full_name AS approved_by_name,
+		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round,
+		       ` + poPRNosSQL + ` AS pr_nos,
+		       s.payment_terms, COALESCE(po.deposit_paid, false), po.remarks, COALESCE(po.discount_amount, 0)
+		FROM purchase_order po
+		LEFT JOIN supplier s ON s.id = po.supplier_id
+		LEFT JOIN project pj ON pj.project_code = po.project_code
+		LEFT JOIN users cu ON cu.id = po.created_by
+		LEFT JOIN users uu ON uu.id = po.updated_by
+		LEFT JOIN LATERAL (
+		    SELECT action_at, action_by
+		    FROM approval_log
+		    WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
+		    ORDER BY action_at DESC LIMIT 1
+		) al ON true
+		LEFT JOIN users au ON au.id = al.action_by
+		`
+
+// buildPOListFilters builds the WHERE clause shared by GET /po and GET /po/export: my, status
+// (comma-separated), order_type, date_from/date_to (po.po_date), dept_code and search.
+func buildPOListFilters(c *fiber.Ctx) (string, []any, error) {
+	conditions := []string{"po.deleted_at IS NULL"}
 	var args []any
-	conditions = append(conditions, "po.deleted_at IS NULL")
 	if c.QueryBool("my", false) {
 		claims := middleware.GetClaims(c)
 		if claims == nil {
-			return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+			return "", nil, fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 		}
 		args = append(args, claims.UserID)
 		conditions = append(conditions, fmt.Sprintf("po.created_by = $%d", len(args)))
@@ -201,112 +246,97 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 			conditions = append(conditions, fmt.Sprintf("po.status = ANY($%d)", len(args)))
 		}
 	}
-
 	if v := strings.TrimSpace(c.Query("order_type")); v != "" {
 		if err := validateOrderType(v); err != nil {
-			return err
+			return "", nil, err
 		}
 		args = append(args, v)
 		conditions = append(conditions, fmt.Sprintf("po.order_type = $%d", len(args)))
 	}
+	if v := strings.TrimSpace(c.Query("date_from")); v != "" {
+		args = append(args, v)
+		conditions = append(conditions, fmt.Sprintf("po.po_date >= $%d::date", len(args)))
+	}
+	if v := strings.TrimSpace(c.Query("date_to")); v != "" {
+		args = append(args, v)
+		conditions = append(conditions, fmt.Sprintf("po.po_date <= $%d::date", len(args)))
+	}
+	conditions, args = poSummaryNewFilters(c, conditions, args)
+	return "WHERE " + strings.Join(conditions, " AND "), args, nil
+}
 
-	var where string
-	if len(conditions) > 0 {
-		where = "WHERE " + strings.Join(conditions, " AND ")
+func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
+	items := []poListRow{}
+	for rows.Next() {
+		var r poListRow
+		var terms *string
+		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.SupplierName,
+			&r.Status, &r.StatusReceive, &r.OrderType, &r.JobCode, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
+			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
+			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName,
+			&r.RevisionRound, &r.PRNos, &terms, &r.DepositPaid, &r.Remarks, &r.DiscountAmount); err != nil {
+			return nil, err
+		}
+		r.Credit = poCredit(terms)
+		items = append(items, r)
+	}
+	return items, rows.Err()
+}
+
+// ListPO godoc
+// @Summary      List purchase orders
+// @Description  status accepts one or more comma-separated values (e.g. status=PENDING_APPROVAL,PENDING_REAPPROVAL) — matched via IN, not exact equality, so multiple statuses can be requested together (needed by the PO Approval page). page_size and limit are aliases for the same page-size parameter — page_size wins if both are sent.
+// @Description  date_from/date_to filter po.po_date; dept_code filters by the requester's department (falls back to the linked PR's dept_code when requested_by is NULL); search matches po_no or any linked pr_no (ILIKE).
+// @Description  Each row also carries credit (credit days parsed from supplier.payment_terms, else the raw text), deposit_paid and remarks.
+// @Tags         Purchase Order
+// @Security     BearerAuth
+// @Produce      json
+// @Param        status    query  string  false  "status filter — comma-separated for multiple, e.g. PENDING_APPROVAL,PENDING_REAPPROVAL"
+// @Param        supplier  query  string  false  "supplier_id filter"
+// @Param        my        query  bool    false  "when true, only POs created by the current user"
+// @Param        order_type query string  false  "filter: stock | cost | asset_machine | asset_office_equipment | asset_tools"
+// @Param        date_from query  string  false  "po_date >= (YYYY-MM-DD)"
+// @Param        date_to   query  string  false  "po_date <= (YYYY-MM-DD)"
+// @Param        dept_code query  string  false  "requester's department (fallback: linked PR dept_code)"
+// @Param        search    query  string  false  "matches po_no or any linked pr_no (ILIKE)"
+// @Param        page      query  int     false  "page"  default(1)
+// @Param        page_size query  int     false  "page_size (alias: limit)"  default(20)
+// @Param        limit     query  int     false  "alias for page_size — used if page_size is not sent"
+// @Success      200  {object}  models.PaginatedResponse
+// @Router       /po [get]
+func (h *POHandler) List(c *fiber.Ctx) error {
+	page := max(c.QueryInt("page", 1), 1)
+	// page_size and limit are aliases for the same thing — the frontend has historically sent
+	// `limit` (matching the now-removed POApprovalHandler.List's contract) while this handler
+	// only ever read `page_size`, so `limit` was silently ignored and always fell back to the
+	// default 20. page_size wins if a caller sends both.
+	rawSize := c.QueryInt("page_size", 0)
+	if rawSize == 0 {
+		rawSize = c.QueryInt("limit", 20)
+	}
+	size := min(rawSize, 100)
+	offset := (page - 1) * size
+
+	where, args, err := buildPOListFilters(c)
+	if err != nil {
+		return err
 	}
 
+	// COUNT and SELECT are separate templates: the SELECT appends limit/offset as extra $ params.
 	var total int64
 	h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM purchase_order po `+where, args...).Scan(&total)
 
 	args = append(args, size, offset)
-	rows, err := h.db.Query(context.Background(), `
-		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name,
-		       po.status, po.status_receive, po.order_type, po.job_code, po.currency, po.total_amount, po.vat_amount, po.net_amount,
-		       po.expected_date::text, po.created_at, po.updated_at, po.project_code, pj.project_name,
-		       COALESCE(cu.full_name, '') AS created_by_name,
-		       COALESCE(uu.full_name, '') AS updated_by_name,
-		       al.action_at AS approved_at,
-		       au.full_name AS approved_by_name,
-		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round,
-		       (SELECT ARRAY_AGG(DISTINCT x.pr_no ORDER BY x.pr_no) FROM (
-		           SELECT pr.pr_no
-		           FROM purchase_order_line pol
-		           JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
-		           JOIN purchase_request pr ON pr.id = prl.pr_id AND pr.deleted_at IS NULL
-		           WHERE pol.po_id = po.id
-		           UNION
-		           SELECT pr2.pr_no FROM purchase_request pr2 WHERE pr2.id = po.pr_id AND pr2.deleted_at IS NULL
-		       ) x) AS pr_nos
-		FROM purchase_order po
-		LEFT JOIN supplier s ON s.id = po.supplier_id
-		LEFT JOIN project pj ON pj.project_code = po.project_code
-		LEFT JOIN users cu ON cu.id = po.created_by
-		LEFT JOIN users uu ON uu.id = po.updated_by
-		LEFT JOIN LATERAL (
-		    SELECT action_at, action_by
-		    FROM approval_log
-		    WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
-		    ORDER BY action_at DESC LIMIT 1
-		) al ON true
-		LEFT JOIN users au ON au.id = al.action_by
-		`+where+`
+	rows, err := h.db.Query(context.Background(), poListSelectSQL+where+`
 		ORDER BY po.created_at DESC LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	type PORow struct {
-		POID           int64      `json:"po_id"`
-		PONo           string     `json:"po_no"`
-		PODate         time.Time  `json:"po_date"`
-		SupplierID     *int64     `json:"supplier_id,omitempty"`
-		SupplierName   *string    `json:"supplier_name,omitempty"`
-		Status         string     `json:"status"`
-		StatusReceive  string     `json:"status_receive"`
-		OrderType      string     `json:"order_type"`
-		JobCode        string     `json:"job_code"`
-		Currency       string     `json:"currency"`
-		TotalAmount    float64    `json:"total_amount"`
-		VATAmount      float64    `json:"vat_amount"`
-		NetAmount      float64    `json:"net_amount"`
-		ExpectedDate   *string    `json:"expected_date,omitempty"`
-		CreatedAt      time.Time  `json:"created_at"`
-		UpdatedAt      time.Time  `json:"updated_at"`
-		ProjectCode    *string    `json:"project_code,omitempty"`
-		ProjectName    *string    `json:"project_name,omitempty"`
-		CreatedByName  string     `json:"created_by_name"`
-		UpdatedByName  string     `json:"updated_by_name"`
-		ApprovedAt     *time.Time `json:"approved_at,omitempty"`
-		ApprovedByName *string    `json:"approved_by_name,omitempty"`
-		JobNames       []string   `json:"job_names,omitempty"`
-		// RevisionRound is how many times this PO has been edited-and-resent for re-approval
-		// (COUNT of po_edit_log rows). 0 = original, never edited. po_no itself never changes;
-		// the frontend composes a display suffix like "#R2" from this when > 0.
-		RevisionRound int `json:"revision_round"`
-		// PRNos: distinct pr_no(s) this PO originated from. Resolved from BOTH the header-level
-		// link (purchase_order.pr_id) and the line-level link (purchase_order_line.pr_line_id ->
-		// purchase_request_line.pr_id) — a PO can have pr_id set with lines that don't carry
-		// pr_line_id (pr_line_id is optional per line), or vice versa in principle, so neither
-		// relation alone is guaranteed complete. Always an array (not a single string) since
-		// nothing in the schema prevents a PO's lines from referencing pr_line_ids that belong to
-		// different PRs when po.pr_id itself is null — this differs from the common case (one PO
-		// from one PR) but is not blocked at the DB or handler level. Empty array (omitted, since
-		// omitempty) when the PO has no PR link at all.
-		PRNos []string `json:"pr_nos,omitempty"`
-	}
-
-	var items []PORow
-	for rows.Next() {
-		var r PORow
-		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.SupplierName,
-			&r.Status, &r.StatusReceive, &r.OrderType, &r.JobCode, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
-			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
-			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName,
-			&r.RevisionRound, &r.PRNos); err != nil {
-			return err
-		}
-		items = append(items, r)
+	items, err := scanPOListRows(rows)
+	if err != nil {
+		return err
 	}
 
 	totalPages := int(total)/size + 1
@@ -353,6 +383,8 @@ const poHeaderReceivingSQL = `SELECT CASE
 // @Param        receiving_status query string false "header receiving status: NOT_RECEIVED | PARTIAL | COMPLETE (derived from non-cancelled lines, same rule as Finance)"
 // @Param        cost_subgroup_id query int    false  "PO matches when at least one line has exactly this cost_subgroup_id"
 // @Param        head_subgroup_id query int    false  "id of a Head subgroup; PO matches when at least one line's cost subgroup is in that Head's group"
+// @Param        dept_code    query  string  false  "department of the requester (fallback: linked PR dept_code when requested_by is NULL)"
+// @Param        search       query  string  false  "matches po_no or any linked pr_no (ILIKE)"
 // @Param        page         query  int     false  "page (paginates POs)"  default(1)
 // @Param        page_size    query  int     false  "page_size (POs per page)"  default(20)
 // @Success      200  {object}  models.PaginatedResponse
@@ -400,6 +432,8 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		args = append(args, v)
 		conditions = append(conditions, fmt.Sprintf("po.project_code = $%d", len(args)))
 	}
+	// dept_code (requester's department, PR fallback) and search (po_no or linked pr_no) — shared with /po/export.
+	conditions, args = poSummaryNewFilters(c, conditions, args)
 
 	// receiving_status is a header-level filter on the status derived from all non-cancelled lines.
 	if v := strings.ToUpper(strings.TrimSpace(c.Query("receiving_status"))); v != "" {
@@ -449,10 +483,13 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name, s.contact_phone,
 		       COALESCE(u.full_name, ''), po.project_code, po.status,
 		       po.total_amount, po.discount_amount, po.vat_amount, po.net_amount, po.currency,
-		       (`+poHeaderReceivingSQL+`) AS receiving_status
+		       (`+poHeaderReceivingSQL+`) AS receiving_status,
+		       `+poPRNosSQL+` AS pr_nos, s.payment_terms, pj.project_name,
+		       COALESCE(po.deposit_paid, false), po.remarks, po.status_receive
 		FROM purchase_order po
 		LEFT JOIN users    u ON u.id = po.requested_by
 		LEFT JOIN supplier s ON s.id = po.supplier_id
+		LEFT JOIN project  pj ON pj.project_code = po.project_code
 		`+where+`
 		ORDER BY po.po_date DESC, po.po_no DESC
 		LIMIT $`+strconv.Itoa(len(poArgs)-1)+` OFFSET $`+strconv.Itoa(len(poArgs)), poArgs...)
@@ -480,22 +517,30 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 	}
 
 	type POGroup struct {
-		POID            int64         `json:"po_id"`
-		PONo            string        `json:"po_no"`
-		PODate          time.Time     `json:"po_date"`
-		SupplierID      *int64        `json:"supplier_id,omitempty"`
-		SupplierName    *string       `json:"supplier_name,omitempty"`
-		ContactPhone    *string       `json:"contact_phone,omitempty"`
-		RequestedBy     string        `json:"requested_by"`
-		ProjectCode     *string       `json:"project_code,omitempty"`
-		Status          string        `json:"status"`
-		TotalAmount     float64       `json:"total_amount"`
-		DiscountAmount  float64       `json:"discount_amount"`
-		VATAmount       float64       `json:"vat_amount"`
-		NetAmount       float64       `json:"net_amount"`
-		Currency        string        `json:"currency"`
-		ReceivingStatus *string       `json:"receiving_status"`
-		Lines           []LineItemRow `json:"lines"`
+		POID            int64     `json:"po_id"`
+		PONo            string    `json:"po_no"`
+		PODate          time.Time `json:"po_date"`
+		SupplierID      *int64    `json:"supplier_id,omitempty"`
+		SupplierName    *string   `json:"supplier_name,omitempty"`
+		ContactPhone    *string   `json:"contact_phone,omitempty"`
+		RequestedBy     string    `json:"requested_by"`
+		ProjectCode     *string   `json:"project_code,omitempty"`
+		Status          string    `json:"status"`
+		TotalAmount     float64   `json:"total_amount"`
+		DiscountAmount  float64   `json:"discount_amount"`
+		VATAmount       float64   `json:"vat_amount"`
+		NetAmount       float64   `json:"net_amount"`
+		Currency        string    `json:"currency"`
+		ReceivingStatus *string   `json:"receiving_status"`
+		// id mirrors po_id; the rest back the one-row-per-PO list page.
+		ID            int64         `json:"id"`
+		PRNos         []string      `json:"pr_nos"`
+		Credit        any           `json:"credit"`
+		ProjectName   *string       `json:"project_name"`
+		DepositPaid   bool          `json:"deposit_paid"`
+		Remarks       *string       `json:"remarks"`
+		StatusReceive string        `json:"status_receive"`
+		Lines         []LineItemRow `json:"lines"`
 	}
 
 	var groups []POGroup
@@ -503,11 +548,18 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 	groupByID := make(map[int64]*POGroup, size)
 	for poRows.Next() {
 		var g POGroup
+		var terms *string
 		if err := poRows.Scan(&g.POID, &g.PONo, &g.PODate, &g.SupplierID, &g.SupplierName, &g.ContactPhone,
 			&g.RequestedBy, &g.ProjectCode, &g.Status,
-			&g.TotalAmount, &g.DiscountAmount, &g.VATAmount, &g.NetAmount, &g.Currency, &g.ReceivingStatus); err != nil {
+			&g.TotalAmount, &g.DiscountAmount, &g.VATAmount, &g.NetAmount, &g.Currency, &g.ReceivingStatus,
+			&g.PRNos, &terms, &g.ProjectName, &g.DepositPaid, &g.Remarks, &g.StatusReceive); err != nil {
 			return err
 		}
+		g.ID = g.POID
+		if g.PRNos == nil {
+			g.PRNos = []string{}
+		}
+		g.Credit = poCredit(terms)
 		g.Lines = []LineItemRow{}
 		groups = append(groups, g)
 		poIDs = append(poIDs, g.POID)
@@ -707,6 +759,7 @@ func (h *POHandler) CostBudget(c *fiber.Ctx) error {
 // GetPO godoc
 // @Summary      Get purchase order by ID
 // @Description  Each line includes cost_subgroup_id (nullable) — the Cost Code selected for that line, mirroring purchase_request_line.cost_subgroup_id. Header includes receiver_name/receiver_phone (both nullable).
+// @Description  Each line also carries (all nullable, additive): unit_name, spec_name (same value as spec), cost_code_full (same as cost_code: subject+job+group+subgroup codes), cost_code_main (subject+job+group), cost_code_sub (subgroup_code only), alongside the existing cost_subgroup_name, mat_name, qty_ordered, qty_received, unit_price, amount, line_net and remarks. CANCELLED lines are still returned (unchanged behavior).
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
@@ -784,9 +837,14 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
 		       csg.subgroup_name AS cost_subgroup_name,
 		       mn.mat_name, ss.spec_description, b.brand_name,
-		       COALESCE(si.qty, 0), prl.qty_reserved
+		       COALESCE(si.qty, 0), prl.qty_reserved,
+		       un.unit_name,
+		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code_full,
+		       csub.subject_code || cj.job_code || cg.group_code AS cost_code_main,
+		       csg.subgroup_code AS cost_code_sub
 		FROM purchase_order_line pol
 		LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
+		LEFT JOIN unit          un ON un.id = mc.unit_id
 		LEFT JOIN mat_name      mn ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size     ss ON ss.id = mc.spec_id
 		LEFT JOIN brand         b  ON b.id  = mc.brand_id
@@ -805,7 +863,9 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 				&l.QtyOrdered, &l.QtyReceived, &l.UnitPrice, &l.DiscType, &l.Discount, &l.LineDiscount,
 				&l.LineVAT, &l.LineWHT, &l.LineNet, &l.WhtRate, &l.Amount, &l.Description, &l.Remarks, &l.Status,
 				&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName,
-				&l.MatName, &l.SpecDescription, &l.BrandName, &l.CurrentStock, &l.PRLineQtyReserved)
+				&l.MatName, &l.SpecDescription, &l.BrandName, &l.CurrentStock, &l.PRLineQtyReserved,
+				&l.UnitName, &l.CostCodeFull, &l.CostCodeMain, &l.CostCodeSub)
+			l.SpecName = l.SpecDescription
 			po.Lines = append(po.Lines, l)
 		}
 	}

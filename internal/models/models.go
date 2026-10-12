@@ -1059,6 +1059,13 @@ type POLine struct {
 	BrandName         *string  `json:"brand,omitempty"`
 	CurrentStock      float64  `json:"current_stock"`
 	PRLineQtyReserved *float64 `json:"pr_line_qty_reserved,omitempty"`
+	// Added for the PO list line-item modal (GET /po/:id only). All nil when the underlying
+	// join is missing. SpecName duplicates `spec`; CostCodeFull duplicates `cost_code`.
+	UnitName     *string `json:"unit_name,omitempty"`
+	SpecName     *string `json:"spec_name,omitempty"`
+	CostCodeFull *string `json:"cost_code_full,omitempty"`
+	CostCodeMain *string `json:"cost_code_main,omitempty"`
+	CostCodeSub  *string `json:"cost_code_sub,omitempty"`
 }
 
 type CreatePORequest struct {

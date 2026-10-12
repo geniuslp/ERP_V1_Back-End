@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -182,6 +183,12 @@ type pcTotals struct {
 	useVat, useWht       bool
 }
 
+// pcRound2 rounds a money value to 2 decimals (half away from zero) — the server-side figure for
+// line_vat / line_wht / line_net and the header totals, so they match the line modal's display.
+func pcRound2(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
 func pcParseDate(s string) (*time.Time, bool) {
 	t, err := time.Parse("2006-01-02", s)
 	if err != nil {
@@ -191,7 +198,9 @@ func pcParseDate(s string) (*time.Time, bool) {
 }
 
 // resolveLines validates every line (Thai errors, with the line number, before any write) and
-// calculates it. PO's no-Go-rounding behaviour is kept: numeric(18,4) rounds on INSERT.
+// calculates it. line_vat / line_wht / line_net and the header totals are rounded to 2 decimals
+// server-side (pcRound2): VAT = round(amount*7%), WHT = round(wht_base*rate/100), only when the
+// matching has_tax_invoice / has_wht flag is on, else 0.
 // prepareHeader must run first so empty line project_codes already fell back to the header's.
 func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreatePettyCashRequest) ([]pcLine, pcTotals, error) {
 	var tot pcTotals
@@ -326,7 +335,7 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 				return nil, tot, bad("วันที่ใบกำกับภาษีไม่ถูกต้อง (รูปแบบ YYYY-MM-DD)")
 			}
 			ln.hasTaxInvoice, ln.taxInvoiceNo, ln.taxInvoiceDate = true, &no, d
-			ln.vat = amount * pcVatRate
+			ln.vat = pcRound2(amount * pcVatRate)
 		}
 
 		// ── withholding tax ──
@@ -366,14 +375,15 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 			}
 			ln.hasWht, ln.taxForm, ln.whtIncomeTypeID = true, &form, l.WhtIncomeTypeID
 			ln.whtBase, ln.whtRate = &base, &rate // rate is the server-side snapshot, never the client's
-			ln.wht = base * rate / 100
+			ln.wht = pcRound2(base * rate / 100)
 		}
 
-		ln.net = amount + ln.vat - ln.wht
-		tot.total += ln.amount
-		tot.vat += ln.vat
-		tot.wht += ln.wht
-		tot.net += ln.net
+		ln.net = pcRound2(amount + ln.vat - ln.wht)
+		// header totals are sums of the already-rounded line figures, so they always agree with the lines
+		tot.total = pcRound2(tot.total + ln.amount)
+		tot.vat = pcRound2(tot.vat + ln.vat)
+		tot.wht = pcRound2(tot.wht + ln.wht)
+		tot.net = pcRound2(tot.net + ln.net)
 		tot.useVat = tot.useVat || ln.hasTaxInvoice
 		tot.useWht = tot.useWht || ln.hasWht
 		out = append(out, ln)
@@ -828,7 +838,7 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 		pcNilIfEmpty(req.OrderType), pcNilIfEmpty(req.DeptCode), pcNilIfEmpty(req.DeptName), pcNilIfEmpty(req.RefDocNo),
 	).Scan(&pcID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to create petty cash requisition: "+err.Error())
+		return fiber.NewError(fiber.StatusInternalServerError, "บันทึกใบเบิกเงินสดย่อยไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
 	}
 
 	if err := insertPCLines(ctx, tx, pcID, lines); err != nil {
@@ -962,7 +972,7 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 		pcNilIfEmpty(req.OrderType), pcNilIfEmpty(req.DeptCode), pcNilIfEmpty(req.DeptName), pcNilIfEmpty(req.RefDocNo),
 		claims.UserID, id,
 	); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to update petty cash requisition: "+err.Error())
+		return fiber.NewError(fiber.StatusInternalServerError, "แก้ไขใบเบิกเงินสดย่อยไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
 	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM petty_cash_requisition_line WHERE pc_id=$1`, id); err != nil {
