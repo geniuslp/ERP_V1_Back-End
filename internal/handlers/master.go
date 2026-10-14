@@ -1346,7 +1346,7 @@ func loadActiveRolesByUser(ctx context.Context, db *pgxpool.Pool, userIDs []int6
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      json
-// @Description  Each item keeps value/label/dept (existing dropdown contract) and also returns user_id, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.
+// @Description  Each item keeps value/label/dept (existing dropdown contract) and also returns user_id, username, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.
 // @Param        doc_type  query  string  true  "Document type, e.g. MEMO or PETTY_CASH"
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
@@ -1358,7 +1358,7 @@ func (h *MasterHandler) ListEligibleApprovers(c *fiber.Ctx) error {
 	}
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT DISTINCT u.id, u.full_name, u.dept_code, d.dept_name, u.employee_code, u.full_name_th, u.is_active
+		SELECT DISTINCT u.id, u.full_name, u.dept_code, d.dept_name, u.employee_code, u.full_name_th, u.is_active, u.username
 		FROM users u
 		LEFT JOIN departments d ON d.dept_code = u.dept_code
 		WHERE `+eligibleApproverCond+`
@@ -1377,6 +1377,7 @@ func (h *MasterHandler) ListEligibleApprovers(c *fiber.Ctx) error {
 		FullName     string          `json:"full_name"`
 		FullNameTH   *string         `json:"full_name_th"`
 		IsActive     bool            `json:"is_active"`
+		Username     string          `json:"username"`
 		Roles        []userRoleBrief `json:"roles"`
 		RoleNames    string          `json:"role_names"`
 	}
@@ -1385,7 +1386,7 @@ func (h *MasterHandler) ListEligibleApprovers(c *fiber.Ctx) error {
 	for rows.Next() {
 		var it approverItem
 		var deptCode, deptName *string
-		if err := rows.Scan(&it.Value, &it.Label, &deptCode, &deptName, &it.EmployeeCode, &it.FullNameTH, &it.IsActive); err != nil {
+		if err := rows.Scan(&it.Value, &it.Label, &deptCode, &deptName, &it.EmployeeCode, &it.FullNameTH, &it.IsActive, &it.Username); err != nil {
 			return err
 		}
 		it.UserID, it.FullName = it.Value, it.Label

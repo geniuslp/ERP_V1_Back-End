@@ -257,13 +257,13 @@ func (h *IcProjectMovementHandler) GetMovement(c *fiber.Ctx) error {
 	var d models.IcProjectMovementDetail
 	err = h.db.QueryRow(context.Background(), `
 		SELECT m.id, m.doc_no, m.doc_type, m.doc_date::text, m.project_code, p.project_name,
-		       m.job_code, m.requested_by, u.full_name, m.status, m.remarks, TO_CHAR(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
+		       m.job_code, m.requested_by, u.full_name, u.username, m.status, m.remarks, TO_CHAR(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		FROM ic_project_movement m
 		JOIN project p ON p.project_code = m.project_code
 		JOIN users u ON u.id = m.requested_by
 		WHERE m.id = $1 AND m.project_code = $2`, id, projectCode,
 	).Scan(&d.ID, &d.DocNo, &d.DocType, &d.DocDate, &d.ProjectCode, &d.ProjectName,
-		&d.JobCode, &d.RequestedBy, &d.RequestedByName, &d.Status, &d.Remarks, &d.CreatedAt)
+		&d.JobCode, &d.RequestedBy, &d.RequestedByName, &d.RequestedByUsername, &d.Status, &d.Remarks, &d.CreatedAt)
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "movement not found")
 	}
@@ -304,7 +304,7 @@ func (h *IcProjectMovementHandler) ListMovements(c *fiber.Ctx) error {
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT m.id, m.doc_no, m.doc_type, m.doc_date::text, m.status, m.job_code, u.full_name, TO_CHAR(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
+		SELECT m.id, m.doc_no, m.doc_type, m.doc_date::text, m.status, m.job_code, u.full_name, u.username, TO_CHAR(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		FROM ic_project_movement m
 		JOIN users u ON u.id = m.requested_by
 		WHERE m.project_code = $1
@@ -318,7 +318,7 @@ func (h *IcProjectMovementHandler) ListMovements(c *fiber.Ctx) error {
 	items := []models.IcProjectMovementListItem{}
 	for rows.Next() {
 		var m models.IcProjectMovementListItem
-		if err := rows.Scan(&m.ID, &m.DocNo, &m.DocType, &m.DocDate, &m.Status, &m.JobCode, &m.RequestedByName, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.DocNo, &m.DocType, &m.DocDate, &m.Status, &m.JobCode, &m.RequestedByName, &m.RequestedByUsername, &m.CreatedAt); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan movement: "+err.Error())
 		}
 		m.JobName = jobNameForCode(m.JobCode)
@@ -1554,6 +1554,7 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 		       csg.subgroup_name,
 		       CASE WHEN t.ref_type = 'PO' THEN po.po_no ELSE m.doc_no END,
 		       COALESCE(u.full_name, ''),
+		       COALESCE(u.username, ''),
 		       TO_CHAR(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		%s
 		WHERE %s
@@ -1568,7 +1569,7 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 	for rows.Next() {
 		var t models.IcProjectCostTransaction
 		if err := rows.Scan(&t.ID, &t.Qty, &t.QtyBefore, &t.QtyAfter, &t.UnitCost, &t.Remarks, &t.TxnDate, &t.RefType,
-			&t.MatCode, &t.MatName, &t.CostSubgroupID, &t.CostCode, &t.CostName, &t.RefNo, &t.CreatedByName, &t.CreatedAt); err != nil {
+			&t.MatCode, &t.MatName, &t.CostSubgroupID, &t.CostCode, &t.CostName, &t.RefNo, &t.CreatedByName, &t.CreatedByUsername, &t.CreatedAt); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan cost transaction: "+err.Error())
 		}
 		items = append(items, t)

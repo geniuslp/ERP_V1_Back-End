@@ -109,6 +109,7 @@ type ProjectFull struct {
 	ResponsiblePersonName *string    `json:"responsible_person_name,omitempty"` // free text ("ผู้รับผิดชอบหลัก"), required on write — replaces the owner_id dropdown
 	JobCodes              []string   `json:"job_codes,omitempty"`
 	BudgetAmount          float64    `json:"budget_amount"`
+	VOAmount              float64    `json:"vo_amount"` // "มูลค่า VO" — separate from budget_amount, never summed with it
 	SpentAmount           float64    `json:"spent_amount"`
 	PaidAmount            float64    `json:"paid_amount"`
 	RemainingAmount       float64    `json:"remaining_amount"`
@@ -135,6 +136,7 @@ type CreateProjectReq struct {
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
 	BudgetAmount          float64  `json:"budget_amount"`
+	VOAmount              *float64 `json:"vo_amount"` // nil/absent -> 0
 	ConsultantName        *string  `json:"consultant_name,omitempty"`
 	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
 	StartDate             *string  `json:"start_date,omitempty"`
@@ -153,6 +155,7 @@ type UpdateProjectReq struct {
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
 	BudgetAmount          float64  `json:"budget_amount"`
+	VOAmount              *float64 `json:"vo_amount"` // nil/absent -> 0
 	ConsultantName        *string  `json:"consultant_name,omitempty"`
 	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
 	StartDate             *string  `json:"start_date,omitempty"`       // "YYYY-MM-DD" — pgx casts to date automatically
@@ -997,6 +1000,9 @@ type PurchaseOrder struct {
 	// (COUNT of po_edit_log rows for this PO). 0 = original, never edited. po_no itself never
 	// changes; the frontend composes a display suffix like "#R2" from this when > 0.
 	RevisionRound int           `json:"revision_round"`
+	// PaidAmount / PaymentStatus: net payment_log total for this PO and UNPAID | PARTIAL | PAID vs net_amount.
+	PaidAmount    float64 `json:"paid_amount"`
+	PaymentStatus string  `json:"payment_status"`
 	OfficePhone   *string       `json:"office_phone,omitempty"`
 	SalesPerson   *string       `json:"sales_person,omitempty"`
 	ContactEmail  *string       `json:"contact_email,omitempty"`
@@ -1313,10 +1319,12 @@ type Customer struct {
 	Contact      *string   `json:"contact,omitempty"`
 	CreditTerm   *string   `json:"credit_term,omitempty"`
 	Remarks      *string   `json:"remarks,omitempty"`
+	Tel          *string   `json:"tel,omitempty"`
 	IsActive     bool      `json:"is_active"`
 	CreatedAt    time.Time `json:"created_at"`
 	CreatedBy    *int64    `json:"created_by,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	UpdatedBy    *int64    `json:"updated_by,omitempty"`
 }
 
 type CreateCustomerRequest struct {
@@ -1326,6 +1334,7 @@ type CreateCustomerRequest struct {
 	Contact      *string `json:"contact,omitempty"`
 	CreditTerm   *string `json:"credit_term,omitempty"`
 	Remarks      *string `json:"remarks,omitempty"`
+	Tel          *string `json:"tel,omitempty"`
 }
 
 type UpdateCustomerRequest struct {
@@ -1335,6 +1344,7 @@ type UpdateCustomerRequest struct {
 	Contact      *string `json:"contact,omitempty"`
 	CreditTerm   *string `json:"credit_term,omitempty"`
 	Remarks      *string `json:"remarks,omitempty"`
+	Tel          *string `json:"tel,omitempty"`
 	IsActive     *bool   `json:"is_active,omitempty"`
 }
 
@@ -1751,6 +1761,10 @@ type RecordPaymentRequest struct {
 	PaidBy     int64   `json:"paid_by"`
 	Remark     *string `json:"remark,omitempty"`
 	ReversesID *int64  `json:"reverses_id,omitempty"`
+	// InstallmentIDs / InstallmentNos (optional): payment_installment rows of this document to mark paid.
+	// They do not affect amount_paid, which is always the client-sent amount.
+	InstallmentIDs []int64 `json:"installment_ids,omitempty"`
+	InstallmentNos []int   `json:"installment_nos,omitempty"`
 }
 
 // PayableDoc is the shared row shape for both PO and WO in ListPayableDocs —
@@ -1763,6 +1777,10 @@ type PayableDoc struct {
 	ProjectName    *string `json:"project_name"`
 	NetAmount      float64 `json:"net_amount"`
 	Status         string  `json:"status"`
+	// ApprovalStatus is the two-value form of Status for the payment-tracking screen:
+	// APPROVED (อนุมัติแล้ว) or PENDING_APPROVAL (รออนุมัติ; PO PENDING_REAPPROVAL maps here too).
+	// Any other stored status is passed through unchanged.
+	ApprovalStatus string  `json:"approval_status"`
 	PaidAmount     float64 `json:"paid_amount"`
 	RemainingToPay float64 `json:"remaining_to_pay"`
 	// ReceivingStatus is only populated for doc_type='PO' (nil for WO and any other
@@ -1784,8 +1802,8 @@ type PayableDocProject struct {
 type PayableDocFilter struct {
 	DocType     string `query:"doc_type"` // required: PO | WO | PC
 	ProjectCode string `query:"project_code"`
-	// Status is intentionally not filterable — ListPayableDocs always fixes it to
-	// APPROVED, since only approved docs are payable.
+	// Status: empty (both), PENDING_APPROVAL or APPROVED — see ListPayableDocs.
+	Status   string `query:"status"`
 	Search   string `query:"search"`
 	Page     int    `query:"page"`
 	PageSize int    `query:"page_size"`
@@ -1853,6 +1871,16 @@ type PettyCashRequisition struct {
 
 	// populated via JOIN/aggregate (ไม่ได้เก็บใน table)
 	ProjectCodes    []string        `json:"project_codes,omitempty"`
+	// List-only (GET /petty-cash), nil elsewhere: first project (header's, else first line's) and how many
+	// distinct projects the document touches; vendor names; and line-based money figures.
+	ProjectDisplayCode *string  `json:"project_display_code,omitempty"`
+	ProjectDisplayName *string  `json:"project_display_name,omitempty"`
+	ProjectCount       *int     `json:"project_count,omitempty"`
+	SupplierNames      *string  `json:"supplier_names,omitempty"`
+	SupplierCount      *int     `json:"supplier_count,omitempty"`
+	WhtTotal           *float64 `json:"wht_total,omitempty"`
+	Amount             *float64 `json:"amount,omitempty"`
+	NetValue           *float64 `json:"net_value,omitempty"`
 	RequestedByName *string         `json:"requested_by_name,omitempty"`
 	ApproverName    *string         `json:"approver_name,omitempty"`
 	Lines           []PettyCashLine `json:"lines,omitempty"`
@@ -1864,7 +1892,7 @@ type PettyCashLine struct {
 	ID             int64    `json:"id" db:"id"`
 	PCID           int64    `json:"pc_id" db:"pc_id"`
 	LineNo         int      `json:"line_no" db:"line_no"`
-	ProjectCode    string   `json:"project_code" db:"project_code"`
+	ProjectCode    *string  `json:"project_code" db:"project_code"` // nullable: department-only line
 	MatCode        *string  `json:"mat_code,omitempty" db:"mat_code"`
 	CostSubgroupID *int64   `json:"cost_subgroup_id,omitempty" db:"cost_subgroup_id"`
 	Description    *string  `json:"description,omitempty" db:"description"`
@@ -1893,6 +1921,8 @@ type PettyCashLine struct {
 	TaxFormCode     *string  `json:"tax_form_code,omitempty" db:"tax_form_code"`
 	WhtIncomeTypeID *int64   `json:"wht_income_type_id,omitempty" db:"wht_income_type_id"`
 	WhtPayDate      *string  `json:"wht_pay_date,omitempty"` // YYYY-MM-DD
+	InvoiceNo       *string  `json:"invoice_no"`             // plain (non-tax) invoice
+	InvoiceDate     *string  `json:"invoice_date"`           // YYYY-MM-DD
 
 	// read-only, joined at read time
 	MatNameTH      *string `json:"mat_name_th,omitempty"`
@@ -1933,6 +1963,7 @@ type IcProjectMovementDetail struct {
 	JobName         string    `json:"job_name"`
 	RequestedBy     int64     `json:"requested_by"`
 	RequestedByName string    `json:"requested_by_name"`
+	RequestedByUsername string `json:"requested_by_username"`
 	Status          string    `json:"status"`
 	Remarks         *string   `json:"remarks"`
 	CreatedAt       string    `json:"created_at"` // TO_CHAR ISO-8601 with +07:00 offset
@@ -1990,6 +2021,7 @@ type IcProjectMovementListItem struct {
 	JobCode         string    `json:"job_code"`
 	JobName         string    `json:"job_name"`
 	RequestedByName string    `json:"requested_by_name"`
+	RequestedByUsername string `json:"requested_by_username"`
 	CreatedAt       string    `json:"created_at"` // TO_CHAR ISO-8601 with +07:00 offset
 }
 
@@ -2009,6 +2041,7 @@ type IcProjectCostTransaction struct {
 	CostName       string    `json:"cost_name"`
 	RefNo          *string   `json:"ref_no"`
 	CreatedByName  string    `json:"created_by_name"`
+	CreatedByUsername string `json:"created_by_username"`
 	CreatedAt      string    `json:"created_at"` // TO_CHAR ISO-8601 with +07:00 offset
 }
 
@@ -2082,6 +2115,8 @@ type CreatePettyCashLineItem struct {
 	TaxFormCode     string   `json:"tax_form_code"`
 	WhtIncomeTypeID *int64   `json:"wht_income_type_id"`
 	WhtPayDate      string   `json:"wht_pay_date"` // YYYY-MM-DD
+	InvoiceNo       string   `json:"invoice_no"`   // optional plain invoice no (max 50)
+	InvoiceDate     string   `json:"invoice_date"` // optional YYYY-MM-DD
 }
 
 type UpdatePettyCashRequest = CreatePettyCashRequest

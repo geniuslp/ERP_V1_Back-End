@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -56,7 +57,7 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name,
 	p.customer_id, cu.customer_name,
 	p.responsible_person_name, p.job_codes,
-	p.budget_amount,
+	p.budget_amount, p.vo_amount::float8,
 	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 		WHERE po.project_code = p.project_code
 		  AND po.status = 'APPROVED'), 0)
@@ -96,7 +97,7 @@ func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName,
 		&p.CustomerID, &p.CustomerName,
 		&p.ResponsiblePersonName, &p.JobCodes,
-		&p.BudgetAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
+		&p.BudgetAmount, &p.VOAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }
@@ -126,6 +127,21 @@ func validateProjectCore(projectCode, projectName, responsiblePersonName, status
 		return "", err
 	}
 	return status, nil
+}
+
+// normalizeVOAmount validates project.vo_amount ("มูลค่า VO", separate from budget_amount):
+// nil/absent -> 0, must be >= 0 and fit numeric(18,4); rounded to 2 decimals.
+func normalizeVOAmount(v *float64) (float64, error) {
+	if v == nil {
+		return 0, nil
+	}
+	if math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 {
+		return 0, fmt.Errorf("มูลค่า VO ต้องเป็นตัวเลขที่ไม่ติดลบ")
+	}
+	if *v >= 1e14 {
+		return 0, fmt.Errorf("มูลค่า VO มากเกินกำหนด")
+	}
+	return math.Round(*v*100) / 100, nil
 }
 
 // List godoc
@@ -261,6 +277,10 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
 	req.Status = status
+	voAmount, verr := normalizeVOAmount(req.VOAmount)
+	if verr != nil {
+		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
+	}
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -273,12 +293,12 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		INSERT INTO project
 		    (project_code, project_name, location_code, dept_code, owner_id, owner_name, customer_id, responsible_person_name, job_codes,
 		     budget_amount, consultant_name, consultant_phone, start_date, end_date,
-		     status, is_active, created_at, updated_at, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,now(),now(),$16,$16)
+		     status, is_active, created_at, updated_at, created_by, updated_by, vo_amount)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,now(),now(),$16,$16,$17)
 		RETURNING id`,
 		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID, req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
 		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
-		req.StartDate, req.EndDate, req.Status, claims.UserID,
+		req.StartDate, req.EndDate, req.Status, claims.UserID, voAmount,
 	).Scan(&id)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
@@ -330,6 +350,10 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
 	req.Status = status
+	voAmount, verr := normalizeVOAmount(req.VOAmount)
+	if verr != nil {
+		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
+	}
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -397,12 +421,12 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		SET project_code=$1, project_name=$2, location_code=$3, dept_code=$4, owner_id=$5,
 		    owner_name=$6, customer_id=$7, responsible_person_name=$8, job_codes=$9,
 		    budget_amount=$10, consultant_name=$11, consultant_phone=$12,
-		    start_date=$13, end_date=$14, status=$15, is_active=$16, updated_at=now(), updated_by=$17
+		    start_date=$13, end_date=$14, status=$15, is_active=$16, updated_at=now(), updated_by=$17, vo_amount=$19
 		WHERE id=$18`,
 		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID,
 		req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
 		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
-		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id)
+		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id, voAmount)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			if pgErr.Code == "23505" {

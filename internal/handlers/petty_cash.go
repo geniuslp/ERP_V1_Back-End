@@ -24,7 +24,7 @@ import (
 // (see CLAUDE.md — inventory/inventory_transaction are not used in production at all).
 //
 // One document can span multiple projects: project_code lives on petty_cash_requisition_line
-// (NOT NULL), not the header — petty_cash_requisition has no project_code column at all. Every
+// (nullable since 2026-10: a department-only requisition has NULL here), not the header. Every
 // stock/project join below is done per-LINE, never against a single header project.
 //
 // Discount/VAT/WHT math mirrors POHandler.Create/Update exactly (internal/handlers/po.go):
@@ -97,6 +97,20 @@ func (h *PettyCashHandler) prepareHeader(ctx context.Context, req *models.Create
 	if req.DocType == "" {
 		req.DocType = "PETTY_CASH"
 	}
+	// A requisition may be department-only, but it needs a department or a project somewhere:
+	// header project, header department, or at least one line with a project. Checked before any SQL.
+	if req.ProjectCode == "" && req.DeptCode == "" {
+		hasLineProject := false
+		for _, l := range req.Lines {
+			if strings.TrimSpace(l.ProjectCode) != "" {
+				hasLineProject = true
+				break
+			}
+		}
+		if !hasLineProject {
+			return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกแผนกหรือโครงการอย่างน้อยหนึ่งอย่าง")
+		}
+	}
 	for _, f := range pcHeaderLimits {
 		if n := utf8.RuneCountInString(f.get(req)); n > f.max {
 			return fiber.NewError(fiber.StatusBadRequest,
@@ -161,7 +175,7 @@ func isPCTaxForm(code string) bool {
 
 // pcLine is one fully validated, calculated line, ready to INSERT.
 type pcLine struct {
-	projectCode                             string
+	projectCode                             *string // nil = department-only line (project_code is nullable)
 	matCode                                 *string
 	costSubgroupID                          *int64
 	description, remarks                    *string
@@ -176,6 +190,8 @@ type pcLine struct {
 	taxForm                                 *string
 	whtIncomeTypeID                         *int64
 	whtPayDate                              *time.Time
+	invoiceNo                               *string    // plain (non-tax) invoice, independent of has_tax_invoice
+	invoiceDate                             *time.Time // plain (non-tax) invoice date
 }
 
 type pcTotals struct {
@@ -219,19 +235,19 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 		var ln pcLine
 
 		// ── project ──
-		ln.projectCode = strings.TrimSpace(l.ProjectCode)
-		if ln.projectCode == "" {
-			return nil, tot, bad("กรุณาระบุโครงการ (project_code) ที่หัวเอกสารหรือที่รายการ")
-		}
-		if _, ok := projOK[ln.projectCode]; !ok {
-			var ex bool
-			if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, ln.projectCode).Scan(&ex); err != nil {
-				return nil, tot, err
+		// project is optional (department-only requisitions): empty is stored as NULL.
+		if pcode := strings.TrimSpace(l.ProjectCode); pcode != "" {
+			if _, ok := projOK[pcode]; !ok {
+				var ex bool
+				if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, pcode).Scan(&ex); err != nil {
+					return nil, tot, err
+				}
+				projOK[pcode] = ex
 			}
-			projOK[ln.projectCode] = ex
-		}
-		if !projOK[ln.projectCode] {
-			return nil, tot, bad("ไม่พบโครงการที่ระบุ")
+			if !projOK[pcode] {
+				return nil, tot, bad("ไม่พบโครงการที่ระบุ")
+			}
+			ln.projectCode = &pcode
 		}
 
 		// ── name / material / cost code ──
@@ -318,6 +334,21 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 			ln.supplierTax = pcNilIfEmpty(tax)
 		}
 
+		// ── plain invoice (optional, not tied to has_tax_invoice) ──
+		if inv := strings.TrimSpace(l.InvoiceNo); inv != "" {
+			if utf8.RuneCountInString(inv) > 50 {
+				return nil, tot, bad("เลขที่ใบแจ้งหนี้ยาวเกินกำหนด (สูงสุด 50 ตัวอักษร)")
+			}
+			ln.invoiceNo = &inv
+		}
+		if s := strings.TrimSpace(l.InvoiceDate); s != "" {
+			d, ok := pcParseDate(s)
+			if !ok {
+				return nil, tot, bad("วันที่ใบแจ้งหนี้ไม่ถูกต้อง (รูปแบบ YYYY-MM-DD)")
+			}
+			ln.invoiceDate = d
+		}
+
 		// ── tax invoice / VAT ──
 		if l.HasTaxInvoice {
 			no := strings.TrimSpace(l.TaxInvoiceNo)
@@ -401,14 +432,16 @@ func insertPCLines(ctx context.Context, tx pgx.Tx, pcID int64, lines []pcLine) e
 			   discount, disc_type, line_discount, line_vat, line_wht, line_net, wht_rate, remarks,
 			   supplier_id, supplier_name, supplier_address, supplier_tax_id,
 			   has_tax_invoice, tax_invoice_no, tax_invoice_date,
-			   has_wht, wht_base_amount, tax_form_code, wht_income_type_id, wht_pay_date)
+			   has_wht, wht_base_amount, tax_form_code, wht_income_type_id, wht_pay_date,
+				   invoice_no, invoice_date)
 			VALUES ($1,$2,$3,$4,$5,$6,1,$7,$7,0,'pct',0,$8,$9,$10,$11,$12,
-			        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+			        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
 			pcID, i+1, ln.projectCode, ln.matCode, ln.costSubgroupID, ln.description, ln.amount,
 			ln.vat, ln.wht, ln.net, ln.whtRate, ln.remarks,
 			ln.supplierID, ln.supplierName, ln.supplierAddr, ln.supplierTax,
 			ln.hasTaxInvoice, ln.taxInvoiceNo, ln.taxInvoiceDate,
 			ln.hasWht, ln.whtBase, ln.taxForm, ln.whtIncomeTypeID, ln.whtPayDate,
+			ln.invoiceNo, ln.invoiceDate,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && (pgErr.Code == "23503" || pgErr.Code == "23514") {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("รายการที่ %d: ข้อมูลไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง", i+1))
@@ -456,6 +489,7 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		       pcl.has_tax_invoice, pcl.tax_invoice_no, to_char(pcl.tax_invoice_date, 'YYYY-MM-DD'),
 		       pcl.has_wht, pcl.wht_base_amount, pcl.tax_form_code, pcl.wht_income_type_id,
 		       to_char(pcl.wht_pay_date, 'YYYY-MM-DD'),
+		       pcl.invoice_no, to_char(pcl.invoice_date, 'YYYY-MM-DD'),
 		       mn.mat_name AS mat_name_th,
 		       CASE WHEN pcl.cost_subgroup_id IS NULL THEN NULL
 		            ELSE csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code END AS cost_code,
@@ -493,15 +527,16 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 			&l.SupplierID, &l.SupplierName, &l.SupplierAddress, &l.SupplierTaxID,
 			&l.HasTaxInvoice, &l.TaxInvoiceNo, &l.TaxInvoiceDate,
 			&l.HasWht, &l.WhtBaseAmount, &l.TaxFormCode, &l.WhtIncomeTypeID, &l.WhtPayDate,
+			&l.InvoiceNo, &l.InvoiceDate,
 			&l.MatNameTH, &l.CostCode, &l.WhtIncomeLabel,
 			&l.ProjectName, &l.ItemName, &l.Unit, &l.StockOnHand,
 		); err != nil {
 			return nil, err
 		}
 		pc.Lines = append(pc.Lines, l)
-		if !projectSet[l.ProjectCode] {
-			projectSet[l.ProjectCode] = true
-			pc.ProjectCodes = append(pc.ProjectCodes, l.ProjectCode)
+		if l.ProjectCode != nil && *l.ProjectCode != "" && !projectSet[*l.ProjectCode] {
+			projectSet[*l.ProjectCode] = true
+			pc.ProjectCodes = append(pc.ProjectCodes, *l.ProjectCode)
 		}
 	}
 
@@ -598,12 +633,36 @@ func (h *PettyCashHandler) List(c *fiber.Ctx) error {
 		       pc.doc_type, pc.branch_code, pc.project_code, pc.project_name, pc.payee_name,
 		       pc.dept_code, pc.dept_name, pc.ref_doc_no, pc.order_type,
 		       u.full_name AS requested_by_name, au.full_name AS approver_name,
-		       pcodes.codes
+		       pcodes.codes,
+		       COALESCE(pc.project_code, agg.first_project) AS project_display_code,
+		       CASE WHEN pc.project_code IS NOT NULL THEN COALESCE(pc.project_name, hp.project_name)
+		            ELSE fp.project_name END AS project_display_name,
+		       COALESCE(array_length(agg.project_codes, 1), 0)
+		         + CASE WHEN pc.project_code IS NOT NULL AND NOT (pc.project_code = ANY(COALESCE(agg.project_codes, '{}'))) THEN 1 ELSE 0 END AS project_count,
+		       agg.supplier_names, COALESCE(agg.supplier_count, 0),
+		       COALESCE(agg.wht, 0), COALESCE(agg.amount, 0),
+		       COALESCE(agg.amount, 0) + COALESCE(agg.vat, 0) - COALESCE(agg.wht, 0) AS net_value
 		FROM petty_cash_requisition pc
 		LEFT JOIN users u ON u.id = pc.requested_by
 		LEFT JOIN users au ON au.id = pc.approver_id
+		LEFT JOIN (
+			SELECT l.pc_id,
+			       SUM(COALESCE(l.amount, l.qty * l.unit_price) - COALESCE(l.line_discount, 0)) AS amount,
+			       SUM(COALESCE(l.line_vat, 0)) AS vat,
+			       SUM(COALESCE(l.line_wht, 0)) AS wht,
+			       string_agg(DISTINCT COALESCE(s.supplier_name, NULLIF(BTRIM(l.supplier_name), '')), ', ')
+			         FILTER (WHERE COALESCE(s.supplier_name, NULLIF(BTRIM(l.supplier_name), '')) IS NOT NULL) AS supplier_names,
+			       COUNT(DISTINCT COALESCE(s.supplier_name, NULLIF(BTRIM(l.supplier_name), ''))) AS supplier_count,
+			       (array_agg(l.project_code ORDER BY l.line_no, l.id) FILTER (WHERE l.project_code IS NOT NULL))[1] AS first_project,
+			       array_agg(DISTINCT l.project_code) FILTER (WHERE l.project_code IS NOT NULL) AS project_codes
+			FROM petty_cash_requisition_line l
+			LEFT JOIN supplier s ON s.id = l.supplier_id
+			GROUP BY l.pc_id
+		) agg ON agg.pc_id = pc.id
+		LEFT JOIN project hp ON hp.project_code = pc.project_code
+		LEFT JOIN project fp ON fp.project_code = agg.first_project
 		LEFT JOIN LATERAL (
-			SELECT array_agg(DISTINCT pcl.project_code ORDER BY pcl.project_code) AS codes
+			SELECT array_agg(DISTINCT pcl.project_code ORDER BY pcl.project_code) FILTER (WHERE pcl.project_code IS NOT NULL) AS codes
 			FROM petty_cash_requisition_line pcl WHERE pcl.pc_id = pc.id
 		) pcodes ON TRUE
 		%s
@@ -627,6 +686,8 @@ func (h *PettyCashHandler) List(c *fiber.Ctx) error {
 			&pc.DeptCode, &pc.DeptName, &pc.RefDocNo, &pc.OrderType,
 			&pc.RequestedByName, &pc.ApproverName,
 			&pc.ProjectCodes,
+			&pc.ProjectDisplayCode, &pc.ProjectDisplayName, &pc.ProjectCount,
+			&pc.SupplierNames, &pc.SupplierCount, &pc.WhtTotal, &pc.Amount, &pc.NetValue,
 		); err != nil {
 			return err
 		}
@@ -722,7 +783,7 @@ func requireSubmittable(lineCount int, remarks string) error {
 
 // Create godoc
 // @Summary      Create a petty cash requisition
-// @Description  status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code.
+// @Description  status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code; if both are empty the line is stored with project_code NULL (department-only). At least one of header project_code, header dept_code or a line project_code is required (400 otherwise).
 // @Tags         Petty Cash
 // @Security     BearerAuth
 // @Accept       json

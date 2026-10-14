@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -22,6 +23,63 @@ const poPRNosSQL = `(SELECT ARRAY_AGG(DISTINCT x.pr_no ORDER BY x.pr_no) FROM (
 		UNION
 		SELECT pr2.pr_no FROM purchase_request pr2 WHERE pr2.id = po.pr_id AND pr2.deleted_at IS NULL
 	) x)`
+
+// poPRIDsSQL is the id twin of poPRNosSQL: same two sources, ordered by pr_no so element i is the id
+// of pr_nos[i] (pr_no is unique per PR). Keep both expressions in sync.
+const poPRIDsSQL = `(SELECT ARRAY_AGG(x.id ORDER BY x.pr_no, x.id) FROM (
+		SELECT pr.id, pr.pr_no
+		FROM purchase_order_line pol
+		JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
+		JOIN purchase_request pr ON pr.id = prl.pr_id AND pr.deleted_at IS NULL
+		WHERE pol.po_id = po.id
+		UNION
+		SELECT pr2.id, pr2.pr_no FROM purchase_request pr2 WHERE pr2.id = po.pr_id AND pr2.deleted_at IS NULL
+	) x)`
+
+// poPRRef is one {pr_id, pr_no} entry of the list's pr_refs.
+type poPRRef struct {
+	PRID int64  `json:"pr_id"`
+	PRNo string `json:"pr_no"`
+}
+
+// poPRRefsSQL is the object twin of poPRNosSQL/poPRIDsSQL (same sources, same order). Never NULL.
+const poPRRefsSQL = `(SELECT COALESCE(json_agg(json_build_object('pr_id', x.id, 'pr_no', x.pr_no) ORDER BY x.pr_no, x.id), '[]'::json) FROM (
+		SELECT pr.id, pr.pr_no
+		FROM purchase_order_line pol
+		JOIN purchase_request_line prl ON prl.id = pol.pr_line_id
+		JOIN purchase_request pr ON pr.id = prl.pr_id AND pr.deleted_at IS NULL
+		WHERE pol.po_id = po.id
+		UNION
+		SELECT pr2.id, pr2.pr_no FROM purchase_request pr2 WHERE pr2.id = po.pr_id AND pr2.deleted_at IS NULL
+	) x)`
+
+// Paid amount per PO — the same figure Finance (ListPayableDocs) reports: SUM(payment_log.amount_paid)
+// for doc_type='PO'. Reversals are negative rows (reverses_id), so a plain SUM is already net of them.
+// Pre-aggregated once and LEFT JOINed (alias pay), not a per-row correlated subquery.
+const poPaidJoinSQL = `LEFT JOIN (SELECT doc_id, SUM(amount_paid) AS paid FROM payment_log
+		WHERE doc_type = 'PO' GROUP BY doc_id) pay ON pay.doc_id = po.id `
+
+const poPaidAmountSQL = `ROUND(COALESCE(pay.paid, 0), 2)`
+
+// poPaymentStatusSQL: UNPAID when paid = 0; PAID when paid >= net_amount - 0.01; otherwise PARTIAL.
+// net_amount is the VAT-inclusive total Finance uses.
+const poPaymentStatusSQL = `(CASE
+		WHEN ` + poPaidAmountSQL + ` = 0 THEN 'UNPAID'
+		WHEN ` + poPaidAmountSQL + ` >= po.net_amount - 0.01 THEN 'PAID'
+		ELSE 'PARTIAL' END)`
+
+// paymentStatusFor mirrors poPaymentStatusSQL for single-row reads (GET /po/:id).
+func paymentStatusFor(paid, net float64) string {
+	paid = math.Round(paid*100) / 100
+	switch {
+	case paid == 0:
+		return "UNPAID"
+	case paid >= net-0.01:
+		return "PAID"
+	default:
+		return "PARTIAL"
+	}
+}
 
 // poSummaryNewFilters builds the dept_code + search conditions shared by ListLineItems and Export.
 // Each condition uses `$n::type IS NULL OR ...`-style optionality by only being appended when the
@@ -111,7 +169,7 @@ func (h *POHandler) ExportSummary(c *fiber.Ctx) error {
 	conditions, args = poSummaryNewFilters(c, conditions, args)
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT po.id, po.po_no, `+poPRNosSQL+`, s.supplier_name,
+		SELECT po.id, po.po_no, `+poPRNosSQL+`, `+poPRIDsSQL+`, s.supplier_name,
 		       po.total_amount - COALESCE(po.discount_amount, 0), po.net_amount,
 		       s.payment_terms, po.project_code, pj.project_name,
 		       COALESCE(po.deposit_paid, false), po.remarks, po.status, po.status_receive
@@ -129,6 +187,7 @@ func (h *POHandler) ExportSummary(c *fiber.Ctx) error {
 		ID            int64    `json:"id"`
 		PONo          string   `json:"po_no"`
 		PRNos         []string `json:"pr_nos"`
+		PRIDs         []int64  `json:"pr_ids"`
 		SupplierName  *string  `json:"supplier_name"`
 		TotalAmount   float64  `json:"total_amount"`
 		NetAmount     float64  `json:"net_amount"`
@@ -144,12 +203,15 @@ func (h *POHandler) ExportSummary(c *fiber.Ctx) error {
 	for rows.Next() {
 		var r exportRow
 		var terms *string
-		if err := rows.Scan(&r.ID, &r.PONo, &r.PRNos, &r.SupplierName, &r.TotalAmount, &r.NetAmount,
+		if err := rows.Scan(&r.ID, &r.PONo, &r.PRNos, &r.PRIDs, &r.SupplierName, &r.TotalAmount, &r.NetAmount,
 			&terms, &r.ProjectCode, &r.ProjectName, &r.DepositPaid, &r.Remarks, &r.Status, &r.StatusReceive); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถอ่านข้อมูลใบสั่งซื้อได้")
 		}
 		if r.PRNos == nil {
 			r.PRNos = []string{}
+		}
+		if r.PRIDs == nil {
+			r.PRIDs = []int64{}
 		}
 		r.Credit = poCredit(terms)
 		items = append(items, r)
@@ -173,6 +235,7 @@ func (h *POHandler) ExportSummary(c *fiber.Ctx) error {
 // @Param        date_from query  string  false  "po_date >= (YYYY-MM-DD)"
 // @Param        date_to   query  string  false  "po_date <= (YYYY-MM-DD)"
 // @Param        dept_code query  string  false  "requester's department (fallback: linked PR dept_code)"
+// @Param        payment_status query string false "UNPAID | PARTIAL | PAID (computed from payment_log vs net_amount)"
 // @Param        search    query  string  false  "matches po_no or any linked pr_no (ILIKE)"
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map

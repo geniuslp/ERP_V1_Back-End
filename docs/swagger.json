@@ -994,7 +994,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "List customers with pagination and search by name/code",
+                "description": "Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.",
                 "produces": [
                     "application/json"
                 ],
@@ -1005,13 +1005,19 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Search by customer_name/customer_code",
+                        "description": "Search customer_code/customer_name/contact/tel",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Alias of q",
                         "name": "search",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Filter by active flag (default true)",
+                        "description": "true (default) | false | all",
                         "name": "is_active",
                         "in": "query"
                     },
@@ -1023,7 +1029,7 @@
                     },
                     {
                         "type": "integer",
-                        "description": "Page size",
+                        "description": "Page size (default 20, max 500; alias limit)",
                         "name": "page_size",
                         "in": "query"
                     }
@@ -1049,7 +1055,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "customer_code is user-supplied and must be unique",
+                "description": "customer_code (max 20, unique ignoring case/surrounding spaces) and customer_name (max 255) are required; tel max 50. Empty optional fields are stored as NULL.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1184,7 +1190,7 @@
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Customer ID",
+                        "description": "Customer ID (cus_id)",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -1211,6 +1217,7 @@
                         "BearerAuth": []
                     }
                 ],
+                "description": "Omitted fields keep their current value; an optional field sent as an empty string is cleared to NULL. updated_by/updated_at are set from the JWT / now().",
                 "consumes": [
                     "application/json"
                 ],
@@ -1224,7 +1231,7 @@
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Customer ID",
+                        "description": "Customer ID (cus_id)",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -1257,6 +1264,12 @@
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
                     }
                 }
             },
@@ -1266,18 +1279,18 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Sets is_active=false; does not hard delete since customer will be referenced by projects/PR/PO later",
+                "description": "Deletes the row only when nothing references it (every FK to customer is checked, today project.customer_id; inactive projects count too). Otherwise 409 and the customer should be deactivated via PUT is_active=false instead. 404 when the customer does not exist.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Customer"
                 ],
-                "summary": "ลบลูกค้า (soft delete)",
+                "summary": "ลบลูกค้า (hard delete เมื่อยังไม่ถูกใช้งาน)",
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Customer ID",
+                        "description": "Customer ID (cus_id)",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -1292,6 +1305,12 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -1401,7 +1420,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Only APPROVED documents are returned — a doc that hasn't been approved\nisn't payable yet, so status is fixed and not caller-settable.\nEach row carries project_code and project_name (LEFT JOIN project; null when the\ndocument has no project or the code matches none).\nFor doc_type=PO, a non-deleted document additionally requires at least one\nnon-CANCELLED line with qty_received \u003e 0 — partial receipt is sufficient. This\ndoes not apply to WO. Each PO row carries receiving_status: FULLY_RECEIVED,\nPARTIALLY_RECEIVED or NOT_RECEIVED (null for WO), computed live from\npurchase_order_line.qty_received vs qty_ordered, not from grn or status_receive.",
+                "description": "status filters on approval: PENDING_APPROVAL (รออนุมัติ; PO PENDING_REAPPROVAL included) or\nAPPROVED (อนุมัติแล้ว); empty returns both. Any other value -\u003e 400. Each row also carries\napproval_status (the same two-value form). Recording a payment still requires APPROVED.\nEach row carries project_code and project_name (LEFT JOIN project; null when the\ndocument has no project or the code matches none).\nFor doc_type=PO, a non-deleted document additionally requires at least one\nnon-CANCELLED line with qty_received \u003e 0 — partial receipt is sufficient. This\ndoes not apply to WO. Each PO row carries receiving_status: FULLY_RECEIVED,\nPARTIALLY_RECEIVED or NOT_RECEIVED (null for WO), computed live from\npurchase_order_line.qty_received vs qty_ordered, not from grn or status_receive.",
                 "produces": [
                     "application/json"
                 ],
@@ -1421,6 +1440,12 @@
                         "type": "string",
                         "description": "filter project_code",
                         "name": "project_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PENDING_APPROVAL | APPROVED (empty = both)",
+                        "name": "status",
                         "in": "query"
                     },
                     {
@@ -1463,7 +1488,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "New payments only (amount_paid \u003e 0). Locks the document row, requires status APPROVED,\nrejects a fully-paid document and any amount above the remaining balance. Reversals\nare no longer accepted here (reverses_id -\u003e 400); use POST /finance/payments/{id}/cancel.",
+                "description": "New payments only (amount_paid \u003e 0). Locks the document row, requires status APPROVED,\nrejects a fully-paid document and any amount above the remaining balance. Reversals\nare no longer accepted here (reverses_id -\u003e 400); use POST /finance/payments/{id}/cancel.\nOptional installment_ids / installment_nos: marks those unpaid payment_installment rows of the\nsame document paid (is_paid, paid_at, paid_by, payment_log_id = new id) in the same transaction.\namount_paid is always the client-sent amount (\u003e 0, \u003c= remaining); it is NOT tied to the\ninstallments' amounts.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1541,6 +1566,110 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/finance/payments/{doc_type}/{doc_id}/installments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Rows ordered by installment_no, plus the document net_amount and the sum of installment\namounts. The \"installment mode on\" state on the screen is simply: rows exist.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Finance"
+                ],
+                "summary": "List payment installments of a PO, WO or PC",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "PO, WO or PC",
+                        "name": "doc_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "document id",
+                        "name": "doc_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Full replace in one transaction. Rows are renumbered 1..n in request order. An empty list\ndeletes everything (installment mode off) unless some existing row is already paid.\nis_paid in the body is ignored (rows are marked paid via POST /finance/payments with installment_ids).\nRows already is_paid cannot be deleted, and their percent/amount/description cannot change.\nIf only percent is sent amount = round(net*percent/100,2); if only amount is sent\npercent = round(amount/net*100,4). Total amount must not exceed the document net_amount.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Finance"
+                ],
+                "summary": "Replace all payment installments of a PO, WO or PC",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "PO, WO or PC",
+                        "name": "doc_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "document id",
+                        "name": "doc_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Installments",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.saveInstallmentsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -3027,6 +3156,37 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/ic/preparers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Active users whose EFFECTIVE can_read on menu MENU_IC_PROJECT is true. Effective read uses the same\nprecedence as the frontend PermissionContext.can(): a per-user row (user_menu_permissions.can_read) wins\n— including an explicit false, which denies; otherwise the role layer (role_menu_permissions, OR across\nthe user's roles); otherwise the department layer (dept_menu_permissions); otherwise no access.\nSorted by username. department is users.department (free text, used as position).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IC"
+                ],
+                "summary": "List users who may open the IC pages (options for the ผู้จัดทำ picker)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -5296,6 +5456,308 @@
                 }
             }
         },
+        "/master/customer": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "รายการลูกค้า",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search customer_code/customer_name/contact/tel",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Alias of q",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "true (default) | false | all",
+                        "name": "is_active",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 500; alias limit)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "customer_code (max 20, unique ignoring case/surrounding spaces) and customer_name (max 255) are required; tel max 50. Empty optional fields are stored as NULL.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "สร้างลูกค้าใหม่",
+                "parameters": [
+                    {
+                        "description": "Customer data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateCustomerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/customer/import": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Body {rows:[{customer_code, customer_name}]}, max 2000 rows, fully empty rows ignored. All rows are validated first (code required/max 20, name required/max 255, duplicate codes in the request compared by lower(trim)); any error gives 400 {errors:[{row,field,message}]} and nothing is written. Otherwise ONE transaction: match by lower(trim(customer_code)); no match then INSERT (is_active=true, created_by); match then UPDATE customer_name (+updated_by/updated_at) only when the name differs. Other columns are never touched. row = 1-based position in the submitted array.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "Import ลูกค้าจาก JSON (รหัส + ชื่อ)",
+                "parameters": [
+                    {
+                        "description": "rows",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.customerImportRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/customer/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "ข้อมูลลูกค้ารายตัว",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Customer ID (cus_id)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Customer"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Omitted fields keep their current value; an optional field sent as an empty string is cleared to NULL. updated_by/updated_at are set from the JWT / now().",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "แก้ไขข้อมูลลูกค้า",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Customer ID (cus_id)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to update",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateCustomerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Customer"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deletes the row only when nothing references it (every FK to customer is checked, today project.customer_id; inactive projects count too). Otherwise 409 and the customer should be deactivated via PUT is_active=false instead. 404 when the customer does not exist.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Customer"
+                ],
+                "summary": "ลบลูกค้า (hard delete เมื่อยังไม่ถูกใช้งาน)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Customer ID (cus_id)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/eligible-approvers": {
             "get": {
                 "security": [
@@ -5303,7 +5765,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's \"ผู้อนุมัติ\" field) so only users actually eligible to approve that doc_type are offered.\nEach item keeps value/label/dept (existing dropdown contract) and also returns user_id, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.",
+                "description": "Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's \"ผู้อนุมัติ\" field) so only users actually eligible to approve that doc_type are offered.\nEach item keeps value/label/dept (existing dropdown contract) and also returns user_id, username, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.",
                 "produces": [
                     "application/json"
                 ],
@@ -9074,7 +9536,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code.",
+                "description": "status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code; if both are empty the line is stored with project_code NULL (department-only). At least one of header project_code, header dept_code or a line project_code is required (400 otherwise).",
                 "consumes": [
                     "application/json"
                 ],
@@ -10078,6 +10540,12 @@
                         "type": "string",
                         "description": "requester's department (fallback: linked PR dept_code)",
                         "name": "dept_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "UNPAID | PARTIAL | PAID (computed from payment_log vs net_amount)",
+                        "name": "payment_status",
                         "in": "query"
                     },
                     {
@@ -15261,6 +15729,28 @@
                 }
             }
         },
+        "handlers.customerImportRequest": {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.customerImportRow"
+                    }
+                }
+            }
+        },
+        "handlers.customerImportRow": {
+            "type": "object",
+            "properties": {
+                "customer_code": {
+                    "type": "string"
+                },
+                "customer_name": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.icRateReceiveDocumentRequest": {
             "type": "object",
             "required": [
@@ -15346,6 +15836,38 @@
                 "return_date": {
                     "description": "optional YYYY-MM-DD, default today (Bangkok)",
                     "type": "string"
+                }
+            }
+        },
+        "handlers.installmentInput": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_paid": {
+                    "description": "ignored: paid state is driven by POST /finance/payments (installment_ids)",
+                    "type": "boolean"
+                },
+                "percent": {
+                    "type": "number"
+                }
+            }
+        },
+        "handlers.saveInstallmentsRequest": {
+            "type": "object",
+            "properties": {
+                "installments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.installmentInput"
+                    }
                 }
             }
         },
@@ -15793,6 +16315,9 @@
                     "type": "string"
                 },
                 "remarks": {
+                    "type": "string"
+                },
+                "tel": {
                     "type": "string"
                 }
             }
@@ -16448,6 +16973,14 @@
                 "has_wht": {
                     "type": "boolean"
                 },
+                "invoice_date": {
+                    "description": "optional YYYY-MM-DD",
+                    "type": "string"
+                },
+                "invoice_no": {
+                    "description": "optional plain invoice no (max 50)",
+                    "type": "string"
+                },
                 "mat_code": {
                     "description": "optional — the name goes in description when absent",
                     "type": "string"
@@ -16634,6 +17167,10 @@
                 },
                 "status": {
                     "type": "string"
+                },
+                "vo_amount": {
+                    "description": "nil/absent -\u003e 0",
+                    "type": "number"
                 }
             }
         },
@@ -17269,8 +17806,14 @@
                 "remarks": {
                     "type": "string"
                 },
+                "tel": {
+                    "type": "string"
+                },
                 "updated_at": {
                     "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
                 }
             }
         },
@@ -18120,6 +18663,10 @@
                 },
                 "updated_by": {
                     "type": "integer"
+                },
+                "vo_amount": {
+                    "description": "\"มูลค่า VO\" — separate from budget_amount, never summed with it",
+                    "type": "number"
                 }
             }
         },
@@ -18187,6 +18734,13 @@
                     "type": "string"
                 },
                 "order_type": {
+                    "type": "string"
+                },
+                "paid_amount": {
+                    "description": "PaidAmount / PaymentStatus: net payment_log total for this PO and UNPAID | PARTIAL | PAID vs net_amount.",
+                    "type": "number"
+                },
+                "payment_status": {
                     "type": "string"
                 },
                 "payment_terms": {
@@ -18294,6 +18848,19 @@
                 "doc_type": {
                     "description": "'PO' | 'WO' | 'PC'",
                     "type": "string"
+                },
+                "installment_ids": {
+                    "description": "InstallmentIDs / InstallmentNos (optional): payment_installment rows of this document to mark paid.\nThey do not affect amount_paid, which is always the client-sent amount.",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "installment_nos": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 },
                 "paid_by": {
                     "type": "integer"
@@ -18561,6 +19128,9 @@
                     "type": "boolean"
                 },
                 "remarks": {
+                    "type": "string"
+                },
+                "tel": {
                     "type": "string"
                 }
             }
@@ -18925,6 +19495,10 @@
                 },
                 "status": {
                     "type": "string"
+                },
+                "vo_amount": {
+                    "description": "nil/absent -\u003e 0",
+                    "type": "number"
                 }
             }
         },

@@ -391,7 +391,18 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	customer.Get("/import/template", customerH.ImportTemplate)
 	customer.Get("/:id", customerH.Get)
 	customer.Put("/:id", customerH.Update)
-	customer.Delete("/:id", middleware.RequireRole("ADMIN", "SENIOR_TEAM"), customerH.Delete)
+	customer.Delete("/:id", middleware.RequireMenuPermission(db, "MENU_MASTER_CUSTOMER", "delete"), customerH.Delete)
+
+	// Customer master under /master (same handlers; JWT via the master group, like Supplier).
+	// Permission = menu MENU_MASTER_CUSTOMER (user > role > dept precedence). /import is a static
+	// route and is registered before every /:id route.
+	const customerMenu = "MENU_MASTER_CUSTOMER"
+	master.Get("/customer", customerH.List)
+	master.Post("/customer", middleware.RequireMenuPermission(db, customerMenu, "write"), customerH.Create)
+	master.Post("/customer/import", middleware.RequireMenuPermission(db, customerMenu, "write"), customerH.ImportRows)
+	master.Get("/customer/:id", customerH.Get)
+	master.Put("/customer/:id", middleware.RequireMenuPermission(db, customerMenu, "update"), customerH.Update)
+	master.Delete("/customer/:id", middleware.RequireMenuPermission(db, customerMenu, "delete"), customerH.Delete)
 
 	// Work Order (หนังสือสั่งจ้าง) — approve/reject goes through the generic engine
 	// (PUT /approval/WO/:id/approve|reject), not a route here.
@@ -413,6 +424,8 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	finance.Post("/payments", financeH.RecordPayment)
 	finance.Post("/payments/:id/cancel", financeH.CancelPayment)
 	finance.Get("/payments/:doc_type/:doc_id/log", financeH.GetPaymentLog)
+	finance.Get("/payments/:doc_type/:doc_id/installments", financeH.GetInstallments)
+	finance.Put("/payments/:doc_type/:doc_id/installments", financeH.SaveInstallments)
 	finance.Get("/payments/:doc_type/:doc_id", financeH.GetPayableDoc)
 
 	// Stock Transfer (ย้ายคลัง)
@@ -488,6 +501,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Inventory Control (IC)
 	icH := handlers.NewICHandler(db)
 	ic := api.Group("/ic", jwt)
+	ic.Get("/preparers", icH.ListPreparers)
 	ic.Get("/projects", icH.ListProjects)
 	icMoveH := handlers.NewIcProjectMovementHandler(db)
 	ic.Get("/projects/by-code/:projectCode", icMoveH.GetProjectByCode)

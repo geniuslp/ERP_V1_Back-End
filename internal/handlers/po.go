@@ -181,6 +181,8 @@ type poListRow struct {
 	// purchase_request_line.pr_id) — neither relation alone is guaranteed complete, and nothing
 	// in the schema stops a PO's lines from referencing different PRs. Omitted when empty.
 	PRNos []string `json:"pr_nos,omitempty"`
+	// PRIDs: purchase_request ids aligned index-for-index with PRNos (same sources, same order).
+	PRIDs []int64 `json:"pr_ids,omitempty"`
 	// Credit: credit days parsed from supplier.payment_terms (int), else the raw payment_terms
 	// text, else null.
 	Credit      any     `json:"credit"`
@@ -189,6 +191,10 @@ type poListRow struct {
 	// DiscountAmount lets clients show "pre-VAT after discount" = total_amount - discount_amount
 	// (stored total_amount is the pre-discount sum of line bases).
 	DiscountAmount float64 `json:"discount_amount"`
+	// PaidAmount / PaymentStatus: net payment_log total for this PO and UNPAID | PARTIAL | PAID vs net_amount.
+	PaidAmount    float64   `json:"paid_amount"`
+	PaymentStatus string    `json:"payment_status"`
+	PRRefs        []poPRRef `json:"pr_refs"`
 }
 
 // poListSelectSQL is the shared SELECT ... FROM ... JOINs for GET /po and GET /po/export.
@@ -203,7 +209,10 @@ const poListSelectSQL = `
 		       au.full_name AS approved_by_name,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round,
 		       ` + poPRNosSQL + ` AS pr_nos,
-		       s.payment_terms, COALESCE(po.deposit_paid, false), po.remarks, COALESCE(po.discount_amount, 0)
+		       ` + poPRIDsSQL + ` AS pr_ids,
+		       s.payment_terms, COALESCE(po.deposit_paid, false), po.remarks, COALESCE(po.discount_amount, 0),
+		       ` + poPaidAmountSQL + ` AS paid_amount, ` + poPaymentStatusSQL + ` AS payment_status,
+		       ` + poPRRefsSQL + ` AS pr_refs
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
@@ -216,6 +225,7 @@ const poListSelectSQL = `
 		    ORDER BY action_at DESC LIMIT 1
 		) al ON true
 		LEFT JOIN users au ON au.id = al.action_by
+		` + poPaidJoinSQL + `
 		`
 
 // buildPOListFilters builds the WHERE clause shared by GET /po and GET /po/export: my, status
@@ -261,6 +271,13 @@ func buildPOListFilters(c *fiber.Ctx) (string, []any, error) {
 		args = append(args, v)
 		conditions = append(conditions, fmt.Sprintf("po.po_date <= $%d::date", len(args)))
 	}
+	if v := strings.ToUpper(strings.TrimSpace(c.Query("payment_status"))); v != "" {
+		if v != "UNPAID" && v != "PARTIAL" && v != "PAID" {
+			return "", nil, fiber.NewError(fiber.StatusBadRequest, "payment_status ต้องเป็น UNPAID, PARTIAL หรือ PAID")
+		}
+		// v is one of three fixed literals (validated above), so it is safe to inline — no $n needed.
+		conditions = append(conditions, poPaymentStatusSQL+" = '"+v+"'")
+	}
 	conditions, args = poSummaryNewFilters(c, conditions, args)
 	return "WHERE " + strings.Join(conditions, " AND "), args, nil
 }
@@ -274,10 +291,14 @@ func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
 			&r.Status, &r.StatusReceive, &r.OrderType, &r.JobCode, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
 			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName,
-			&r.RevisionRound, &r.PRNos, &terms, &r.DepositPaid, &r.Remarks, &r.DiscountAmount); err != nil {
+			&r.RevisionRound, &r.PRNos, &r.PRIDs, &terms, &r.DepositPaid, &r.Remarks, &r.DiscountAmount,
+			&r.PaidAmount, &r.PaymentStatus, &r.PRRefs); err != nil {
 			return nil, err
 		}
 		r.Credit = poCredit(terms)
+		if r.PRRefs == nil {
+			r.PRRefs = []poPRRef{}
+		}
 		items = append(items, r)
 	}
 	return items, rows.Err()
@@ -287,6 +308,7 @@ func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
 // @Summary      List purchase orders
 // @Description  status accepts one or more comma-separated values (e.g. status=PENDING_APPROVAL,PENDING_REAPPROVAL) — matched via IN, not exact equality, so multiple statuses can be requested together (needed by the PO Approval page). page_size and limit are aliases for the same page-size parameter — page_size wins if both are sent.
 // @Description  date_from/date_to filter po.po_date; dept_code filters by the requester's department (falls back to the linked PR's dept_code when requested_by is NULL); search matches po_no or any linked pr_no (ILIKE).
+// @Description  Each row also carries paid_amount, payment_status (UNPAID|PARTIAL|PAID) and pr_refs ([{pr_id, pr_no}]).
 // @Description  Each row also carries credit (credit days parsed from supplier.payment_terms, else the raw text), deposit_paid and remarks.
 // @Tags         Purchase Order
 // @Security     BearerAuth
@@ -298,6 +320,7 @@ func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
 // @Param        date_from query  string  false  "po_date >= (YYYY-MM-DD)"
 // @Param        date_to   query  string  false  "po_date <= (YYYY-MM-DD)"
 // @Param        dept_code query  string  false  "requester's department (fallback: linked PR dept_code)"
+// @Param        payment_status query string false "UNPAID | PARTIAL | PAID (computed from payment_log vs net_amount)"
 // @Param        search    query  string  false  "matches po_no or any linked pr_no (ILIKE)"
 // @Param        page      query  int     false  "page"  default(1)
 // @Param        page_size query  int     false  "page_size (alias: limit)"  default(20)
@@ -324,7 +347,7 @@ func (h *POHandler) List(c *fiber.Ctx) error {
 
 	// COUNT and SELECT are separate templates: the SELECT appends limit/offset as extra $ params.
 	var total int64
-	h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM purchase_order po `+where, args...).Scan(&total)
+	h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM purchase_order po `+poPaidJoinSQL+where, args...).Scan(&total)
 
 	args = append(args, size, offset)
 	rows, err := h.db.Query(context.Background(), poListSelectSQL+where+`
@@ -484,7 +507,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		       COALESCE(u.full_name, ''), po.project_code, po.status,
 		       po.total_amount, po.discount_amount, po.vat_amount, po.net_amount, po.currency,
 		       (`+poHeaderReceivingSQL+`) AS receiving_status,
-		       `+poPRNosSQL+` AS pr_nos, s.payment_terms, pj.project_name,
+		       `+poPRNosSQL+` AS pr_nos, `+poPRIDsSQL+` AS pr_ids, s.payment_terms, pj.project_name,
 		       COALESCE(po.deposit_paid, false), po.remarks, po.status_receive
 		FROM purchase_order po
 		LEFT JOIN users    u ON u.id = po.requested_by
@@ -535,6 +558,7 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		// id mirrors po_id; the rest back the one-row-per-PO list page.
 		ID            int64         `json:"id"`
 		PRNos         []string      `json:"pr_nos"`
+		PRIDs         []int64       `json:"pr_ids"`
 		Credit        any           `json:"credit"`
 		ProjectName   *string       `json:"project_name"`
 		DepositPaid   bool          `json:"deposit_paid"`
@@ -552,12 +576,15 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		if err := poRows.Scan(&g.POID, &g.PONo, &g.PODate, &g.SupplierID, &g.SupplierName, &g.ContactPhone,
 			&g.RequestedBy, &g.ProjectCode, &g.Status,
 			&g.TotalAmount, &g.DiscountAmount, &g.VATAmount, &g.NetAmount, &g.Currency, &g.ReceivingStatus,
-			&g.PRNos, &terms, &g.ProjectName, &g.DepositPaid, &g.Remarks, &g.StatusReceive); err != nil {
+			&g.PRNos, &g.PRIDs, &terms, &g.ProjectName, &g.DepositPaid, &g.Remarks, &g.StatusReceive); err != nil {
 			return err
 		}
 		g.ID = g.POID
 		if g.PRNos == nil {
 			g.PRNos = []string{}
+		}
+		if g.PRIDs == nil {
+			g.PRIDs = []int64{}
 		}
 		g.Credit = poCredit(terms)
 		g.Lines = []LineItemRow{}
@@ -823,6 +850,12 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 	if requestedByName != nil {
 		po.RequestedByName = *requestedByName
 	}
+	if err := h.db.QueryRow(context.Background(),
+		`SELECT ROUND(COALESCE(SUM(amount_paid), 0), 2) FROM payment_log WHERE doc_type = 'PO' AND doc_id = $1`,
+		po.POID).Scan(&po.PaidAmount); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดยอดการจ่ายเงินของใบสั่งซื้อได้")
+	}
+	po.PaymentStatus = paymentStatusFor(po.PaidAmount, po.NetAmount)
 	po.CanEditApproved = po.Status == "APPROVED" && time.Since(po.CreatedAt) < 365*24*time.Hour
 
 	po.ApprovalSignature = resolvePOApprovalSignature(po.Status, po.ApproverID,

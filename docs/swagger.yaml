@@ -107,6 +107,20 @@ definitions:
       user_id:
         type: integer
     type: object
+  handlers.customerImportRequest:
+    properties:
+      rows:
+        items:
+          $ref: '#/definitions/handlers.customerImportRow'
+        type: array
+    type: object
+  handlers.customerImportRow:
+    properties:
+      customer_code:
+        type: string
+      customer_name:
+        type: string
+    type: object
   handlers.icRateReceiveDocumentRequest:
     properties:
       score_notes:
@@ -166,6 +180,27 @@ definitions:
       return_date:
         description: optional YYYY-MM-DD, default today (Bangkok)
         type: string
+    type: object
+  handlers.installmentInput:
+    properties:
+      amount:
+        type: number
+      description:
+        type: string
+      id:
+        type: integer
+      is_paid:
+        description: 'ignored: paid state is driven by POST /finance/payments (installment_ids)'
+        type: boolean
+      percent:
+        type: number
+    type: object
+  handlers.saveInstallmentsRequest:
+    properties:
+      installments:
+        items:
+          $ref: '#/definitions/handlers.installmentInput'
+        type: array
     type: object
   handlers.setDepositPaidRequest:
     properties:
@@ -456,6 +491,8 @@ definitions:
       customer_name:
         type: string
       remarks:
+        type: string
+      tel:
         type: string
     required:
     - customer_code
@@ -930,6 +967,12 @@ definitions:
         type: boolean
       has_wht:
         type: boolean
+      invoice_date:
+        description: optional YYYY-MM-DD
+        type: string
+      invoice_no:
+        description: optional plain invoice no (max 50)
+        type: string
       mat_code:
         description: optional — the name goes in description when absent
         type: string
@@ -1059,6 +1102,9 @@ definitions:
         type: string
       status:
         type: string
+      vo_amount:
+        description: nil/absent -> 0
+        type: number
     required:
     - responsible_person_name
     type: object
@@ -1498,8 +1544,12 @@ definitions:
         type: boolean
       remarks:
         type: string
+      tel:
+        type: string
       updated_at:
         type: string
+      updated_by:
+        type: integer
     type: object
   models.EditApprovedPOLine:
     properties:
@@ -2092,6 +2142,10 @@ definitions:
         type: string
       updated_by:
         type: integer
+      vo_amount:
+        description: '"มูลค่า VO" — separate from budget_amount, never summed with
+          it'
+        type: number
     type: object
   models.PurchaseOrder:
     properties:
@@ -2138,6 +2192,12 @@ definitions:
       office_phone:
         type: string
       order_type:
+        type: string
+      paid_amount:
+        description: 'PaidAmount / PaymentStatus: net payment_log total for this PO
+          and UNPAID | PARTIAL | PAID vs net_amount.'
+        type: number
+      payment_status:
         type: string
       payment_terms:
         type: string
@@ -2213,6 +2273,17 @@ definitions:
       doc_type:
         description: '''PO'' | ''WO'' | ''PC'''
         type: string
+      installment_ids:
+        description: |-
+          InstallmentIDs / InstallmentNos (optional): payment_installment rows of this document to mark paid.
+          They do not affect amount_paid, which is always the client-sent amount.
+        items:
+          type: integer
+        type: array
+      installment_nos:
+        items:
+          type: integer
+        type: array
       paid_by:
         type: integer
       paid_date:
@@ -2388,6 +2459,8 @@ definitions:
       is_active:
         type: boolean
       remarks:
+        type: string
+      tel:
         type: string
     type: object
   models.UpdateGroupRequest:
@@ -2641,6 +2714,9 @@ definitions:
         type: string
       status:
         type: string
+      vo_amount:
+        description: nil/absent -> 0
+        type: number
     required:
     - responsible_person_name
     type: object
@@ -3575,13 +3651,20 @@ paths:
       - Auth
   /customer:
     get:
-      description: List customers with pagination and search by name/code
+      description: Paginated list sorted by customer_code. q (alias search) matches
+        customer_code, customer_name, contact, tel (case-insensitive). is_active defaults
+        to true when omitted; pass is_active=false for inactive only or is_active=all
+        for both.
       parameters:
-      - description: Search by customer_name/customer_code
+      - description: Search customer_code/customer_name/contact/tel
+        in: query
+        name: q
+        type: string
+      - description: Alias of q
         in: query
         name: search
         type: string
-      - description: Filter by active flag (default true)
+      - description: true (default) | false | all
         in: query
         name: is_active
         type: string
@@ -3589,7 +3672,7 @@ paths:
         in: query
         name: page
         type: integer
-      - description: Page size
+      - description: Page size (default 20, max 500; alias limit)
         in: query
         name: page_size
         type: integer
@@ -3612,7 +3695,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: customer_code is user-supplied and must be unique
+      description: customer_code (max 20, unique ignoring case/surrounding spaces)
+        and customer_name (max 255) are required; tel max 50. Empty optional fields
+        are stored as NULL.
       parameters:
       - description: Customer data
         in: body
@@ -3642,10 +3727,12 @@ paths:
       - Customer
   /customer/{id}:
     delete:
-      description: Sets is_active=false; does not hard delete since customer will
-        be referenced by projects/PR/PO later
+      description: Deletes the row only when nothing references it (every FK to customer
+        is checked, today project.customer_id; inactive projects count too). Otherwise
+        409 and the customer should be deactivated via PUT is_active=false instead.
+        404 when the customer does not exist.
       parameters:
-      - description: Customer ID
+      - description: Customer ID (cus_id)
         in: path
         name: id
         required: true
@@ -3661,14 +3748,18 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: ลบลูกค้า (soft delete)
+      summary: ลบลูกค้า (hard delete เมื่อยังไม่ถูกใช้งาน)
       tags:
       - Customer
     get:
       parameters:
-      - description: Customer ID
+      - description: Customer ID (cus_id)
         in: path
         name: id
         required: true
@@ -3692,8 +3783,11 @@ paths:
     put:
       consumes:
       - application/json
+      description: Omitted fields keep their current value; an optional field sent
+        as an empty string is cleared to NULL. updated_by/updated_at are set from
+        the JWT / now().
       parameters:
-      - description: Customer ID
+      - description: Customer ID (cus_id)
         in: path
         name: id
         required: true
@@ -3717,6 +3811,10 @@ paths:
             $ref: '#/definitions/fiber.Map'
         "404":
           description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
           schema:
             $ref: '#/definitions/fiber.Map'
       security:
@@ -3844,8 +3942,9 @@ paths:
   /finance/payments:
     get:
       description: |-
-        Only APPROVED documents are returned — a doc that hasn't been approved
-        isn't payable yet, so status is fixed and not caller-settable.
+        status filters on approval: PENDING_APPROVAL (รออนุมัติ; PO PENDING_REAPPROVAL included) or
+        APPROVED (อนุมัติแล้ว); empty returns both. Any other value -> 400. Each row also carries
+        approval_status (the same two-value form). Recording a payment still requires APPROVED.
         Each row carries project_code and project_name (LEFT JOIN project; null when the
         document has no project or the code matches none).
         For doc_type=PO, a non-deleted document additionally requires at least one
@@ -3862,6 +3961,10 @@ paths:
       - description: filter project_code
         in: query
         name: project_code
+        type: string
+      - description: PENDING_APPROVAL | APPROVED (empty = both)
+        in: query
+        name: status
         type: string
       - description: search doc_no
         in: query
@@ -3898,6 +4001,10 @@ paths:
         New payments only (amount_paid > 0). Locks the document row, requires status APPROVED,
         rejects a fully-paid document and any amount above the remaining balance. Reversals
         are no longer accepted here (reverses_id -> 400); use POST /finance/payments/{id}/cancel.
+        Optional installment_ids / installment_nos: marks those unpaid payment_installment rows of the
+        same document paid (is_paid, paid_at, paid_by, payment_log_id = new id) in the same transaction.
+        amount_paid is always the client-sent amount (> 0, <= remaining); it is NOT tied to the
+        installments' amounts.
       parameters:
       - description: Payment data
         in: body
@@ -3950,6 +4057,81 @@ paths:
       security:
       - BearerAuth: []
       summary: Get one PO, WO or PC in the same shape as a ListPayableDocs row
+      tags:
+      - Finance
+  /finance/payments/{doc_type}/{doc_id}/installments:
+    get:
+      description: |-
+        Rows ordered by installment_no, plus the document net_amount and the sum of installment
+        amounts. The "installment mode on" state on the screen is simply: rows exist.
+      parameters:
+      - description: PO, WO or PC
+        in: path
+        name: doc_type
+        required: true
+        type: string
+      - description: document id
+        in: path
+        name: doc_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List payment installments of a PO, WO or PC
+      tags:
+      - Finance
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Full replace in one transaction. Rows are renumbered 1..n in request order. An empty list
+        deletes everything (installment mode off) unless some existing row is already paid.
+        is_paid in the body is ignored (rows are marked paid via POST /finance/payments with installment_ids).
+        Rows already is_paid cannot be deleted, and their percent/amount/description cannot change.
+        If only percent is sent amount = round(net*percent/100,2); if only amount is sent
+        percent = round(amount/net*100,4). Total amount must not exceed the document net_amount.
+      parameters:
+      - description: PO, WO or PC
+        in: path
+        name: doc_type
+        required: true
+        type: string
+      - description: document id
+        in: path
+        name: doc_id
+        required: true
+        type: integer
+      - description: Installments
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.saveInstallmentsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Replace all payment installments of a PO, WO or PC
       tags:
       - Finance
   /finance/payments/{doc_type}/{doc_id}/log:
@@ -5035,6 +5217,30 @@ paths:
       security:
       - BearerAuth: []
       summary: List the return documents (RT-) of a PO
+      tags:
+      - IC
+  /ic/preparers:
+    get:
+      description: |-
+        Active users whose EFFECTIVE can_read on menu MENU_IC_PROJECT is true. Effective read uses the same
+        precedence as the frontend PermissionContext.can(): a per-user row (user_menu_permissions.can_read) wins
+        — including an explicit false, which denies; otherwise the role layer (role_menu_permissions, OR across
+        the user's roles); otherwise the department layer (dept_menu_permissions); otherwise no access.
+        Sorted by username. department is users.department (free text, used as position).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List users who may open the IC pages (options for the ผู้จัดทำ picker)
       tags:
       - IC
   /ic/projects:
@@ -6592,11 +6798,219 @@ paths:
       summary: List cost subjects
       tags:
       - CostCode
+  /master/customer:
+    get:
+      description: Paginated list sorted by customer_code. q (alias search) matches
+        customer_code, customer_name, contact, tel (case-insensitive). is_active defaults
+        to true when omitted; pass is_active=false for inactive only or is_active=all
+        for both.
+      parameters:
+      - description: Search customer_code/customer_name/contact/tel
+        in: query
+        name: q
+        type: string
+      - description: Alias of q
+        in: query
+        name: search
+        type: string
+      - description: true (default) | false | all
+        in: query
+        name: is_active
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 500; alias limit)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการลูกค้า
+      tags:
+      - Customer
+    post:
+      consumes:
+      - application/json
+      description: customer_code (max 20, unique ignoring case/surrounding spaces)
+        and customer_name (max 255) are required; tel max 50. Empty optional fields
+        are stored as NULL.
+      parameters:
+      - description: Customer data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateCustomerRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้างลูกค้าใหม่
+      tags:
+      - Customer
+  /master/customer/{id}:
+    delete:
+      description: Deletes the row only when nothing references it (every FK to customer
+        is checked, today project.customer_id; inactive projects count too). Otherwise
+        409 and the customer should be deactivated via PUT is_active=false instead.
+        404 when the customer does not exist.
+      parameters:
+      - description: Customer ID (cus_id)
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ลบลูกค้า (hard delete เมื่อยังไม่ถูกใช้งาน)
+      tags:
+      - Customer
+    get:
+      parameters:
+      - description: Customer ID (cus_id)
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Customer'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: ข้อมูลลูกค้ารายตัว
+      tags:
+      - Customer
+    put:
+      consumes:
+      - application/json
+      description: Omitted fields keep their current value; an optional field sent
+        as an empty string is cleared to NULL. updated_by/updated_at are set from
+        the JWT / now().
+      parameters:
+      - description: Customer ID (cus_id)
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateCustomerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Customer'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แก้ไขข้อมูลลูกค้า
+      tags:
+      - Customer
+  /master/customer/import:
+    post:
+      consumes:
+      - application/json
+      description: 'Body {rows:[{customer_code, customer_name}]}, max 2000 rows, fully
+        empty rows ignored. All rows are validated first (code required/max 20, name
+        required/max 255, duplicate codes in the request compared by lower(trim));
+        any error gives 400 {errors:[{row,field,message}]} and nothing is written.
+        Otherwise ONE transaction: match by lower(trim(customer_code)); no match then
+        INSERT (is_active=true, created_by); match then UPDATE customer_name (+updated_by/updated_at)
+        only when the name differs. Other columns are never touched. row = 1-based
+        position in the submitted array.'
+      parameters:
+      - description: rows
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.customerImportRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Import ลูกค้าจาก JSON (รหัส + ชื่อ)
+      tags:
+      - Customer
   /master/eligible-approvers:
     get:
       description: |-
         Union of role-based approvers (approval_config.approver_role_id, joined via user_roles) and extra approvers (approval_delegation, doc_type match or NULL = applies to all), deduplicated. Used to populate approver-selection dropdowns (e.g. Memo's "ผู้อนุมัติ" field) so only users actually eligible to approve that doc_type are offered.
-        Each item keeps value/label/dept (existing dropdown contract) and also returns user_id, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.
+        Each item keeps value/label/dept (existing dropdown contract) and also returns user_id, username, employee_code, full_name, full_name_th, is_active, roles [{role_code, role_name}] (all active roles of the user) and role_names (comma-joined, for display). Used by the Petty Cash approver picker with doc_type=PETTY_CASH.
       parameters:
       - description: Document type, e.g. MEMO or PETTY_CASH
         in: query
@@ -9052,7 +9466,10 @@ paths:
       description: status starts as DRAFT unless status=PENDING_APPROVAL is passed
         (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines.
         pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored.
-        A line with an empty project_code falls back to the header project_code.
+        A line with an empty project_code falls back to the header project_code; if
+        both are empty the line is stored with project_code NULL (department-only).
+        At least one of header project_code, header dept_code or a line project_code
+        is required (400 otherwise).
       parameters:
       - description: Petty cash requisition data
         in: body
@@ -10376,6 +10793,10 @@ paths:
       - description: 'requester''s department (fallback: linked PR dept_code)'
         in: query
         name: dept_code
+        type: string
+      - description: UNPAID | PARTIAL | PAID (computed from payment_log vs net_amount)
+        in: query
+        name: payment_status
         type: string
       - description: matches po_no or any linked pr_no (ILIKE)
         in: query

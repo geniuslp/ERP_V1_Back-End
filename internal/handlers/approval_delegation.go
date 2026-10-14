@@ -20,6 +20,7 @@ type approvalDelegationItem struct {
 	DocType   *string   `json:"doc_type"`
 	UserID    int64     `json:"user_id"`
 	UserName  *string   `json:"user_name"`
+	Username  *string   `json:"username"`
 	Reason    *string   `json:"reason"`
 	CreatedAt time.Time `json:"created_at"`
 	CreatedBy *int64    `json:"created_by"`
@@ -35,7 +36,7 @@ type approvalDelegationItem struct {
 // @Router       /approval-delegation [get]
 func (h *ApprovalDelegationHandler) List(c *fiber.Ctx) error {
 	query := `
-		SELECT ad.id, ad.doc_type, ad.user_id, u.full_name, ad.reason, ad.created_at, ad.created_by
+		SELECT ad.id, ad.doc_type, ad.user_id, u.full_name, u.username, ad.reason, ad.created_at, ad.created_by
 		FROM approval_delegation ad
 		LEFT JOIN users u ON u.id = ad.user_id
 		WHERE 1=1`
@@ -56,7 +57,7 @@ func (h *ApprovalDelegationHandler) List(c *fiber.Ctx) error {
 	var out []approvalDelegationItem
 	for rows.Next() {
 		var it approvalDelegationItem
-		if err := rows.Scan(&it.ID, &it.DocType, &it.UserID, &it.UserName, &it.Reason, &it.CreatedAt, &it.CreatedBy); err != nil {
+		if err := rows.Scan(&it.ID, &it.DocType, &it.UserID, &it.UserName, &it.Username, &it.Reason, &it.CreatedAt, &it.CreatedBy); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
 		out = append(out, it)

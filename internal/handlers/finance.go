@@ -64,6 +64,33 @@ const pcProjectPaidSQL = `COALESCE((SELECT SUM(pp.paid * COALESCE(l.line_net, l.
 		      HAVING SUM(COALESCE(line_net, amount)) <> 0) pt ON pt.pc_id = l.pc_id
 		WHERE l.project_code = p.project_code), 0)`
 
+// payableApprovalStatusSQL maps a document's stored approval status to the two-value form shown on
+// the payment-tracking page. Any other stored status passes through unchanged. Needs alias d.
+const payableApprovalStatusSQL = `(CASE
+		WHEN d.status = 'APPROVED' THEN 'APPROVED'
+		WHEN d.status IN ('PENDING_APPROVAL', 'PENDING_REAPPROVAL') THEN 'PENDING_APPROVAL'
+		ELSE d.status END)`
+
+// payableStatusClause turns the status query param into a condition on d.status. No $n params:
+// the values are fixed literals chosen by a whitelist, so COUNT and SELECT numbering are unaffected.
+// Empty = both pending and approved documents. PENDING_REAPPROVAL exists on purchase_order only.
+func payableStatusClause(docType, status string) (string, error) {
+	pending := `'PENDING_APPROVAL'`
+	if docType == "PO" {
+		pending = `'PENDING_APPROVAL', 'PENDING_REAPPROVAL'`
+	}
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "":
+		return `d.status IN ('APPROVED', ` + pending + `)`, nil
+	case "APPROVED":
+		return `d.status = 'APPROVED'`, nil
+	case "PENDING_APPROVAL":
+		return `d.status IN (` + pending + `)`, nil
+	default:
+		return "", fiber.NewError(fiber.StatusBadRequest, "สถานะต้องเป็น PENDING_APPROVAL (รออนุมัติ) หรือ APPROVED (อนุมัติแล้ว) เท่านั้น")
+	}
+}
+
 // payableProjectSQL returns, for a document alias d: the SQL for the project_code column, an extra
 // join condition source for the project name, and the JSON list of distinct projects.
 // PO/WO have one header project. A petty cash document spans projects on its LINES; its
@@ -79,7 +106,7 @@ func payableProjectSQL(docType string) (codeExpr, projectsExpr string) {
 			FROM (SELECT l.project_code, MIN(pj2.project_name) AS project_name, MIN(l.line_no) AS first_ln
 			      FROM petty_cash_requisition_line l
 			      LEFT JOIN project pj2 ON pj2.project_code = l.project_code
-			      WHERE l.pc_id = d.id GROUP BY l.project_code) x)`
+			      WHERE l.pc_id = d.id AND l.project_code IS NOT NULL GROUP BY l.project_code) x)`
 	return codeExpr, projectsExpr
 }
 
@@ -100,8 +127,9 @@ func fillPayableProjects(p *models.PayableDoc, projectsJSON *string) {
 // @Tags         Finance
 // @Security     BearerAuth
 // @Produce      json
-// @Description  Only APPROVED documents are returned — a doc that hasn't been approved
-// @Description  isn't payable yet, so status is fixed and not caller-settable.
+// @Description  status filters on approval: PENDING_APPROVAL (รออนุมัติ; PO PENDING_REAPPROVAL included) or
+// @Description  APPROVED (อนุมัติแล้ว); empty returns both. Any other value -> 400. Each row also carries
+// @Description  approval_status (the same two-value form). Recording a payment still requires APPROVED.
 // @Description  Each row carries project_code and project_name (LEFT JOIN project; null when the
 // @Description  document has no project or the code matches none).
 // @Description  For doc_type=PO, a non-deleted document additionally requires at least one
@@ -111,6 +139,7 @@ func fillPayableProjects(p *models.PayableDoc, projectsJSON *string) {
 // @Description  purchase_order_line.qty_received vs qty_ordered, not from grn or status_receive.
 // @Param        doc_type      query  string  true   "PO, WO or PC"
 // @Param        project_code  query  string  false  "filter project_code"
+// @Param        status        query  string  false  "PENDING_APPROVAL | APPROVED (empty = both)"
 // @Param        search        query  string  false  "search doc_no"
 // @Param        page          query  int     false  "page"
 // @Param        page_size     query  int     false  "page size"
@@ -133,6 +162,11 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 		f.PageSize = 20
 	}
 
+	statusClause, err := payableStatusClause(f.DocType, f.Status)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
 
 	// buildFilters renders the optional project_code/status/search conditions with
@@ -141,8 +175,9 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	// list query (which reserves $1 for doc_type), so each query's placeholder numbering
 	// is self-consistent instead of sharing one counter across two differently-shaped queries.
 	buildFilters := func(startIdx int) (clause string, args []any) {
-		// Only APPROVED docs are payable — fixed, not a caller-controlled filter.
-		where := []string{"d.status = 'APPROVED'"}
+		// status is limited to pending approval / approved (payableStatusClause); recording a payment
+		// itself still requires APPROVED (RecordPayment).
+		where := []string{statusClause}
 		// PO additionally requires that something has actually been received — partial
 		// receipt is sufficient. Judged from purchase_order_line.qty_received, NOT from the
 		// grn table: receiving now goes through IC (ic.go SubmitReceiveLines) and
@@ -151,8 +186,10 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 		// WO has no receiving concept, so this is scoped to doc_type == 'PO' only.
 		if f.DocType == "PO" {
 			where = append(where, "d.deleted_at IS NULL")
-			where = append(where, `EXISTS (SELECT 1 FROM purchase_order_line pol
-				WHERE pol.po_id = d.id AND pol.status <> 'CANCELLED' AND pol.qty_received > 0)`)
+			// The received-goods rule only applies to approved POs: a PO still awaiting approval has
+			// nothing received yet and would otherwise never show under รออนุมัติ.
+			where = append(where, `(d.status <> 'APPROVED' OR EXISTS (SELECT 1 FROM purchase_order_line pol
+				WHERE pol.po_id = d.id AND pol.status <> 'CANCELLED' AND pol.qty_received > 0))`)
 		}
 		i := startIdx
 		if f.ProjectCode != "" {
@@ -211,12 +248,13 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 		       COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
 		                 WHERE pl.doc_type = $1 AND pl.doc_id = d.id), 0) AS paid_amount,
 		       %s AS receiving_status,
-		       %s AS projects_json
+		       %s AS projects_json,
+		       %s AS approval_status
 		FROM %s d
 		LEFT JOIN project pj ON pj.project_code = %s
 		WHERE %s
 		ORDER BY d.id DESC
-		LIMIT $%d OFFSET $%d`, noCol, projCode, receivingStatusSelect, projectsExpr, table, projCode,
+		LIMIT $%d OFFSET $%d`, noCol, projCode, receivingStatusSelect, projectsExpr, payableApprovalStatusSQL, table, projCode,
 		listClause, nextIdx, nextIdx+1)
 
 	rows, err := h.db.Query(ctx, listSQL, listArgs...)
@@ -229,7 +267,7 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	for rows.Next() {
 		var p models.PayableDoc
 		var projectsJSON *string
-		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON); err != nil {
+		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus); err != nil {
 			return err
 		}
 		fillPayableProjects(&p, projectsJSON)
@@ -304,6 +342,10 @@ func (h *FinanceHandler) GetPaymentLog(c *fiber.Ctx) error {
 // @Description  New payments only (amount_paid > 0). Locks the document row, requires status APPROVED,
 // @Description  rejects a fully-paid document and any amount above the remaining balance. Reversals
 // @Description  are no longer accepted here (reverses_id -> 400); use POST /finance/payments/{id}/cancel.
+// @Description  Optional installment_ids / installment_nos: marks those unpaid payment_installment rows of the
+// @Description  same document paid (is_paid, paid_at, paid_by, payment_log_id = new id) in the same transaction.
+// @Description  amount_paid is always the client-sent amount (> 0, <= remaining); it is NOT tied to the
+// @Description  installments' amounts.
 // @Tags         Finance
 // @Security     BearerAuth
 // @Accept       json
@@ -326,6 +368,23 @@ func (h *FinanceHandler) RecordPayment(c *fiber.Ctx) error {
 	}
 	if req.AmountPaid <= 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "จำนวนเงินที่จ่ายต้องมากกว่า 0")
+	}
+	useInstallments := len(req.InstallmentIDs) > 0 || len(req.InstallmentNos) > 0
+	if useInstallments {
+		dupID := map[int64]bool{}
+		for _, id := range req.InstallmentIDs {
+			if id <= 0 || dupID[id] {
+				return fiber.NewError(fiber.StatusBadRequest, "รายการงวดที่เลือกไม่ถูกต้องหรือซ้ำกัน")
+			}
+			dupID[id] = true
+		}
+		dupNo := map[int]bool{}
+		for _, n := range req.InstallmentNos {
+			if n <= 0 || dupNo[n] {
+				return fiber.NewError(fiber.StatusBadRequest, "เลขงวดที่เลือกไม่ถูกต้องหรือซ้ำกัน")
+			}
+			dupNo[n] = true
+		}
 	}
 	if req.PaidBy == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "กรุณาระบุผู้จ่ายเงิน")
@@ -365,6 +424,52 @@ func (h *FinanceHandler) RecordPayment(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "เอกสารนี้ยังไม่ได้รับการอนุมัติ ไม่สามารถบันทึกการจ่ายเงินได้")
 	}
 
+	// Installment payment: lock the chosen rows (by id and/or installment_no, this document only).
+	// The payment amount stays whatever the client sent; installments are only marked paid.
+	var instIDs []int64
+	if useInstallments {
+		instRows, err := tx.Query(ctx, `
+			SELECT id, installment_no, is_paid
+			FROM payment_installment
+			WHERE doc_type = $1 AND doc_id = $2 AND (id = ANY($3) OR installment_no = ANY($4))
+			ORDER BY id FOR UPDATE`, req.DocType, req.DocID, req.InstallmentIDs, req.InstallmentNos)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+		foundID := map[int64]bool{}
+		foundNo := map[int]bool{}
+		for instRows.Next() {
+			var iid int64
+			var ino int
+			var ipaid bool
+			if err := instRows.Scan(&iid, &ino, &ipaid); err != nil {
+				instRows.Close()
+				return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+			}
+			if ipaid {
+				instRows.Close()
+				return fiber.NewError(fiber.StatusBadRequest, "มีงวดที่จ่ายเงินแล้ว กรุณาโหลดข้อมูลใหม่")
+			}
+			foundID[iid] = true
+			foundNo[ino] = true
+			instIDs = append(instIDs, iid)
+		}
+		instRows.Close()
+		if err := instRows.Err(); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+		for _, id := range req.InstallmentIDs {
+			if !foundID[id] {
+				return fiber.NewError(fiber.StatusBadRequest, "ไม่พบงวดที่เลือกในเอกสารนี้ กรุณาโหลดข้อมูลใหม่")
+			}
+		}
+		for _, n := range req.InstallmentNos {
+			if !foundNo[n] {
+				return fiber.NewError(fiber.StatusBadRequest, "ไม่พบงวดที่เลือกในเอกสารนี้ กรุณาโหลดข้อมูลใหม่")
+			}
+		}
+	}
+
 	var paid float64
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount_paid), 0) FROM payment_log WHERE doc_type = $1 AND doc_id = $2`,
@@ -390,6 +495,16 @@ func (h *FinanceHandler) RecordPayment(c *fiber.Ctx) error {
 		req.DocType, req.DocID, docNo, req.AmountPaid, paidDate, req.PaidBy, req.Remark, claims.UserID,
 	).Scan(&newID); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
+	if useInstallments {
+		if _, err := tx.Exec(ctx, `
+			UPDATE payment_installment
+			SET is_paid = true, paid_at = $1, paid_by = $2, payment_log_id = $3,
+			    updated_at = NOW(), updated_by = $2
+			WHERE id = ANY($4) AND doc_type = $5 AND doc_id = $6`,
+			bangkokNow(), claims.UserID, newID, instIDs, req.DocType, req.DocID); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
@@ -487,6 +602,14 @@ func (h *FinanceHandler) CancelPayment(c *fiber.Ctx) error {
 		}
 		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 	}
+	// Reopen any installments that were paid by the reversed payment.
+	if _, err := tx.Exec(ctx, `
+		UPDATE payment_installment
+		SET is_paid = false, paid_at = NULL, paid_by = NULL, payment_log_id = NULL,
+		    updated_at = NOW(), updated_by = $2
+		WHERE payment_log_id = $1`, payID, claims.UserID); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 	}
@@ -530,11 +653,12 @@ func (h *FinanceHandler) GetPayableDoc(c *fiber.Ctx) error {
 		       COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
 		                 WHERE pl.doc_type = $1 AND pl.doc_id = d.id), 0) AS paid_amount,
 		       %s AS receiving_status,
-		       %s AS projects_json
+		       %s AS projects_json,
+		       %s AS approval_status
 		FROM %s d
 		LEFT JOIN project pj ON pj.project_code = %s
-		WHERE d.id = $2`, noCol, projCode, receiving, projectsExpr, table, projCode), docType, docID,
-	).Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON)
+		WHERE d.id = $2`, noCol, projCode, receiving, projectsExpr, payableApprovalStatusSQL, table, projCode), docType, docID,
+	).Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus)
 	if err == pgx.ErrNoRows {
 		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("ไม่พบเอกสาร %s id %d", docType, docID))
 	}

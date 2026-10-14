@@ -70,6 +70,7 @@ type ICPODocument struct {
 	DocNo            *string  `json:"doc_no"`
 	CreatedAt        string   `json:"created_at"`
 	CreatedByName    *string  `json:"created_by_name"`
+	CreatedByUsername *string `json:"created_by_username"`
 	LineCount        int64    `json:"line_count"`
 	TotalQty         *float64 `json:"total_qty"`
 	TaxInvoiceNo     *string  `json:"tax_invoice_no"`
@@ -107,12 +108,12 @@ func (h *ICHandler) ListPODocuments(c *fiber.Ctx) error {
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT doc_type, id, doc_no, created_at, created_by_name, line_count, total_qty,
+		SELECT doc_type, id, doc_no, created_at, created_by_name, created_by_username, line_count, total_qty,
 		       tax_invoice_no, tax_invoice_date, due_date, return_date,
 		       temp_delivery_no, temp_delivery_date, ref_kind, ref_no, ref_date
 		FROM (
 			SELECT 'RECEIVE'::text AS doc_type, rd.id, rd.receive_no AS doc_no, rd.created_at,
-			       u.full_name AS created_by_name,
+			       u.full_name AS created_by_name, u.username AS created_by_username,
 			       COALESCE(t.line_count, 0)::bigint AS line_count, t.total_qty::float8 AS total_qty,
 			       rd.tax_invoice_no, rd.tax_invoice_date::text AS tax_invoice_date, rd.due_date::text AS due_date,
 			       NULL::text AS return_date,
@@ -137,7 +138,7 @@ func (h *ICHandler) ListPODocuments(c *fiber.Ctx) error {
 			) t ON t.receive_document_id = rd.id
 			WHERE rd.po_id = $1
 			UNION ALL
-			SELECT 'RETURN'::text, d.id, d.return_no, d.created_at, u2.full_name,
+			SELECT 'RETURN'::text, d.id, d.return_no, d.created_at, u2.full_name, u2.username,
 			       COUNT(rl.id)::bigint, SUM(rl.return_qty)::float8,
 			       NULL::text, NULL::text, NULL::text, d.return_date::text,
 			       NULL::text, NULL::text, NULL::text, NULL::text, NULL::text
@@ -145,7 +146,7 @@ func (h *ICHandler) ListPODocuments(c *fiber.Ctx) error {
 			LEFT JOIN users u2 ON u2.id = d.created_by
 			LEFT JOIN ic_po_return_line rl ON rl.return_id = d.id
 			WHERE d.po_id = $1
-			GROUP BY d.id, d.return_no, d.created_at, u2.full_name, d.return_date
+			GROUP BY d.id, d.return_no, d.created_at, u2.full_name, u2.username, d.return_date
 		) docs
 		ORDER BY created_at DESC, id DESC`, poID)
 	if err != nil {
@@ -157,7 +158,7 @@ func (h *ICHandler) ListPODocuments(c *fiber.Ctx) error {
 	for rows.Next() {
 		var d ICPODocument
 		var createdAt time.Time
-		if err := rows.Scan(&d.DocType, &d.ID, &d.DocNo, &createdAt, &d.CreatedByName, &d.LineCount, &d.TotalQty,
+		if err := rows.Scan(&d.DocType, &d.ID, &d.DocNo, &createdAt, &d.CreatedByName, &d.CreatedByUsername, &d.LineCount, &d.TotalQty,
 			&d.TaxInvoiceNo, &d.TaxInvoiceDate, &d.DueDate, &d.ReturnDate,
 			&d.TempDeliveryNo, &d.TempDeliveryDate, &d.RefKind, &d.RefNo, &d.RefDate); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถอ่านรายการเอกสารของใบสั่งซื้อได้")
