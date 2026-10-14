@@ -1787,6 +1787,8 @@ type PayableDoc struct {
 	// doc type) — a live-computed aggregate over purchase_order_line vs grn_line, see
 	// FinanceHandler.ListPayableDocs. One of FULLY_RECEIVED/PARTIALLY_RECEIVED/NOT_RECEIVED.
 	ReceivingStatus *string `json:"receiving_status,omitempty"`
+	// CanRecordPayment: false only when a PO is NOT_RECEIVED, true otherwise (approval is separate). See canRecordPayment.
+	CanRecordPayment bool `json:"can_record_payment"`
 	// ProjectCount/Projects list the distinct projects of the document: one header project for
 	// PO/WO, the distinct line projects (line order) for petty cash (doc_type 'PC').
 	// project_code/project_name above stay the primary (first) project.

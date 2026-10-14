@@ -231,15 +231,7 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	// the legacy POST /grn/:id/confirm. Output strings are the existing contract.
 	receivingStatusSelect := "NULL::text"
 	if f.DocType == "PO" {
-		receivingStatusSelect = `(
-			SELECT CASE
-			    WHEN COUNT(*) > 0 AND BOOL_AND(pol.qty_received >= pol.qty_ordered) THEN 'FULLY_RECEIVED'
-			    WHEN COALESCE(BOOL_OR(pol.qty_received > 0), false) THEN 'PARTIALLY_RECEIVED'
-			    ELSE 'NOT_RECEIVED'
-			END
-			FROM purchase_order_line pol
-			WHERE pol.po_id = d.id AND pol.status <> 'CANCELLED'
-		)`
+		receivingStatusSelect = poReceivingStatusSelect
 	}
 
 	projCode, projectsExpr := payableProjectSQL(f.DocType)
@@ -272,6 +264,7 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 		}
 		fillPayableProjects(&p, projectsJSON)
 		p.RemainingToPay = p.NetAmount - p.PaidAmount
+		p.CanRecordPayment = canRecordPayment(p.ReceivingStatus)
 		items = append(items, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -422,6 +415,18 @@ func (h *FinanceHandler) RecordPayment(c *fiber.Ctx) error {
 	}
 	if status != "APPROVED" {
 		return fiber.NewError(fiber.StatusBadRequest, "เอกสารนี้ยังไม่ได้รับการอนุมัติ ไม่สามารถบันทึกการจ่ายเงินได้")
+	}
+
+	// PO only: goods must have been received (same definition as the finance list). Read-only check;
+	// nothing has been written yet, and the PO row is already locked above.
+	if req.DocType == "PO" {
+		var receiving *string
+		if err := tx.QueryRow(ctx, `SELECT `+poReceivingStatusSelect+` FROM purchase_order d WHERE d.id = $1`, req.DocID).Scan(&receiving); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+		if !receiptAllowsPayment(receiving) {
+			return fiber.NewError(fiber.StatusBadRequest, "ยังไม่ได้รับของ ไม่สามารถบันทึกการจ่ายเงินได้")
+		}
 	}
 
 	// Installment payment: lock the chosen rows (by id and/or installment_no, this document only).
@@ -667,6 +672,7 @@ func (h *FinanceHandler) GetPayableDoc(c *fiber.Ctx) error {
 	}
 	fillPayableProjects(&p, projectsJSON)
 	p.RemainingToPay = p.NetAmount - p.PaidAmount
+	p.CanRecordPayment = canRecordPayment(p.ReceivingStatus)
 	return c.JSON(fiber.Map{"success": true, "data": p})
 }
 
@@ -680,3 +686,16 @@ const poReceivingStatusSelect = `(
 	FROM purchase_order_line pol
 	WHERE pol.po_id = d.id AND pol.status <> 'CANCELLED'
 )`
+
+// receiptAllowsPayment is the single receipt rule for recording a payment: only NOT_RECEIVED blocks
+// (PARTIALLY_RECEIVED and FULLY_RECEIVED pass; nil = WO/PC, which have no receiving concept).
+func receiptAllowsPayment(receiving *string) bool {
+	return receiving == nil || *receiving != "NOT_RECEIVED"
+}
+
+// canRecordPayment is the list/detail can_record_payment flag: false only when the receipt rule blocks
+// payment (PO with receiving_status NOT_RECEIVED), true otherwise. Approval is still enforced
+// separately by RecordPayment and exposed via approval_status.
+func canRecordPayment(receiving *string) bool {
+	return receiptAllowsPayment(receiving)
+}
