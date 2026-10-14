@@ -57,7 +57,10 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name,
 	p.customer_id, cu.customer_name,
 	p.responsible_person_name, p.job_codes,
-	p.budget_amount, p.vo_amount::float8,
+	p.budget_amount, p.vo_amount::float8, p.project_kind,
+	COALESCE((SELECT string_agg(ru.username, ', ' ORDER BY ru.username)
+		FROM project_responsible_person prp JOIN users ru ON ru.id = prp.user_id
+		WHERE prp.project_id = p.id), '') AS responsible_usernames,
 	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 		WHERE po.project_code = p.project_code
 		  AND po.status = 'APPROVED'), 0)
@@ -97,7 +100,7 @@ func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName,
 		&p.CustomerID, &p.CustomerName,
 		&p.ResponsiblePersonName, &p.JobCodes,
-		&p.BudgetAmount, &p.VOAmount, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
+		&p.BudgetAmount, &p.VOAmount, &p.ProjectKind, &p.ResponsibleUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }
@@ -130,7 +133,7 @@ func validateProjectCore(projectCode, projectName, responsiblePersonName, status
 }
 
 // normalizeVOAmount validates project.vo_amount ("มูลค่า VO", separate from budget_amount):
-// nil/absent -> 0, must be >= 0 and fit numeric(18,4); rounded to 2 decimals.
+// nil -> 0, must be >= 0 and fit numeric(18,4); rounded to 2 decimals.
 func normalizeVOAmount(v *float64) (float64, error) {
 	if v == nil {
 		return 0, nil
@@ -142,6 +145,104 @@ func normalizeVOAmount(v *float64) (float64, error) {
 		return 0, fmt.Errorf("มูลค่า VO มากเกินกำหนด")
 	}
 	return math.Round(*v*100) / 100, nil
+}
+
+// resolveProjectValues applies the project_kind rule: NEW needs budget_amount (vo_amount saved as 0),
+// VO needs vo_amount (budget_amount saved as 0). Blank kind falls back to defaultKind. Returns the
+// normalized kind and the two amounts to store, whatever the client sent for the other field.
+func resolveProjectValues(kind, defaultKind string, budget, vo *float64) (string, float64, float64, error) {
+	kind = strings.ToUpper(strings.TrimSpace(kind))
+	if kind == "" {
+		kind = defaultKind
+	}
+	switch kind {
+	case "NEW":
+		if budget == nil {
+			return "", 0, 0, fmt.Errorf("กรุณาระบุมูลค่าโครงการ")
+		}
+		if math.IsNaN(*budget) || math.IsInf(*budget, 0) || *budget < 0 {
+			return "", 0, 0, fmt.Errorf("มูลค่าโครงการต้องเป็นตัวเลขที่ไม่ติดลบ")
+		}
+		return kind, *budget, 0, nil
+	case "VO":
+		if vo == nil {
+			return "", 0, 0, fmt.Errorf("กรุณาระบุมูลค่า VO")
+		}
+		v, err := normalizeVOAmount(vo)
+		if err != nil {
+			return "", 0, 0, err
+		}
+		return kind, 0, v, nil
+	default:
+		return "", 0, 0, fmt.Errorf("ประเภทโครงการต้องเป็น NEW หรือ VO")
+	}
+}
+
+// resolveResponsibleUsers de-duplicates the picked ids (order kept), checks every id is an active user
+// and returns the ids plus the legacy responsible_person_name (usernames sorted, joined by ", ").
+func (h *ProjectHandler) resolveResponsibleUsers(ctx context.Context, ids []int64) ([]int64, string, error) {
+	seen := map[int64]bool{}
+	uniq := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, "", fiber.NewError(fiber.StatusBadRequest, "ผู้รับผิดชอบที่เลือกไม่ถูกต้อง")
+		}
+		if !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	if len(uniq) == 0 {
+		return nil, "", fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกผู้รับผิดชอบหลัก")
+	}
+	rows, err := h.db.Query(ctx, `SELECT username FROM users WHERE id = ANY($1) AND is_active = true ORDER BY username`, uniq)
+	if err != nil {
+		return nil, "", fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบผู้รับผิดชอบได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, "", fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบผู้รับผิดชอบได้ กรุณาลองใหม่อีกครั้ง")
+		}
+		names = append(names, n)
+	}
+	if rows.Err() != nil || len(names) != len(uniq) {
+		if rows.Err() != nil {
+			return nil, "", fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบผู้รับผิดชอบได้ กรุณาลองใหม่อีกครั้ง")
+		}
+		return nil, "", fiber.NewError(fiber.StatusBadRequest, "ผู้รับผิดชอบที่เลือกไม่ถูกต้อง")
+	}
+	return uniq, strings.Join(names, ", "), nil
+}
+
+// loadResponsibleUsers returns the project's main responsible persons (id + username only).
+func (h *ProjectHandler) loadResponsibleUsers(ctx context.Context, projectID int64) []models.ProjectResponsibleUser {
+	out := []models.ProjectResponsibleUser{}
+	rows, err := h.db.Query(ctx, `SELECT u.id, u.username FROM project_responsible_person prp
+		JOIN users u ON u.id = prp.user_id WHERE prp.project_id = $1 ORDER BY u.username`, projectID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r models.ProjectResponsibleUser
+		if rows.Scan(&r.ID, &r.Username) == nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// replaceResponsibleUsers sets the project's responsible persons inside the caller's transaction.
+func replaceResponsibleUsers(ctx context.Context, tx pgx.Tx, projectID int64, ids []int64, by int64) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM project_responsible_person WHERE project_id = $1`, projectID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO project_responsible_person (project_id, user_id, created_by)
+		SELECT $1, x, $3 FROM unnest($2::bigint[]) AS x`, projectID, ids, by)
+	return err
 }
 
 // List godoc
@@ -219,6 +320,7 @@ func (h *ProjectHandler) List(c *fiber.Ctx) error {
 		if err := scanProjectFull(&p, rows); err != nil {
 			return err
 		}
+		p.ResponsibleUsers = []models.ProjectResponsibleUser{} // list carries responsible_usernames only
 		items = append(items, p)
 	}
 
@@ -252,12 +354,62 @@ func (h *ProjectHandler) GetByID(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "project not found")
 	}
+	p.ResponsibleUsers = h.loadResponsibleUsers(context.Background(), int64(p.Id))
 	return c.JSON(fiber.Map{"success": true, "data": p})
+}
+
+// formatProjectCode is the single project_code format ({YYYY}-{customer_code}-{NNN}, NNN padded to 3
+// digits, 4+ digits past 999), shared by Create and the NextCode preview so they cannot drift.
+func formatProjectCode(year int, customerCode string, no int) string {
+	return fmt.Sprintf("%d-%s-%03d", year, customerCode, no)
+}
+
+// NextCode godoc
+// @Summary      Preview the next project_code (read-only)
+// @Description  Never reserves or writes anything: next_no = project_code_year_counter.last_no (0 if none) + 1 for the current Asia/Bangkok year; the running number is shared by ALL customers and customer_id only supplies the customer_code part. Create still allocates the real code atomically, so the final code can differ if someone else creates a project first.
+// @Tags         Master
+// @Security     BearerAuth
+// @Produce      json
+// @Param        customer_id  query  int  true  "customer cus_id"
+// @Success      200  {object}  fiber.Map
+// @Failure      400  {object}  fiber.Map
+// @Router       /master/projects/next-code [get]
+func (h *ProjectHandler) NextCode(c *fiber.Ctx) error {
+	customerID, err := strconv.ParseInt(strings.TrimSpace(c.Query("customer_id")), 10, 64)
+	if err != nil || customerID <= 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกเจ้าของโครงการ")
+	}
+	ctx := context.Background()
+	const failMsg = "ไม่สามารถดูรหัสโครงการถัดไปได้ กรุณาลองใหม่อีกครั้ง"
+
+	var customerCode string
+	if err := h.db.QueryRow(ctx, `SELECT COALESCE(btrim(customer_code), '') FROM customer WHERE cus_id = $1`, customerID).Scan(&customerCode); err != nil {
+		if err == pgx.ErrNoRows {
+			return fiber.NewError(fiber.StatusBadRequest, "ไม่พบข้อมูลลูกค้าที่เลือก")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
+	if customerCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "ลูกค้านี้ยังไม่มีรหัสลูกค้า กรุณาเพิ่มรหัสลูกค้าก่อน")
+	}
+
+	year := bangkokNow().Year()
+	var nextNo int
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE((SELECT last_no FROM project_code_year_counter WHERE code_year = $1), 0) + 1`,
+		year).Scan(&nextNo); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
+	return c.JSON(fiber.Map{
+		"project_code": formatProjectCode(year, customerCode, nextNo),
+		"code_year":    year,
+		"next_no":      nextNo,
+	})
 }
 
 // Create godoc
 // @Summary      Create project
-// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward; both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
+// @Description  project_code is generated by the server as YYYY-{customer_code}-NNN (client value ignored; customer_id required) and cannot be changed afterwards. location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward; both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -272,47 +424,117 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, req.BudgetAmount, req.JobCodes)
+	// project_code is always generated by the server; whatever the client sent is ignored.
+	req.ProjectCode = ""
+	if req.CustomerID == nil || *req.CustomerID <= 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกเจ้าของโครงการ")
+	}
+	var responsibleIDs []int64
+	if req.ResponsibleUserIDs != nil {
+		ids, names, rerr := h.resolveResponsibleUsers(context.Background(), req.ResponsibleUserIDs)
+		if rerr != nil {
+			return rerr
+		}
+		responsibleIDs, req.ResponsiblePersonName = ids, names // legacy name = selected usernames
+	}
+	kind, budgetAmount, voAmount, verr := resolveProjectValues(req.ProjectKind, "NEW", req.BudgetAmount, req.VOAmount)
+	if verr != nil {
+		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
+	}
+	status, verr := validateProjectCore("(auto)", req.ProjectName, req.ResponsiblePersonName, req.Status, budgetAmount, req.JobCodes)
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
 	req.Status = status
-	voAmount, verr := normalizeVOAmount(req.VOAmount)
-	if verr != nil {
-		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
-	}
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
 		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 	}
 	ctx := context.Background()
+	const failMsg = "ไม่สามารถสร้างโครงการได้ กรุณาลองใหม่อีกครั้ง"
 
-	var id int64
-	err := h.db.QueryRow(ctx, `
-		INSERT INTO project
-		    (project_code, project_name, location_code, dept_code, owner_id, owner_name, customer_id, responsible_person_name, job_codes,
-		     budget_amount, consultant_name, consultant_phone, start_date, end_date,
-		     status, is_active, created_at, updated_at, created_by, updated_by, vo_amount)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,now(),now(),$16,$16,$17)
-		RETURNING id`,
-		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID, req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
-		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
-		req.StartDate, req.EndDate, req.Status, claims.UserID, voAmount,
-	).Scan(&id)
-	if err != nil {
-		if pgErr, ok := err.(*pgconn.PgError); ok {
-			if pgErr.Code == "23505" {
-				return fiber.NewError(fiber.StatusConflict, "project_code already exists")
-			}
-			if pgErr.Code == "23503" {
-				if pgErr.ConstraintName == "project_customer_id_fkey" {
-					return fiber.NewError(fiber.StatusBadRequest, "invalid customer_id")
-				}
-				return fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
-			}
+	var customerCode string
+	if err := h.db.QueryRow(ctx, `SELECT COALESCE(btrim(customer_code), '') FROM customer WHERE cus_id = $1`, *req.CustomerID).Scan(&customerCode); err != nil {
+		if err == pgx.ErrNoRows {
+			return fiber.NewError(fiber.StatusBadRequest, "ไม่พบข้อมูลลูกค้าที่เลือก")
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
+	if customerCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "ลูกค้านี้ยังไม่มีรหัสลูกค้า กรุณาเพิ่มรหัสลูกค้าก่อน")
+	}
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
+	defer tx.Rollback(ctx)
+
+	// Running number per Bangkok year, shared by all customers, allocated in the same transaction as the INSERT.
+	// The INSERT runs in a savepoint so a project_code unique violation can be retried (next number)
+	// without aborting the whole transaction.
+	year := bangkokNow().Year()
+	var id int64
+	var projectCode string
+	for attempt := 0; attempt < 5; attempt++ {
+		var lastNo int
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO project_code_year_counter (code_year, last_no) VALUES ($1, 1)
+			ON CONFLICT (code_year) DO UPDATE SET last_no = project_code_year_counter.last_no + 1
+			RETURNING last_no`, year).Scan(&lastNo); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+		projectCode = formatProjectCode(year, customerCode, lastNo)
+
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+		err = sp.QueryRow(ctx, `
+			INSERT INTO project
+			    (project_code, project_name, location_code, dept_code, owner_id, owner_name, customer_id, responsible_person_name, job_codes,
+			     budget_amount, consultant_name, consultant_phone, start_date, end_date,
+			     status, is_active, created_at, updated_at, created_by, updated_by, vo_amount, project_kind)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,now(),now(),$16,$16,$17,$18)
+			RETURNING id`,
+			projectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID, req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
+			budgetAmount, req.ConsultantName, req.ConsultantPhone,
+			req.StartDate, req.EndDate, req.Status, claims.UserID, voAmount, kind,
+		).Scan(&id)
+		if err == nil {
+			if err := sp.Commit(ctx); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+			}
+			break
+		}
+		_ = sp.Rollback(ctx)
+		pgErr, ok := err.(*pgconn.PgError)
+		if !ok {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+		if pgErr.Code == "23505" {
+			id = 0
+			continue // code already taken: take the next number
+		}
+		if pgErr.Code == "23503" {
+			if pgErr.ConstraintName == "project_customer_id_fkey" {
+				return fiber.NewError(fiber.StatusBadRequest, "ไม่พบข้อมูลลูกค้าที่เลือก")
+			}
+			return fiber.NewError(fiber.StatusBadRequest, "รหัสแผนกไม่ถูกต้อง")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
+	if id == 0 {
+		return fiber.NewError(fiber.StatusConflict, "ไม่สามารถสร้างรหัสโครงการที่ไม่ซ้ำได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if responsibleIDs != nil {
+		if err := replaceResponsibleUsers(ctx, tx, id, responsibleIDs, claims.UserID); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 	}
 
 	var p models.ProjectFull
@@ -320,6 +542,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		`SELECT `+projectSelectCols+projectSelectFrom+` WHERE p.id = $1`, id)); err != nil {
 		return err
 	}
+	p.ResponsibleUsers = h.loadResponsibleUsers(ctx, int64(p.Id))
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": p})
 }
 
@@ -345,15 +568,6 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, req.BudgetAmount, req.JobCodes)
-	if verr != nil {
-		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
-	}
-	req.Status = status
-	voAmount, verr := normalizeVOAmount(req.VOAmount)
-	if verr != nil {
-		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
-	}
 
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -361,11 +575,33 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	}
 	ctx := context.Background()
 
-	var currentProjectCode string
+	var currentProjectCode, currentKind string
 	var currentIsActive bool
-	if err := h.db.QueryRow(ctx, `SELECT project_code, is_active FROM project WHERE id=$1`, id).Scan(&currentProjectCode, &currentIsActive); err != nil {
+	if err := h.db.QueryRow(ctx, `SELECT project_code, is_active, project_kind FROM project WHERE id=$1`, id).Scan(&currentProjectCode, &currentIsActive, &currentKind); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "project not found")
 	}
+	// project_code is immutable: it is generated at create time and any client value is ignored.
+	req.ProjectCode = currentProjectCode
+
+	var responsibleIDs []int64
+	if req.ResponsibleUserIDs != nil {
+		ids, names, rerr := h.resolveResponsibleUsers(ctx, req.ResponsibleUserIDs)
+		if rerr != nil {
+			return rerr
+		}
+		responsibleIDs, req.ResponsiblePersonName = ids, names // legacy name = selected usernames
+	}
+
+	// Validation only (no writes yet): a blank project_kind keeps the project's current kind.
+	kind, budgetAmount, voAmount, verr := resolveProjectValues(req.ProjectKind, currentKind, req.BudgetAmount, req.VOAmount)
+	if verr != nil {
+		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
+	}
+	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, budgetAmount, req.JobCodes)
+	if verr != nil {
+		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
+	}
+	req.Status = status
 
 	// is_active: nil means the client omitted it — preserve the project's current value
 	// instead of defaulting to false. Unlike Status (which has a real default, "ACTIVE"),
@@ -416,17 +652,22 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	tag, err := h.db.Exec(ctx, `
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
 		UPDATE project
 		SET project_code=$1, project_name=$2, location_code=$3, dept_code=$4, owner_id=$5,
 		    owner_name=$6, customer_id=$7, responsible_person_name=$8, job_codes=$9,
 		    budget_amount=$10, consultant_name=$11, consultant_phone=$12,
-		    start_date=$13, end_date=$14, status=$15, is_active=$16, updated_at=now(), updated_by=$17, vo_amount=$19
+		    start_date=$13, end_date=$14, status=$15, is_active=$16, updated_at=now(), updated_by=$17, vo_amount=$19, project_kind=$20
 		WHERE id=$18`,
 		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID,
 		req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
-		req.BudgetAmount, req.ConsultantName, req.ConsultantPhone,
-		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id, voAmount)
+		budgetAmount, req.ConsultantName, req.ConsultantPhone,
+		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id, voAmount, kind)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			if pgErr.Code == "23505" {
@@ -450,12 +691,21 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return fiber.NewError(fiber.StatusNotFound, "project not found")
 	}
+	if responsibleIDs != nil {
+		if err := replaceResponsibleUsers(ctx, tx, int64(id), responsibleIDs, claims.UserID); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกผู้รับผิดชอบได้ กรุณาลองใหม่อีกครั้ง")
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
+	}
 
 	var p models.ProjectFull
 	if err := scanProjectFull(&p, h.db.QueryRow(ctx,
 		`SELECT `+projectSelectCols+projectSelectFrom+` WHERE p.id = $1`, id)); err != nil {
 		return err
 	}
+	p.ResponsibleUsers = h.loadResponsibleUsers(ctx, int64(p.Id))
 	return c.JSON(fiber.Map{"success": true, "data": p})
 }
 

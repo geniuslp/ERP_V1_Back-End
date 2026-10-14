@@ -112,6 +112,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Delete("/locations/:id", locationH.DeleteLocation)
 
 	master.Get("/projects", projectH.List)
+	master.Get("/projects/next-code", projectH.NextCode) // static, before /projects/:id
 	master.Get("/projects/:id", projectH.GetByID)
 	master.Post("/projects", projectH.Create)
 	master.Post("/projects/import", projectH.Import)
@@ -278,6 +279,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	users := api.Group("/users")
 	users.Use(jwt)
 	users.Get("/allUser", usersH.List)
+	users.Get("/options", usersH.Options) // static, before /users/:id
 	users.Get("/:id", usersH.Get)
 	users.Get("/:id/signature", usersH.GetSignature)
 	users.Post("/", middleware.RequireRole("ADMIN_CENTER"), usersH.Create)

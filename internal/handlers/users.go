@@ -82,6 +82,37 @@ func NewUsersHandler(db *pgxpool.Pool, cfg *config.Config) *UsersHandler {
 	return &UsersHandler{db: db, cfg: cfg}
 }
 
+// Options godoc
+// @Summary      Lightweight user options (id + username) for pickers
+// @Description  ALL active users as [{id, username}], ordered by username. No pagination, no department/role filter, username only (no names/emails). Read-only; any authenticated user (JWT), same as the project list/create/edit endpoints it serves.
+// @Tags         Users
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Failure      500  {object}  fiber.Map
+// @Router       /users/options [get]
+func (h *UsersHandler) Options(c *fiber.Ctx) error {
+	rows, err := h.db.Query(context.Background(),
+		`SELECT id, username FROM users WHERE is_active = true AND COALESCE(btrim(username), '') <> '' ORDER BY username, id`)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายชื่อผู้ใช้ได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	defer rows.Close()
+	items := []fiber.Map{}
+	for rows.Next() {
+		var id int64
+		var username string
+		if err := rows.Scan(&id, &username); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายชื่อผู้ใช้ได้ กรุณาลองใหม่อีกครั้ง")
+		}
+		items = append(items, fiber.Map{"id": id, "username": username})
+	}
+	if err := rows.Err(); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายชื่อผู้ใช้ได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
 // List godoc
 // @Summary      List users
 // @Description  Get all users

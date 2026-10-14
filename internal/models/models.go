@@ -109,6 +109,9 @@ type ProjectFull struct {
 	ResponsiblePersonName *string    `json:"responsible_person_name,omitempty"` // free text ("ผู้รับผิดชอบหลัก"), required on write — replaces the owner_id dropdown
 	JobCodes              []string   `json:"job_codes,omitempty"`
 	BudgetAmount          float64    `json:"budget_amount"`
+	ResponsibleUsers      []ProjectResponsibleUser `json:"responsible_users"`     // detail/create/update only; username only
+	ResponsibleUsernames  string     `json:"responsible_usernames"` // usernames joined by ", " (list + detail)
+	ProjectKind           string     `json:"project_kind"` // NEW | VO — decides which of budget_amount / vo_amount applies
 	VOAmount              float64    `json:"vo_amount"` // "มูลค่า VO" — separate from budget_amount, never summed with it
 	SpentAmount           float64    `json:"spent_amount"`
 	PaidAmount            float64    `json:"paid_amount"`
@@ -125,6 +128,11 @@ type ProjectFull struct {
 	UpdatedBy             *int64     `json:"updated_by,omitempty"`
 }
 
+type ProjectResponsibleUser struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+}
+
 type CreateProjectReq struct {
 	ProjectCode           string   `json:"project_code"`
 	ProjectName           string   `json:"project_name"`
@@ -135,8 +143,10 @@ type CreateProjectReq struct {
 	CustomerID            *int64   `json:"customer_id,omitempty"`                       // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
-	BudgetAmount          float64  `json:"budget_amount"`
-	VOAmount              *float64 `json:"vo_amount"` // nil/absent -> 0
+	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
+	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
+	BudgetAmount          *float64 `json:"budget_amount"` // required for NEW; forced to 0 for VO
+	VOAmount              *float64 `json:"vo_amount"`     // required for VO; forced to 0 for NEW
 	ConsultantName        *string  `json:"consultant_name,omitempty"`
 	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
 	StartDate             *string  `json:"start_date,omitempty"`
@@ -154,8 +164,10 @@ type UpdateProjectReq struct {
 	CustomerID            *int64   `json:"customer_id,omitempty"`                       // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
-	BudgetAmount          float64  `json:"budget_amount"`
-	VOAmount              *float64 `json:"vo_amount"` // nil/absent -> 0
+	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
+	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
+	BudgetAmount          *float64 `json:"budget_amount"` // required for NEW; forced to 0 for VO
+	VOAmount              *float64 `json:"vo_amount"`     // required for VO; forced to 0 for NEW
 	ConsultantName        *string  `json:"consultant_name,omitempty"`
 	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
 	StartDate             *string  `json:"start_date,omitempty"`       // "YYYY-MM-DD" — pgx casts to date automatically
