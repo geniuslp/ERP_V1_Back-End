@@ -40,9 +40,22 @@ func validateWorkOrderRequest(req *models.CreateWorkOrderRequest) error {
 	if req.ContractType != "LABOR_ONLY" && req.ContractType != "LABOR_MATERIAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "contract_type must be LABOR_ONLY or LABOR_MATERIAL")
 	}
-	if req.WorkSystem != "P" && req.WorkSystem != "E" && req.WorkSystem != "S" {
-		return fiber.NewError(fiber.StatusBadRequest, "work_system must be P, E, or S")
+	if len(req.WorkSystem) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกระบบงานอย่างน้อย 1 ระบบ (P, E, S)")
 	}
+	seen := make(map[string]bool, len(req.WorkSystem))
+	uniq := make([]string, 0, len(req.WorkSystem))
+	for _, ws := range req.WorkSystem {
+		ws = strings.TrimSpace(ws)
+		if ws != "P" && ws != "E" && ws != "S" {
+			return fiber.NewError(fiber.StatusBadRequest, "ระบบงานต้องเป็น P, E หรือ S เท่านั้น")
+		}
+		if !seen[ws] {
+			seen[ws] = true
+			uniq = append(uniq, ws)
+		}
+	}
+	req.WorkSystem = uniq
 	if req.ContractAmount <= 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "contract_amount must be positive")
 	}
@@ -114,7 +127,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 	err = tx.QueryRow(ctx, `
 		INSERT INTO work_order (
 			wo_no, wo_date, employer_name, project_code, project_scope_text,
-			supplier_code, supplier_name, contact_person, supplier_address, supplier_phone,
+			supplier_id, supplier_name, contact_person, supplier_address, supplier_phone,
 			contract_type, work_system, contract_description, contract_amount,
 			vat_rate, wht_rate, advance_pct, advance_amount, progress_payment_note,
 			retention_pct, advance_deduct_pct, other_deduction_note,
@@ -123,7 +136,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			entered_by, entered_at, section_head_id, authorized_by, remarks,
 			use_discount, discount_type, use_vat, use_wht,
 			total_amount, discount_amount, vat_amount, wht_amount, net_amount,
-			created_by, updated_by, supplier_id
+			created_by, updated_by
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8,$9,$10,
@@ -135,10 +148,10 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			$30,NOW(),$31,$32,$33,
 			$34,$35,$36,$37,
 			$38,$39,$40,$41,$42,
-			$30,$30,$43
+			$30,$30
 		) RETURNING id`,
 		woNo, woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
-		req.SupplierCode, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
+		req.SupplierID, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
 		req.ContractType, req.WorkSystem, req.ContractDescription, req.ContractAmount,
 		req.VatRate, req.WhtRate, req.AdvancePct, req.AdvanceAmount, req.ProgressPaymentNote,
 		req.RetentionPct, req.AdvanceDeductPct, req.OtherDeductionNote,
@@ -147,7 +160,6 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		claims.UserID, req.SectionHeadID, req.AuthorizedBy, req.Remarks,
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
-		req.SupplierID,
 	).Scan(&woID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "insert error: "+err.Error())
@@ -193,7 +205,7 @@ func (h *WorkOrderHandler) ReserveWONumber(c *fiber.Ctx) error {
 
 const workOrderSelectCols = `
 	wo.id, wo.wo_no, TO_CHAR(wo.wo_date,'YYYY-MM-DD'), wo.employer_name, wo.project_code, p.project_name,
-	wo.project_scope_text, wo.supplier_code, wo.supplier_name, wo.contact_person,
+	wo.project_scope_text, NULL::text AS supplier_code, wo.supplier_name, wo.contact_person,
 	wo.supplier_address, wo.supplier_phone, wo.contract_type, wo.work_system,
 	wo.contract_description, wo.contract_amount, wo.vat_rate, wo.wht_rate,
 	wo.advance_pct, wo.advance_amount, wo.progress_payment_note,
@@ -644,7 +656,7 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 			employer_name        = $2,
 			project_code         = $3,
 			project_scope_text   = $4,
-			supplier_code        = $5,
+			supplier_id          = $5,
 			supplier_name        = $6,
 			contact_person       = $7,
 			supplier_address     = $8,
@@ -682,11 +694,10 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 			net_amount           = $40,
 			status               = $41,
 			updated_at           = NOW(),
-			updated_by           = $42,
-			supplier_id          = $44
+			updated_by           = $42
 		WHERE id = $43`,
 		woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
-		req.SupplierCode, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
+		req.SupplierID, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
 		req.ContractType, req.WorkSystem, req.ContractDescription, req.ContractAmount,
 		req.VatRate, req.WhtRate, req.AdvancePct, req.AdvanceAmount, req.ProgressPaymentNote,
 		req.RetentionPct, req.AdvanceDeductPct, req.OtherDeductionNote,
@@ -694,7 +705,7 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 		req.RefNo, req.OtherTerms, req.SectionHeadID, req.AuthorizedBy, req.Remarks,
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
-		newStatus, claims.UserID, id, req.SupplierID,
+		newStatus, claims.UserID, id,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "update error: "+err.Error())
 	}

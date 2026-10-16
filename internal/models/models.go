@@ -1329,6 +1329,8 @@ type Customer struct {
 	CustomerName string    `json:"customer_name"`
 	Address      *string   `json:"address,omitempty"`
 	Contact      *string   `json:"contact,omitempty"`
+	ContactPhone *string   `json:"contact_phone,omitempty"`
+	TaxID        *string   `json:"tax_id,omitempty"`
 	CreditTerm   *string   `json:"credit_term,omitempty"`
 	Remarks      *string   `json:"remarks,omitempty"`
 	Tel          *string   `json:"tel,omitempty"`
@@ -1344,6 +1346,8 @@ type CreateCustomerRequest struct {
 	CustomerName string  `json:"customer_name" validate:"required"`
 	Address      *string `json:"address,omitempty"`
 	Contact      *string `json:"contact,omitempty"`
+	ContactPhone *string `json:"contact_phone,omitempty"`
+	TaxID        *string `json:"tax_id,omitempty"`
 	CreditTerm   *string `json:"credit_term,omitempty"`
 	Remarks      *string `json:"remarks,omitempty"`
 	Tel          *string `json:"tel,omitempty"`
@@ -1354,6 +1358,8 @@ type UpdateCustomerRequest struct {
 	CustomerName *string `json:"customer_name,omitempty"`
 	Address      *string `json:"address,omitempty"`
 	Contact      *string `json:"contact,omitempty"`
+	ContactPhone *string `json:"contact_phone,omitempty"`
+	TaxID        *string `json:"tax_id,omitempty"`
 	CreditTerm   *string `json:"credit_term,omitempty"`
 	Remarks      *string `json:"remarks,omitempty"`
 	Tel          *string `json:"tel,omitempty"`
@@ -1513,7 +1519,7 @@ type WorkOrder struct {
 	SupplierAddress         *string   `json:"supplier_address"`
 	SupplierPhone           *string   `json:"supplier_phone"`
 	ContractType            string    `json:"contract_type"` // LABOR_ONLY | LABOR_MATERIAL
-	WorkSystem              string    `json:"work_system"`   // P | E | S
+	WorkSystem              []string  `json:"work_system"`   // text[] — each element P | E | S, at least 1
 	ContractDescription     *string   `json:"contract_description"`
 	ContractAmount          float64   `json:"contract_amount"`
 	VatRate                 float64   `json:"vat_rate"`
@@ -1580,8 +1586,8 @@ type CreateWorkOrderRequest struct {
 	SupplierAddress     *string  `json:"supplier_address"`
 	SupplierPhone       *string  `json:"supplier_phone"`
 	ContractType        string   `json:"contract_type" validate:"required,oneof=LABOR_ONLY LABOR_MATERIAL"`
-	WorkSystem          string   `json:"work_system" validate:"required,oneof=P E S"`
-	ContractDescription *string  `json:"contract_description"`
+	WorkSystem          []string `json:"work_system"` // at least 1 of P | E | S; validated in validateWorkOrderRequest
+	ContractDescription *string  `json:"contract_description"` // free text
 	ContractAmount      float64  `json:"contract_amount" validate:"required,gt=0"`
 	VatRate             *float64 `json:"vat_rate"`
 	WhtRate             *float64 `json:"wht_rate"`

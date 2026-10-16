@@ -1000,7 +1000,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.",
+                "description": "Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, contact_phone, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.",
                 "produces": [
                     "application/json"
                 ],
@@ -1112,7 +1112,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Column layout (row 1 = header, data starts row 2): customer_code*, customer_name*, address, contact, credit_term, remarks. Validates every row (required fields, customer_code uniqueness — case-sensitive exact match, credit_term against the fixed option list excluding เงินสด) and processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.",
+                "description": "Column layout (row 1 = header, data starts row 2): customer_code*, customer_name*, address, contact, credit_term, remarks, contact_phone (optional, max 50), tax_id (optional, 13 digits). Validates every row (required fields, customer_code uniqueness — case-sensitive exact match, credit_term against the fixed option list excluding เงินสด) and processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -5469,7 +5469,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.",
+                "description": "Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, contact_phone, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.",
                 "produces": [
                     "application/json"
                 ],
@@ -5581,7 +5581,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Body {rows:[{customer_code, customer_name}]}, max 2000 rows, fully empty rows ignored. All rows are validated first (code required/max 20, name required/max 255, duplicate codes in the request compared by lower(trim)); any error gives 400 {errors:[{row,field,message}]} and nothing is written. Otherwise ONE transaction: match by lower(trim(customer_code)); no match then INSERT (is_active=true, created_by); match then UPDATE customer_name (+updated_by/updated_at) only when the name differs. Other columns are never touched. row = 1-based position in the submitted array.",
+                "description": "Body {rows:[{row?, customer_code*, customer_name*, contact, contact_phone, tax_id, address, credit_term, remarks}]}, max 2000 rows, fully empty rows ignored. row (optional) is the spreadsheet row number used in error messages; default is the 1-based array position. Values are trimmed and empty optional fields become NULL. All rows are validated first (code required/max 20, name required/max 255, contact_phone max 50, tax_id (spaces/dashes stripped, must be 13 digits, raw max 20), credit_term free text max 50 (trimmed, empty = NULL, never parsed); duplicate customer_code inside the file, compared by lower(trim), is rejected and every involved row is listed); any error gives 400 {errors:[{row,field,message}]} with Thai messages \"แถวที่ N: ...\" and nothing is written. Otherwise ONE transaction: match an existing customer by lower(trim(customer_code)); no match then INSERT (is_active=true, created_by); match then UPDATE all imported fields (a blank optional cell clears the stored value; is_active is never touched). Response data: {inserted, updated, total} (created = inserted, kept for older clients).",
                 "consumes": [
                     "application/json"
                 ],
@@ -5591,7 +5591,7 @@ const docTemplate = `{
                 "tags": [
                     "Customer"
                 ],
-                "summary": "Import ลูกค้าจาก JSON (รหัส + ชื่อ)",
+                "summary": "Import ลูกค้าจาก JSON (frontend อ่านไฟล์ Excel แล้วส่งเป็น rows)",
                 "parameters": [
                     {
                         "description": "rows",
@@ -15820,10 +15820,32 @@ const docTemplate = `{
         "handlers.customerImportRow": {
             "type": "object",
             "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "contact": {
+                    "type": "string"
+                },
+                "contact_phone": {
+                    "type": "string"
+                },
+                "credit_term": {
+                    "type": "string"
+                },
                 "customer_code": {
                     "type": "string"
                 },
                 "customer_name": {
+                    "type": "string"
+                },
+                "remarks": {
+                    "type": "string"
+                },
+                "row": {
+                    "description": "Row is the optional spreadsheet row number to show in error messages (e.g. 5 for the\n4th data row under a header). Falls back to the 1-based position in the array.",
+                    "type": "integer"
+                },
+                "tax_id": {
                     "type": "string"
                 }
             }
@@ -16382,6 +16404,9 @@ const docTemplate = `{
                 "contact": {
                     "type": "string"
                 },
+                "contact_phone": {
+                    "type": "string"
+                },
                 "credit_term": {
                     "type": "string"
                 },
@@ -16392,6 +16417,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "remarks": {
+                    "type": "string"
+                },
+                "tax_id": {
                     "type": "string"
                 },
                 "tel": {
@@ -17703,8 +17731,7 @@ const docTemplate = `{
                 "contract_type",
                 "employer_name",
                 "lines",
-                "supplier_name",
-                "work_system"
+                "supplier_name"
             ],
             "properties": {
                 "advance_amount": {
@@ -17726,6 +17753,7 @@ const docTemplate = `{
                     "type": "number"
                 },
                 "contract_description": {
+                    "description": "free text",
                     "type": "string"
                 },
                 "contract_type": {
@@ -17836,12 +17864,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "work_system": {
-                    "type": "string",
-                    "enum": [
-                        "P",
-                        "E",
-                        "S"
-                    ]
+                    "description": "at least 1 of P | E | S; validated in validateWorkOrderRequest",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -17871,6 +17898,9 @@ const docTemplate = `{
                 "contact": {
                     "type": "string"
                 },
+                "contact_phone": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -17893,6 +17923,9 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "remarks": {
+                    "type": "string"
+                },
+                "tax_id": {
                     "type": "string"
                 },
                 "tel": {
@@ -19229,6 +19262,9 @@ const docTemplate = `{
                 "contact": {
                     "type": "string"
                 },
+                "contact_phone": {
+                    "type": "string"
+                },
                 "credit_term": {
                     "type": "string"
                 },
@@ -19243,6 +19279,9 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "remarks": {
+                    "type": "string"
+                },
+                "tax_id": {
                     "type": "string"
                 },
                 "tel": {

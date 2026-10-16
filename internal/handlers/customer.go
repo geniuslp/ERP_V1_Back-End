@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -26,14 +28,14 @@ func NewCustomerHandler(db *pgxpool.Pool) *CustomerHandler {
 	return &CustomerHandler{db: db}
 }
 
-const customerCols = `cus_id, customer_code, customer_name, address, contact, credit_term,
+const customerCols = `cus_id, customer_code, customer_name, address, contact, contact_phone, tax_id, credit_term,
 	remarks, tel, is_active, created_at, created_by, updated_at, updated_by`
 
 func scanCustomer(cu *models.Customer, row interface {
 	Scan(dest ...any) error
 }) error {
 	return row.Scan(&cu.CusID, &cu.CustomerCode, &cu.CustomerName, &cu.Address, &cu.Contact,
-		&cu.CreditTerm, &cu.Remarks, &cu.Tel, &cu.IsActive, &cu.CreatedAt, &cu.CreatedBy, &cu.UpdatedAt, &cu.UpdatedBy)
+		&cu.ContactPhone, &cu.TaxID, &cu.CreditTerm, &cu.Remarks, &cu.Tel, &cu.IsActive, &cu.CreatedAt, &cu.CreatedBy, &cu.UpdatedAt, &cu.UpdatedBy)
 }
 
 // validateCustomerFields is the single source of truth for required-field checks on a
@@ -63,7 +65,7 @@ func customerOptional(v *string) *string {
 }
 
 // checkCustomerFields validates already-trimmed values with plain-language errors (before any SQL).
-func checkCustomerFields(code, name string, tel *string) error {
+func checkCustomerFields(code, name string, tel, contactPhone *string) error {
 	if code == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "กรุณากรอกรหัสลูกค้า")
 	}
@@ -79,7 +81,28 @@ func checkCustomerFields(code, name string, tel *string) error {
 	if tel != nil && utf8.RuneCountInString(*tel) > 50 {
 		return fiber.NewError(fiber.StatusBadRequest, "เบอร์โทรยาวเกินกำหนด (สูงสุด 50 ตัวอักษร)")
 	}
+	if contactPhone != nil && utf8.RuneCountInString(*contactPhone) > 50 {
+		return fiber.NewError(fiber.StatusBadRequest, "เบอร์โทรผู้ติดต่อยาวเกินกำหนด (สูงสุด 50 ตัวอักษร)")
+	}
 	return nil
+}
+
+// normalizeCustomerTaxID trims the value, treats empty as NULL, and — when present — strips
+// spaces/dashes (Excel often formats it as 1-2345-67890-12-3) and requires exactly 13 digits.
+// The returned *string is the value to store. Errors are plain Thai, raised before any SQL.
+func normalizeCustomerTaxID(v *string) (*string, error) {
+	t := customerOptional(v)
+	if t == nil {
+		return nil, nil
+	}
+	if utf8.RuneCountInString(*t) > 20 {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "เลขประจำตัวผู้เสียภาษียาวเกินกำหนด (สูงสุด 20 ตัวอักษร)")
+	}
+	digits := strings.NewReplacer(" ", "", "-", "").Replace(*t)
+	if utf8.RuneCountInString(digits) != 13 || !isASCIIDigits(digits) {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "เลขประจำตัวผู้เสียภาษีต้องมี 13 หลัก")
+	}
+	return &digits, nil
 }
 
 // customerCodeTaken reports whether another customer already uses this code (case-insensitive,
@@ -99,7 +122,7 @@ const customerDupMsg = "รหัสลูกค้านี้มีอยู�
 
 // List godoc
 // @Summary      รายการลูกค้า
-// @Description  Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.
+// @Description  Paginated list sorted by customer_code. q (alias search) matches customer_code, customer_name, contact, contact_phone, tel (case-insensitive). is_active defaults to true when omitted; pass is_active=false for inactive only or is_active=all for both.
 // @Tags         Customer
 // @Security     BearerAuth
 // @Produce      json
@@ -147,7 +170,7 @@ func (h *CustomerHandler) List(c *fiber.Ctx) error {
 		i++
 	}
 	if search != "" {
-		where = append(where, fmt.Sprintf("(customer_code ILIKE $%d OR customer_name ILIKE $%d OR contact ILIKE $%d OR tel ILIKE $%d)", i, i, i, i))
+		where = append(where, fmt.Sprintf("(customer_code ILIKE $%d OR customer_name ILIKE $%d OR contact ILIKE $%d OR contact_phone ILIKE $%d OR tel ILIKE $%d)", i, i, i, i, i))
 		args = append(args, "%"+search+"%")
 		i++
 	}
@@ -238,8 +261,12 @@ func (h *CustomerHandler) Create(c *fiber.Ctx) error {
 	}
 	code := strings.TrimSpace(req.CustomerCode)
 	name := strings.TrimSpace(req.CustomerName)
-	tel := customerOptional(req.Tel)
-	if err := checkCustomerFields(code, name, tel); err != nil {
+	tel, contactPhone := customerOptional(req.Tel), customerOptional(req.ContactPhone)
+	taxID, err := normalizeCustomerTaxID(req.TaxID)
+	if err != nil {
+		return err
+	}
+	if err := checkCustomerFields(code, name, tel, contactPhone); err != nil {
 		return err
 	}
 
@@ -256,10 +283,10 @@ func (h *CustomerHandler) Create(c *fiber.Ctx) error {
 
 	var cu models.Customer
 	err = scanCustomer(&cu, h.db.QueryRow(ctx, `
-		INSERT INTO customer (customer_code, customer_name, address, contact, credit_term, remarks, tel, is_active, created_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8)
+		INSERT INTO customer (customer_code, customer_name, address, contact, contact_phone, tax_id, credit_term, remarks, tel, is_active, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10)
 		RETURNING `+customerCols,
-		code, name, customerOptional(req.Address), customerOptional(req.Contact), customerOptional(req.CreditTerm),
+		code, name, customerOptional(req.Address), customerOptional(req.Contact), contactPhone, taxID, customerOptional(req.CreditTerm),
 		customerOptional(req.Remarks), tel, claims.UserID,
 	))
 	if err != nil {
@@ -322,13 +349,21 @@ func (h *CustomerHandler) Update(c *fiber.Ctx) error {
 		return customerOptional(sent)
 	}
 	address, contact := pick(req.Address, cur.Address), pick(req.Contact, cur.Contact)
+	contactPhone := pick(req.ContactPhone, cur.ContactPhone)
+	taxID := cur.TaxID
+	if req.TaxID != nil {
+		var terr error
+		if taxID, terr = normalizeCustomerTaxID(req.TaxID); terr != nil {
+			return terr
+		}
+	}
 	creditTerm, remarks, tel := pick(req.CreditTerm, cur.CreditTerm), pick(req.Remarks, cur.Remarks), pick(req.Tel, cur.Tel)
 	isActive := cur.IsActive
 	if req.IsActive != nil {
 		isActive = *req.IsActive
 	}
 
-	if err := checkCustomerFields(code, name, tel); err != nil {
+	if err := checkCustomerFields(code, name, tel, contactPhone); err != nil {
 		return err
 	}
 	if req.CustomerCode != nil {
@@ -344,11 +379,11 @@ func (h *CustomerHandler) Update(c *fiber.Ctx) error {
 	var cu models.Customer
 	err = scanCustomer(&cu, h.db.QueryRow(ctx, `
 		UPDATE customer SET
-			customer_code=$1, customer_name=$2, address=$3, contact=$4, credit_term=$5,
-			remarks=$6, tel=$7, is_active=$8, updated_at=NOW(), updated_by=$9
-		WHERE cus_id=$10
+			customer_code=$1, customer_name=$2, address=$3, contact=$4, contact_phone=$5, tax_id=$6, credit_term=$7,
+			remarks=$8, tel=$9, is_active=$10, updated_at=NOW(), updated_by=$11
+		WHERE cus_id=$12
 		RETURNING `+customerCols,
-		code, name, address, contact, creditTerm, remarks, tel, isActive, claims.UserID, id,
+		code, name, address, contact, contactPhone, taxID, creditTerm, remarks, tel, isActive, claims.UserID, id,
 	))
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
@@ -457,13 +492,44 @@ func (h *CustomerHandler) Delete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "ลบลูกค้าเรียบร้อยแล้ว"})
 }
 
-// ─── JSON import (customer_code + customer_name only) ───────────────────────
+// ─── JSON import (frontend parses the Excel file and posts the rows) ─────────
 
 const customerImportMaxRows = 2000
 
+// customerImportCell accepts a JSON string, number or null — Excel numeric cells (e.g. a
+// credit_term of 30) often arrive as numbers, and must not fail the whole request body.
+type customerImportCell string
+
+func (c *customerImportCell) UnmarshalJSON(b []byte) error {
+	t := strings.TrimSpace(string(b))
+	if t == "null" {
+		*c = ""
+		return nil
+	}
+	if strings.HasPrefix(t, `"`) {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*c = customerImportCell(s)
+		return nil
+	}
+	*c = customerImportCell(t) // number / bool literal, validated later like any other text
+	return nil
+}
+
 type customerImportRow struct {
-	CustomerCode string `json:"customer_code"`
-	CustomerName string `json:"customer_name"`
+	// Row is the optional spreadsheet row number to show in error messages (e.g. 5 for the
+	// 4th data row under a header). Falls back to the 1-based position in the array.
+	Row          int                `json:"row,omitempty"`
+	CustomerCode customerImportCell `json:"customer_code"`
+	CustomerName customerImportCell `json:"customer_name"`
+	Contact      customerImportCell `json:"contact"`
+	ContactPhone customerImportCell `json:"contact_phone"`
+	TaxID        customerImportCell `json:"tax_id"`
+	Address      customerImportCell `json:"address"`
+	CreditTerm   customerImportCell `json:"credit_term"`
+	Remarks      customerImportCell `json:"remarks"`
 }
 
 type customerImportRequest struct {
@@ -471,14 +537,14 @@ type customerImportRequest struct {
 }
 
 type customerImportError struct {
-	Row     int    `json:"row"` // 1-based position in the submitted rows array
+	Row     int    `json:"row"`
 	Field   string `json:"field"`
 	Message string `json:"message"`
 }
 
 // ImportRows godoc
-// @Summary      Import ลูกค้าจาก JSON (รหัส + ชื่อ)
-// @Description  Body {rows:[{customer_code, customer_name}]}, max 2000 rows, fully empty rows ignored. All rows are validated first (code required/max 20, name required/max 255, duplicate codes in the request compared by lower(trim)); any error gives 400 {errors:[{row,field,message}]} and nothing is written. Otherwise ONE transaction: match by lower(trim(customer_code)); no match then INSERT (is_active=true, created_by); match then UPDATE customer_name (+updated_by/updated_at) only when the name differs. Other columns are never touched. row = 1-based position in the submitted array.
+// @Summary      Import ลูกค้าจาก JSON (frontend อ่านไฟล์ Excel แล้วส่งเป็น rows)
+// @Description  Body {rows:[{row?, customer_code*, customer_name*, contact, contact_phone, tax_id, address, credit_term, remarks}]}, max 2000 rows, fully empty rows ignored. row (optional) is the spreadsheet row number used in error messages; default is the 1-based array position. Values are trimmed and empty optional fields become NULL. All rows are validated first (code required/max 20, name required/max 255, contact_phone max 50, tax_id (spaces/dashes stripped, must be 13 digits, raw max 20), credit_term free text max 50 (trimmed, empty = NULL, never parsed); duplicate customer_code inside the file, compared by lower(trim), is rejected and every involved row is listed); any error gives 400 {errors:[{row,field,message}]} with Thai messages "แถวที่ N: ..." and nothing is written. Otherwise ONE transaction: match an existing customer by lower(trim(customer_code)); no match then INSERT (is_active=true, created_by); match then UPDATE all imported fields (a blank optional cell clears the stored value; is_active is never touched). Response data: {inserted, updated, total} (created = inserted, kept for older clients).
 // @Tags         Customer
 // @Security     BearerAuth
 // @Accept       json
@@ -497,52 +563,87 @@ func (h *CustomerHandler) ImportRows(c *fiber.Ctx) error {
 	}
 
 	type item struct {
-		row        int
-		code, name string
-		key        string
+		row                   int
+		code, name, key       string
+		contact, contactPhone *string
+		taxID                 *string
+		address, creditTerm   *string
+		remarks               *string
 	}
 	var items []item
 	var errs []customerImportError
-	seen := map[string]int{}
+	addErr := func(row int, field, msg string) {
+		errs = append(errs, customerImportError{row, field, fmt.Sprintf("แถวที่ %d: %s", row, msg)})
+	}
+	opt := func(v customerImportCell) *string { s := string(v); return customerOptional(&s) }
+	rowsByKey := map[string][]int{}
 	for i, r := range req.Rows {
-		code, name := strings.TrimSpace(r.CustomerCode), strings.TrimSpace(r.CustomerName)
-		if code == "" && name == "" {
+		code, name := strings.TrimSpace(string(r.CustomerCode)), strings.TrimSpace(string(r.CustomerName))
+		contact, contactPhone := opt(r.Contact), opt(r.ContactPhone)
+		rawTax := opt(r.TaxID)
+		address, creditTerm, remarks := opt(r.Address), opt(r.CreditTerm), opt(r.Remarks)
+		if code == "" && name == "" && rawTax == nil && contact == nil && contactPhone == nil && address == nil && creditTerm == nil && remarks == nil {
 			continue // fully empty row
 		}
 		rowNo := i + 1
+		if r.Row > 0 {
+			rowNo = r.Row
+		}
 		bad := false
 		switch {
 		case code == "":
-			errs = append(errs, customerImportError{rowNo, "customer_code", "กรุณากรอกรหัสลูกค้า"})
+			addErr(rowNo, "customer_code", "ต้องระบุรหัสลูกค้า")
 			bad = true
 		case utf8.RuneCountInString(code) > 20:
-			errs = append(errs, customerImportError{rowNo, "customer_code", "รหัสลูกค้ายาวเกินกำหนด (สูงสุด 20 ตัวอักษร)"})
+			addErr(rowNo, "customer_code", "รหัสลูกค้ายาวเกินกำหนด (สูงสุด 20 ตัวอักษร)")
 			bad = true
 		}
 		switch {
 		case name == "":
-			errs = append(errs, customerImportError{rowNo, "customer_name", "กรุณากรอกชื่อลูกค้า"})
+			addErr(rowNo, "customer_name", "ต้องระบุชื่อลูกค้า")
 			bad = true
 		case utf8.RuneCountInString(name) > 255:
-			errs = append(errs, customerImportError{rowNo, "customer_name", "ชื่อลูกค้ายาวเกินกำหนด (สูงสุด 255 ตัวอักษร)"})
+			addErr(rowNo, "customer_name", "ชื่อลูกค้ายาวเกินกำหนด (สูงสุด 255 ตัวอักษร)")
+			bad = true
+		}
+		if contactPhone != nil && utf8.RuneCountInString(*contactPhone) > 50 {
+			addErr(rowNo, "contact_phone", "เบอร์โทรผู้ติดต่อยาวเกินกำหนด (สูงสุด 50 ตัวอักษร)")
+			bad = true
+		}
+		taxID, terr := normalizeCustomerTaxID(rawTax)
+		if terr != nil {
+			addErr(rowNo, "tax_id", terr.(*fiber.Error).Message)
+			bad = true
+		}
+		if creditTerm != nil && utf8.RuneCountInString(*creditTerm) > 50 {
+			addErr(rowNo, "credit_term", "เครดิตยาวเกิน 50 ตัวอักษร")
 			bad = true
 		}
 		key := strings.ToLower(code)
 		if code != "" {
-			if first, dup := seen[key]; dup {
-				errs = append(errs, customerImportError{rowNo, "customer_code", fmt.Sprintf("รหัสลูกค้าซ้ำกับแถวที่ %d ในไฟล์เดียวกัน", first)})
-				bad = true
-			} else {
-				seen[key] = rowNo
-			}
+			rowsByKey[key] = append(rowsByKey[key], rowNo)
 		}
 		if !bad {
-			items = append(items, item{rowNo, code, name, key})
+			items = append(items, item{rowNo, code, name, key, contact, contactPhone, taxID, address, creditTerm, remarks})
+		}
+	}
+	// Duplicate codes inside the file: report every involved row, once per row.
+	for _, dupRows := range rowsByKey {
+		if len(dupRows) < 2 {
+			continue
+		}
+		list := make([]string, len(dupRows))
+		for i, n := range dupRows {
+			list[i] = strconv.Itoa(n)
+		}
+		for _, n := range dupRows {
+			addErr(n, "customer_code", fmt.Sprintf("รหัสลูกค้าซ้ำในไฟล์เดียวกัน (แถวที่ %s)", strings.Join(list, ", ")))
 		}
 	}
 	if len(errs) > 0 {
+		sort.SliceStable(errs, func(a, b int) bool { return errs[a].Row < errs[b].Row })
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false, "error": "ข้อมูลที่นำเข้าไม่ถูกต้อง กรุณาแก้ไขแล้วลองใหม่", "errors": errs,
+			"success": false, "error": errs[0].Message, "errors": errs,
 		})
 	}
 	if len(items) == 0 {
@@ -563,63 +664,72 @@ func (h *CustomerHandler) ImportRows(c *fiber.Ctx) error {
 	for i, it := range items {
 		keys[i] = it.key
 	}
-	type existingRow struct {
-		id   int64
-		name string
-	}
-	existing := map[string]existingRow{}
+	existing := map[string]int64{}
 	rows, err := tx.Query(ctx,
-		`SELECT cus_id, lower(btrim(customer_code)), customer_name FROM customer
+		`SELECT cus_id, lower(btrim(customer_code)) FROM customer
 		 WHERE lower(btrim(customer_code)) = ANY($1) ORDER BY cus_id DESC`, keys)
 	if err != nil {
 		return fail
 	}
 	for rows.Next() {
 		var id int64
-		var key, name string
-		if err := rows.Scan(&id, &key, &name); err != nil {
+		var key string
+		if err := rows.Scan(&id, &key); err != nil {
 			rows.Close()
 			return fail
 		}
-		existing[key] = existingRow{id, name}
+		existing[key] = id
 	}
 	rows.Close()
 	if rows.Err() != nil {
 		return fail
 	}
 
-	created, updated, unchanged := 0, 0, 0
+	inserted, updated := 0, 0
 	for _, it := range items {
-		ex, found := existing[it.key]
-		switch {
-		case !found:
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO customer (customer_code, customer_name, is_active, created_by) VALUES ($1,$2,true,$3)`,
-				it.code, it.name, claims.UserID); err != nil {
-				if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
-					return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("แถวที่ %d: %s", it.row, customerDupMsg))
-				}
-				return fail
-			}
-			created++
-		case ex.name != it.name:
-			if _, err := tx.Exec(ctx,
-				`UPDATE customer SET customer_name=$1, updated_by=$2, updated_at=NOW() WHERE cus_id=$3`,
-				it.name, claims.UserID, ex.id); err != nil {
+		if id, found := existing[it.key]; found {
+			if _, err := tx.Exec(ctx, `
+				UPDATE customer SET customer_name=$1, contact=$2, contact_phone=$3, tax_id=$4, address=$5,
+					credit_term=$6, remarks=$7, updated_by=$8, updated_at=NOW()
+				WHERE cus_id=$9`,
+				it.name, it.contact, it.contactPhone, it.taxID, it.address, it.creditTerm, it.remarks, claims.UserID, id); err != nil {
 				return fail
 			}
 			updated++
-		default:
-			unchanged++
+			continue
 		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO customer (customer_code, customer_name, contact, contact_phone, tax_id, address, credit_term, remarks, is_active, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)`,
+			it.code, it.name, it.contact, it.contactPhone, it.taxID, it.address, it.creditTerm, it.remarks, claims.UserID); err != nil {
+			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+				return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("แถวที่ %d: %s", it.row, customerDupMsg))
+			}
+			return fail
+		}
+		inserted++
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fail
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
-		"created": created, "updated": updated, "unchanged": unchanged, "total": created + updated + unchanged,
+		"inserted": inserted, "updated": updated, "total": inserted + updated,
+		"created": inserted, // alias of inserted for older clients
 	}})
+}
+
+// isASCIIDigits reports whether s is non-empty and made only of ASCII digits (used for tax_id).
+func isASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ─── Import ──────────────────────────────────────────────────────────────────
@@ -643,7 +753,7 @@ func cellAt(row []string, idx int) string {
 
 // Import godoc
 // @Summary      Bulk import customers จาก Excel
-// @Description  Column layout (row 1 = header, data starts row 2): customer_code*, customer_name*, address, contact, credit_term, remarks. Validates every row (required fields, customer_code uniqueness — case-sensitive exact match, credit_term against the fixed option list excluding เงินสด) and processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.
+// @Description  Column layout (row 1 = header, data starts row 2): customer_code*, customer_name*, address, contact, credit_term, remarks, contact_phone (optional, max 50), tax_id (optional, 13 digits). Validates every row (required fields, customer_code uniqueness — case-sensitive exact match, credit_term against the fixed option list excluding เงินสด) and processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.
 // @Tags         Customer
 // @Security     BearerAuth
 // @Accept       multipart/form-data
@@ -715,9 +825,20 @@ func (h *CustomerHandler) Import(c *fiber.Ctx) error {
 			continue
 		}
 
+		if utf8.RuneCountInString(strings.TrimSpace(cellAt(row, 6))) > 50 {
+			errs = append(errs, rowError{Row: rowNo, Reason: "เบอร์โทรผู้ติดต่อยาวเกินกำหนด (สูงสุด 50 ตัวอักษร)"})
+			continue
+		}
+
+		xlsxTaxID, terr := normalizeCustomerTaxID(nullableCell(cellAt(row, 7)))
+		if terr != nil {
+			errs = append(errs, rowError{Row: rowNo, Reason: terr.(*fiber.Error).Message})
+			continue
+		}
+
 		var exists bool
 		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM customer WHERE customer_code = $1)`, code).Scan(&exists); err != nil {
-			errs = append(errs, rowError{Row: rowNo, Reason: err.Error()})
+			errs = append(errs, rowError{Row: rowNo, Reason: "ไม่สามารถตรวจสอบรหัสลูกค้าได้"})
 			continue
 		}
 		if exists {
@@ -727,19 +848,19 @@ func (h *CustomerHandler) Import(c *fiber.Ctx) error {
 
 		var cusID int64
 		err := h.db.QueryRow(ctx, `
-			INSERT INTO customer (customer_code, customer_name, address, contact, credit_term, remarks, is_active, created_by)
-			VALUES ($1,$2,$3,$4,$5,$6,true,$7)
+			INSERT INTO customer (customer_code, customer_name, address, contact, credit_term, remarks, contact_phone, tax_id, is_active, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)
 			RETURNING cus_id`,
 			code, strings.TrimSpace(name),
 			nullableCell(cellAt(row, 2)), nullableCell(cellAt(row, 3)), nullableCell(cellAt(row, 4)), nullableCell(cellAt(row, 5)),
-			claims.UserID,
+			nullableCell(cellAt(row, 6)), xlsxTaxID, claims.UserID,
 		).Scan(&cusID)
 		if err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 				errs = append(errs, rowError{Row: rowNo, Reason: "customer_code already exists"})
 				continue
 			}
-			errs = append(errs, rowError{Row: rowNo, Reason: err.Error()})
+			errs = append(errs, rowError{Row: rowNo, Reason: "ไม่สามารถบันทึกแถวนี้ได้"})
 			continue
 		}
 
@@ -793,9 +914,9 @@ func (h *CustomerHandler) ImportTemplate(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	headers := []string{"customer_code", "customer_name", "address", "contact", "credit_term", "remarks"}
-	required := []bool{true, true, false, false, false, false}
-	colWidths := []float64{18, 30, 30, 24, 14, 30}
+	headers := []string{"customer_code", "customer_name", "address", "contact", "credit_term", "remarks", "contact_phone", "tax_id"}
+	required := []bool{true, true, false, false, false, false, false, false}
+	colWidths := []float64{18, 30, 30, 24, 14, 30, 18, 18}
 	for i, hdr := range headers {
 		col := string(rune('A' + i))
 		cell := col + "1"
@@ -808,7 +929,7 @@ func (h *CustomerHandler) ImportTemplate(c *fiber.Ctx) error {
 		f.SetColWidth(sheet, col, col, colWidths[i])
 	}
 
-	example := []string{"CUS-000001", "บริษัท ตัวอย่าง จำกัด", "123 ถนนตัวอย่าง กรุงเทพฯ", "คุณสมชาย 08x-xxx-xxxx", "30 วัน", ""}
+	example := []string{"CUS-000001", "บริษัท ตัวอย่าง จำกัด", "123 ถนนตัวอย่าง กรุงเทพฯ", "คุณสมชาย 08x-xxx-xxxx", "30 วัน", "", "08x-xxx-xxxx", "0-1055-12345-67-8"}
 	for i, v := range example {
 		f.SetCellValue(sheet, fmt.Sprintf("%s2", string(rune('A'+i))), v)
 	}
