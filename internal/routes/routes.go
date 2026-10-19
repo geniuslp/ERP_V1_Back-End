@@ -86,6 +86,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/cost-code/subgroups", costCodeH.ListSubgroupsByGroup)
 	master.Post("/cost-code/subgroups", costCodeH.CreateSubgroup)
 	master.Patch("/cost-code/subgroups/:id/head", costCodeH.SetSubgroupHead)
+	master.Patch("/cost-code/subgroups/:id/major", costCodeH.SetSubgroupMajor)
 	master.Patch("/cost-code/subgroups/:id", costCodeH.UpdateSubgroup)
 	master.Patch("/cost-code/subgroups/:id/deactivate", costCodeH.DeactivateSubgroup)
 	master.Get("/cost-code/full", costCodeH.ListFull)
@@ -111,6 +112,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Put("/locations/:id", locationH.UpdateLocation)
 	master.Delete("/locations/:id", locationH.DeleteLocation)
 
+	master.Get("/job-types", projectH.ListJobTypes)
 	master.Get("/projects", projectH.List)
 	master.Get("/projects/next-code", projectH.NextCode) // static, before /projects/:id
 	master.Get("/projects/:id", projectH.GetByID)
@@ -412,6 +414,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	workOrder := api.Group("/work-order", jwt)
 	workOrder.Get("/", workOrderH.List)
 	workOrder.Get("/reserve-number", workOrderH.ReserveWONumber)
+	workOrder.Get("/wht-defaults", workOrderH.WhtDefaults)
 	workOrder.Post("/", workOrderH.Create)
 	workOrder.Get("/:id", workOrderH.Get)
 	workOrder.Put("/:id", workOrderH.Update)

@@ -606,10 +606,10 @@ func (h *POHandler) ListLineItems(c *fiber.Ctx) error {
 		lineRows, err := h.db.Query(context.Background(), `
 			SELECT pol.po_id, pol.mat_code, mn.mat_name, pol.qty_ordered, pol.unit_price, pol.amount,
 			       pol.cost_subgroup_id,
-			       csb.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
+			       ` + costCodeSQL("csb","cj","cg","cs") + ` AS cost_code,
 			       cs.subgroup_name AS cost_name,
 			       hd.id AS head_subgroup_id,
-			       csb.subject_code || cj.job_code || cg.group_code || hd.subgroup_code AS head_cost_code,
+			       ` + costCodeSQL("csb","cj","cg","hd") + ` AS head_cost_code,
 			       hd.subgroup_name AS head_cost_name,
 			       COALESCE(pol.qty_received, 0) AS qty_received,
 			       CASE WHEN pol.status = 'CANCELLED' THEN 0
@@ -733,7 +733,7 @@ func (h *POHandler) CostBudget(c *fiber.Ctx) error {
 			  AND pol.cost_subgroup_id IS NOT NULL
 		)
 		SELECT
-			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
 			csg.subgroup_name AS cost_subgroup_name,
 			STRING_AGG(DISTINCT TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(ss.spec_description, '')), ', ') AS description,
 			SUM(la.amount) AS pu_cost,
@@ -867,13 +867,13 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       pol.unit_price, pol.disc_type, pol.discount, pol.line_discount, pol.line_vat, pol.line_wht,
 		       pol.line_net, pol.wht_rate, pol.amount, pol.description, pol.remarks, pol.status,
 		       pol.cost_subgroup_id,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+		       ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
 		       csg.subgroup_name AS cost_subgroup_name,
 		       mn.mat_name, ss.spec_description, b.brand_name,
 		       COALESCE(si.qty, 0), prl.qty_reserved,
 		       un.unit_name,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code_full,
-		       csub.subject_code || cj.job_code || cg.group_code AS cost_code_main,
+		       ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code_full,
+		       ` + costCodeMainSQL("csub","cj","cg") + ` AS cost_code_main,
 		       csg.subgroup_code AS cost_code_sub
 		FROM purchase_order_line pol
 		LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
@@ -3305,7 +3305,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 	rows, err := h.db.Query(ctx, `
 		SELECT pol.line_no, pol.mat_code, pol.description, pol.qty_ordered, pol.unit_price,
 		       pol.discount, pol.disc_type, pol.wht_rate, mn.mat_name, u.unit_name,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+		       ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
 		       ss.spec_description
 		FROM purchase_order_line pol
 		LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code

@@ -56,8 +56,9 @@ func (h *IcProjectMovementHandler) GetProjectByCode(c *fiber.Ctx) error {
 }
 
 type IcProjectJobCode struct {
-	JobCode string `json:"job_code"`
-	JobName string `json:"job_name"`
+	JobCode    string `json:"job_code"`
+	JobName    string `json:"job_name"`
+	NeedsShare bool   `json:"needs_share"` // JobNeedsShare(job_code) — frontend must not hardcode the rule
 }
 
 // ListProjectJobCodes godoc
@@ -88,7 +89,7 @@ func (h *IcProjectMovementHandler) ListProjectJobCodes(c *fiber.Ctx) error {
 	for _, jc := range jobCodes {
 		for _, jt := range JobTypes {
 			if jt.Code == jc {
-				result = append(result, IcProjectJobCode{JobCode: jt.Code, JobName: jt.Label})
+				result = append(result, IcProjectJobCode{JobCode: jt.Code, JobName: jt.Label, NeedsShare: JobNeedsShare(jt.Code)})
 				break
 			}
 		}
@@ -379,7 +380,7 @@ func queryLinkedWarehouseStock(ctx context.Context, db *pgxpool.Pool, matNameID 
 		       COALESCE(u.unit_name, si.unit),
 		       si.qty, si.unit_cost, TO_CHAR(si.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"'),
 		       COALESCE(mc.cost_subgroup_id, 0),
-		       COALESCE(csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code, ''),
+		       COALESCE(` + costCodeSQL("csub","cj","cg","csg") + `, ''),
 		       COALESCE(csg.subgroup_name, '')
 		FROM stock_item si
 		LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
@@ -579,7 +580,7 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 		SELECT ici.mat_code,
 		       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), ici.mat_code),
 		       ici.cost_subgroup_id,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code,
+		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       csg.subgroup_name,
 		       u.unit_name,
 		       `+qtyExpr+`
@@ -629,7 +630,7 @@ func (h *IcProjectMovementHandler) ListProjectCostCodes(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(context.Background(), `
 		SELECT csg.id,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code,
+		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       csg.subgroup_name
 		FROM cost_subgroup csg
 		JOIN cost_group cg  ON cg.id = csg.group_id
@@ -637,7 +638,7 @@ func (h *IcProjectMovementHandler) ListProjectCostCodes(c *fiber.Ctx) error {
 		JOIN cost_subject csub ON csub.id = cj.subject_id
 		JOIN project p      ON p.project_code = $1
 		WHERE (csub.subject_code || cj.job_code) = ANY(p.job_codes)
-		  AND NOT csg.is_head -- Head (roll-up) subgroups are never selectable
+		  AND NOT csg.is_head AND NOT csg.is_major -- Head / Major (roll-up) subgroups are never selectable
 		ORDER BY 2`, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -838,13 +839,13 @@ func (h *IcProjectMovementHandler) ListMovementLines(c *fiber.Ctx) error {
 		SELECT l.id, l.line_no, l.mat_code,
 		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), l.mat_code),
 		       COALESCE(l.cost_subgroup_id, 0),
-		       COALESCE(csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code, ''),
+		       COALESCE(` + costCodeSQL("csub","cj","cg","csg") + `, ''),
 		       COALESCE(csg.subgroup_name, ''),
 		       u.unit_name,
 		       l.qty,
 		       l.to_project_code, tp.project_name,
 		       COALESCE(l.to_cost_subgroup_id, 0),
-		       COALESCE(tcsub.subject_code || tcj.job_code || tcg.group_code || tcsg.subgroup_code, ''),
+		       COALESCE(` + costCodeSQL("tcsub","tcj","tcg","tcsg") + `, ''),
 		       COALESCE(tcsg.subgroup_name, ''),
 		       l.remarks
 		FROM ic_project_movement_line l
@@ -1550,7 +1551,7 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 		       ici.mat_code,
 		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ici.mat_code),
 		       ici.cost_subgroup_id,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code,
+		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       csg.subgroup_name,
 		       CASE WHEN t.ref_type = 'PO' THEN po.po_no ELSE m.doc_no END,
 		       COALESCE(u.full_name, ''),
@@ -1665,7 +1666,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 		SELECT ici.id, ici.mat_code,
 		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
 		       ici.cost_subgroup_id,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code,
+		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       COALESCE(u.unit_name, ici.unit),
 		       ici.qty_on_hand, ici.last_unit_cost, TO_CHAR(ici.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		FROM ic_project_cost_item ici

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -339,7 +340,8 @@ func (h *ProjectHandler) List(c *fiber.Ctx) error {
 // @Security     BearerAuth
 // @Produce      json
 // @Param        id  path  int  true  "Project ID"
-// @Success      200  {object}  models.ProjectFull
+// @Description  Detail also returns job_shares: [{job_code, share_percent, share_amount}] (share_amount = budget_amount * share_percent / 100, derived, read-only); [] for legacy projects with no rows.
+// @Success      200  {object}  ProjectDetail
 // @Failure      404  {object}  fiber.Map
 // @Router       /master/projects/{id} [get]
 func (h *ProjectHandler) GetByID(c *fiber.Ctx) error {
@@ -355,7 +357,11 @@ func (h *ProjectHandler) GetByID(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "project not found")
 	}
 	p.ResponsibleUsers = h.loadResponsibleUsers(context.Background(), int64(p.Id))
-	return c.JSON(fiber.Map{"success": true, "data": p})
+	shares, err := h.loadJobShares(context.Background(), int64(p.Id))
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": ProjectDetail{ProjectFull: p, JobShares: shares}})
 }
 
 // formatProjectCode is the single project_code format ({YYYY}-{customer_code}-{NNN}, NNN padded to 3
@@ -415,7 +421,7 @@ func (h *ProjectHandler) NextCode(c *fiber.Ctx) error {
 // @Accept       json
 // @Produce      json
 // @Param        body  body  models.CreateProjectReq  true  "Project data"
-// @Success      201   {object}  models.ProjectFull
+// @Success      201   {object}  ProjectDetail
 // @Failure      400   {object}  fiber.Map
 // @Failure      409   {object}  fiber.Map
 // @Router       /master/projects [post]
@@ -428,6 +434,14 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	req.ProjectCode = ""
 	if req.CustomerID == nil || *req.CustomerID <= 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกเจ้าของโครงการ")
+	}
+	// job_shares: pure validation, before any SQL.
+	if err := validateJobCodes(req.JobCodes); err != nil {
+		return err
+	}
+	jobShares, jerr := validateJobShares(req.JobCodes, req.JobShares)
+	if jerr != nil {
+		return jerr
 	}
 	var responsibleIDs []int64
 	if req.ResponsibleUserIDs != nil {
@@ -533,7 +547,12 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 		}
 	}
+	if err := replaceJobShares(ctx, tx, id, jobShares); err != nil {
+		log.Printf("project create: replaceJobShares: %v", err)
+		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+	}
 	if err := tx.Commit(ctx); err != nil {
+		log.Printf("project create: commit: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 	}
 
@@ -543,7 +562,11 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 	p.ResponsibleUsers = h.loadResponsibleUsers(ctx, int64(p.Id))
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": p})
+	shares, err := h.loadJobShares(ctx, int64(p.Id))
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": ProjectDetail{ProjectFull: p, JobShares: shares}})
 }
 
 // Update godoc
@@ -555,7 +578,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 // @Produce      json
 // @Param        id    path  int                      true  "Project ID"
 // @Param        body  body  models.UpdateProjectReq  true  "Update data"
-// @Success      200   {object}  models.ProjectFull
+// @Success      200   {object}  ProjectDetail
 // @Failure      400   {object}  fiber.Map
 // @Failure      404   {object}  fiber.Map
 // @Router       /master/projects/{id} [put]
@@ -582,6 +605,15 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	}
 	// project_code is immutable: it is generated at create time and any client value is ignored.
 	req.ProjectCode = currentProjectCode
+
+	// job_shares: pure validation, before the write transaction.
+	if err := validateJobCodes(req.JobCodes); err != nil {
+		return err
+	}
+	jobShares, jerr := validateJobShares(req.JobCodes, req.JobShares)
+	if jerr != nil {
+		return jerr
+	}
 
 	var responsibleIDs []int64
 	if req.ResponsibleUserIDs != nil {
@@ -657,6 +689,10 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
 	}
 	defer tx.Rollback(ctx)
+	// Serialise saves per project: concurrent updates (and their share replacement) queue here.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM project WHERE id=$1 FOR UPDATE`, id); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE project
 		SET project_code=$1, project_name=$2, location_code=$3, dept_code=$4, owner_id=$5,
@@ -696,7 +732,12 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกผู้รับผิดชอบได้ กรุณาลองใหม่อีกครั้ง")
 		}
 	}
+	if err := replaceJobShares(ctx, tx, int64(id), jobShares); err != nil {
+		log.Printf("project update: replaceJobShares: %v", err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกสัดส่วนงานได้ กรุณาลองใหม่อีกครั้ง")
+	}
 	if err := tx.Commit(ctx); err != nil {
+		log.Printf("project update: commit: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
 	}
 
@@ -706,7 +747,11 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 	p.ResponsibleUsers = h.loadResponsibleUsers(ctx, int64(p.Id))
-	return c.JSON(fiber.Map{"success": true, "data": p})
+	shares, err := h.loadJobShares(ctx, int64(p.Id))
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": ProjectDetail{ProjectFull: p, JobShares: shares}})
 }
 
 // SoftDelete godoc

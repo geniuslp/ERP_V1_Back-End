@@ -1329,3 +1329,124 @@ declared, never populated by any query; don't build on it.
   Memo `data:` full memo (includes `id`, `memo_no`).
 - **Removed (2026-10-01)**: `GET /pr/reserve-number`, `GET /po/reserve-number`, `GET /pr/next-number`, `GET /po/next-number`  (`ReservePRNumber`, `ReservePONumber`, `NextNumber`, `NextPONumber`) and the `peekMonthlyNumber` helper, along with `ReserveMemoNumber`. Frontend must not call them (404).
 - Not changed (separate follow-up): `ic.go` / `ic_project_movement.go` still use their own inline `por_number_counter` UPSERT.
+
+---
+
+## 🧭 Session learnings (2026-10-19) — Major cost codes, project job shares, Memo job, Work Order changes, dev-vs-UAT drift
+
+Docs-only pass: every fact below was checked against the current code in this repo, or is marked as not verified.
+Schema changes are applied by hand in pgAdmin (no files under `migrations/`, standing policy). Env tags: **dev** / **UAT**.
+
+### 1. `cost_subgroup.is_major` (applied on dev and UAT)
+- `is_major boolean NOT NULL DEFAULT false` + `chk_cost_subgroup_major_not_head CHECK (NOT (is_major AND is_head))`.
+- Hierarchy Major → Head (`is_head`, one per group) → normal rows; 7 Major rows on dev (`group_code '00'`, `subgroup_code '000'`: MP00000 … MH00000
+  and the OH job one — count not re-queried). No parent column; relations derived by job/group. Only normal rows are selectable.
+- API (`cost_code_handler.go`): `/master/cost-code/subgroups` and `/full` return `is_major` (and `is_head`) on every row; Major + Head are hidden by default,
+  `include_head=true` returns both; pickers (`scope=oh`, IC movement picker) exclude both; document-side validation (`head_cost_code.go`) rejects Major like Head.
+  `ListFull` returns `[]` not `null`. `/cost-code/list` and the export do **not** return `is_major` (export headers confirmed in code).
+  Also exists (not in the original brief): `PATCH /master/cost-code/subgroups/:id/major` (`SetSubgroupMajor`, 409 if the job already has a Major or the subgroup is in use).
+- OH display rule (omit the subject prefix → `G00000`): **implemented** via `costCodeSQL`/`costCodeMainSQL` in `cost_code_sql.go`, used in ~14 handler files;
+  legacy `OH…` input still matches searches (`costCodeLegacySQL`). Not every query was audited. Never use the displayed code in WHERE filters on subject/job.
+
+### 2. Project job shares (applied on **dev only — NOT on UAT**)
+- Table `project_job_share` + deferred trigger `trg_project_job_share_total` (total ≤ 100 per project) — see database.md.
+- Handlers (`project_job_share.go`, `project_handler.go`): `job_shares` on POST/PUT/GET `/master/projects`; `JobNeedsShare` (codes starting with "F", plus "G" and "OH", need no share);
+  `GET /master/job-types` → `[{job_code, job_name, needs_share}]`; `needs_share` also on the IC project job-codes endpoint (`ic_project_movement.go`);
+  `loadJobShares` returns a 500 error instead of `[]` on failure. Create/Update without `job_shares` → 400 when a selected job needs a share.
+- Caveats: `"G"` is **rejected** by `validateJobCodes` for `project.job_codes` (`JobTypes` lists `OH`, not `G`; the PR/PO job list uses `G`; the Swagger text on
+  project create still says "MP/ME/MS/MF/MG/MH/G" — stale). The Excel project import skips job-code validation (`enableImportExistenceChecks` is off) and writes **no** `job_shares`.
+- Verification status: `TestJobNeedsShare` and `TestValidateJobShares` (`project_job_share_test.go`) pass (`go test` run 2026-10-19). Whether the end-to-end checks (a)–(f)
+  were ever run against real requests is **not recorded anywhere I can see** → treat the handlers as **written, unit-tested, not verified with real requests**.
+  The files are still uncommitted (untracked/modified in git status).
+
+### 3. Memo `job_code` (applied on **dev only**)
+`memo.job_code varchar(20) NULL`, no FK, no CHECK. `memo.go` reads it (List/Get) and writes it (Create/Update, `validateMemoJobCode`): a memo with a project must carry a `job_code`
+from that project's `job_codes` (re-applied on every save of an editable memo); no project → must be empty. Not verified with real requests.
+
+### 4. Work Order changes (applied on **dev only**)
+- `work_order.project_name_text varchar(200) NULL`; `chk_wo_contract_type` allows LABOR_MATERIAL, LABOR_ONLY, RENTAL, SERVICE; `chk_wo_work_system` allows an array within P,E,S,MP,ME,MS,MF,MG,MH.
+- 🔴 **dev `work_order.work_system` is an ARRAY; the UAT one is a single varchar with CHECK (P, E or S). UAT needs a separate migration design** — the new `work_order.go` will not work on UAT as-is.
+- `contract_description` is `text` (database.md said varchar(30) — wrong, fixed); `project_code` is `varchar(20)` NULL with an FK.
+- Handler rules (`work_order.go`): exactly one of `project_code` / `project_name_text`; `contract_type` validated against `woContractTypes`; `work_system` for new/edited documents accepts only
+  M-prefixed codes present in `JobTypes`; `subcontractor_signed_name` is now in the INSERT and UPDATE column lists (it was missing — the schema-drift bug class from 2026-07-22 #2);
+  `GET /work-order/wht-defaults` returns defaults LABOR_MATERIAL 3, LABOR_ONLY 3, RENTAL 5, SERVICE 3, allowed per-line rates 1/3/5 (1 is never a default). **Defaults pending accounting confirmation.**
+- Open issue: re-saving an old WO whose `work_system` is `{P}` is rejected until an M code is chosen.
+
+### 5. Project / numbering corrections
+- `project.location_code` is varchar(500) (was documented as 20). `project_kind` (NEW|VO), `job_codes` (array), `vo_amount` are read/written by the code; `contract_amount`/`cost_amount` on `project`
+  are not referenced by any Go code here and are unverified.
+- `project_code` = `{year}-{customer_code}-{3-digit no}` (e.g. 2026-LMT-001). The handler uses **`project_code_year_counter`** (one number per Bangkok year, shared by all customers);
+  `project_code_counter (code_year, cus_id, last_no)` is not used by any Go code here. Other tables newly indexed in database.md (columns only where verified): `project_responsible_person`,
+  `doc_number_counter`, `pc_number_counter`, `ret_number_counter`, `ic_po_return_document`, `ic_po_return_line`, `payment_installment`, `petty_cash_attachment`, `wht_income_type`.
+
+### 6. Menus — UNCONFIRMED
+A SQL that renamed `MENU_PR` to "Office Service System (OF)", moved the three petty cash children under it and deactivated `MENU_PETTY_CASH` was run once and reverted; the final state was never confirmed.
+**Do not record it as done — verify with a `SELECT` on `menus` first.** Also: `GET /menus` does not return `is_active` (`repository.MenuRow` has no such field).
+
+### 7. Lessons
+- **dev and UAT schemas differ** (example: `work_order.work_system`). Run `SELECT current_database();` before running any SQL; never assume which DB a pgAdmin window is connected to; keep a UAT to-do list.
+- **UAT to-do (not yet applied)**: `project_job_share` + trigger, `project_cost_budget` + trigger (see cont'd entry below), `memo.job_code`, `work_order` changes (needs a design for `work_system`), and committing/pushing the pending code (the UAT repo is behind).
+- The frontend repo is named **`erp-frontend`** (not `erp-web`).
+- An error shown by the frontend's generic sanitizer hides the real message (see 2026-09-28 #2) — check the Network response or the API log.
+- Old CLAUDE.md claims can be wrong — verify against the code (and `information_schema`) before trusting them. This pass found, e.g., a stale `project.location_code` width,
+  a wrong `work_order.contract_description` type, and a counter table (`project_code_counter`) that the code does not use.
+---
+
+## 🧭 Session learnings (2026-10-19, cont'd) — cost-budget modal endpoint + `project_cost_budget`
+
+### 1. `GET /po/:projectCode/cost-budget-detail` (`POHandler.CostBudgetDetail`, `po_cost_budget_detail.go`)
+- Returns a flat ordered `rows` list with **`row_type` = `MAJOR | HEAD | ITEM`** (new key; all other keys unchanged). Order per job: MAJOR, then each group's HEAD followed by its ITEMs.
+- **ITEM** = `NOT is_head AND NOT is_major` subgroups that have a PO line in the project (POs not DRAFT/REJECTED/CANCELLED/deleted, line not CANCELLED) **or** a `project_cost_budget` row.
+  `budget` = LEFT JOIN `project_cost_budget` on `(project_id, cost_subgroup_id)`, no row ⇒ 0. `pu_cost` = `SUM(qty_ordered * unit_price)` (unchanged).
+  **`ac_cost` is still a 0 placeholder** (`// TODO: ac_cost definition not confirmed yet`), so `ac_bal = budget`.
+- **HEAD** = sum of its group's ITEM rows; **MAJOR = sum of ALL ITEM rows in its job** (not literally the sum of HEAD rows); both computed in Go, never stored. A roll-up row appears only when it has ≥ 1 ITEM under it.
+  **`totals` = sum of ITEM rows only.** Codes are displayed via `costCodeSQL`; filters/joins use ids only.
+- Drill-down `/po/:projectCode/cost-budget-detail/:subgroupId/purchases` is unchanged — the frontend should offer it on ITEM rows only.
+- The older `GET /po/cost-budget?project_code=` (`POHandler.CostBudget`, `po.go`) is a different, still-hardcoded `Budget = 0` endpoint (APPROVED POs only, real Ac.Cost) and was NOT changed.
+
+### 2. Known gaps (found while verifying)
+- **Head-less groups.** Query on dev (2026-10-19) found 10 `cost_group`s without an `is_head` row: seven are the Major groups (`group_code '00'`, 0 ITEMs — M/E, M/F, M/G, M/H, M/P, M/S, OH/G),
+  and three are real groups with ITEMs: **M / job E / group 18 (4 ITEMs), M / job E / group 20 (2 ITEMs), OH / job G / group 600 (2 ITEMs)**. Their ITEMs show with **no HEAD row**, and MAJOR still counts them —
+  so for those jobs `MAJOR ≠ SUM(HEAD)` once they carry budget/PO cost. Fix the master data (add a Head) or accept it; the endpoint deliberately defines MAJOR as the ITEM sum so it always matches the grand total.
+- **PO lines on Head/Major subgroups drop out** of both the rows and the totals (ITEM-only). Dev had none at verification time (the only project with PO lines, `2026-XXX-004`, had `on_head = on_major = 0`).
+- Only one job (MP) on one project was exercised end to end.
+
+### 3. `rejectIfHasBudget` guards (`cost_code_handler.go`)
+`SetSubgroupHead` (`PATCH .../subgroups/:id/head`) and `SetSubgroupMajor` (`.../major`) call `rejectIfHasBudget` **before** any UPDATE when turning Head / Major **on**; if the subgroup has any `project_cost_budget` row → 409
+`Cost Code นี้มีงบประมาณที่กำหนดไว้แล้ว (N โครงการ) จึงไม่สามารถกำหนดเป็น Head/Major ได้ กรุณาลบงบประมาณก่อน`. A count failure → plain-Thai 500. Turning Head/Major **off** is not guarded.
+The DB trigger `trg_project_cost_budget_item_only` guards the opposite direction (budget insert on a Head/Major subgroup). **No endpoint writes budgets yet.**
+
+### 4. Verification note — the test wrote to the live dev DB
+The check used a temporary Go test (since deleted) that inserted 6 rows into `project_cost_budget` on project `2026-XXX-004` (marker `created_by = 999999`) in the **live dev DB**, called the real handlers, and deleted them.
+The first run's cleanup failed (pool closed before `t.Cleanup`), leaving the 6 rows; they were removed on the rerun and `SELECT count(*) FROM project_cost_budget` returned 0. Lesson: register `pool.Close` via `t.Cleanup` *first* so it runs last,
+and prefer a rolled-back transaction or a throwaway DB over committed test rows. Swagger (`docs/`) has **not** been regenerated for the new `row_type` / description text — `swag init` still pending.
+
+### 5. UAT to-do — `project_cost_budget` is **NOT applied on UAT**
+Add to the UAT list in "Session learnings (2026-10-19) #7": `project_cost_budget` table + UNIQUE + index + trigger function + trigger `trg_project_cost_budget_item_only`, and the code above (`CostBudgetDetail`, `rejectIfHasBudget`).
+Without the table, `CostBudgetDetail` and the Head/Major toggles would 500 on UAT (they query it).
+
+---
+
+## 🧭 Session learnings (2026-10-19, cont'd) — Work Order: lines optional on DRAFT, submit needs a line, `/lines` DRAFT-only
+
+### 1. What changed (`internal/handlers/work_order.go`, no schema change)
+- **Create** (`POST /work-order`): `lines` may be omitted or `[]` → DRAFT with all header totals 0. `contract_amount > 0` and the non-empty `cost_code` check on each present line are kept.
+- **Update** (`PUT /:id`, DRAFT only): `woBodyHasLines` inspects the raw body. `lines` **omitted/null** → lines and header totals (and the flags `use_discount`/`discount_type`/`use_vat`/`use_wht`, kept via `COALESCE`) stay as stored; header fields still update.
+  `lines` **present, even `[]`** → DELETE + INSERT and totals recomputed via `calcWorkOrderLines` (`[]` → 0 lines, totals 0).
+- **Submit needs ≥ 1 line** in both paths — `POST /:id/submit` and `PUT /:id` with `status: PENDING_APPROVAL` — via `requireWOLinesForSubmit` (counts DB lines when the request omitted `lines`). Plain Thai 400
+  `กรุณาเพิ่มรายการอย่างน้อย 1 รายการก่อนส่งขออนุมัติ`; a failing count query gives a plain Thai 500, never a raw DB error.
+- **`PUT /:id/lines`** is now **DRAFT only** (`SELECT status … FOR UPDATE` in its tx; same message as `PUT /:id`, 404 if missing). It keeps its "at least 1 line" rule and already recomputed the header totals in the same transaction.
+- Status rules per WO route: `PUT /:id` DRAFT; `PUT /:id/lines` DRAFT; `POST /:id/submit` DRAFT or REJECTED; approve/reject (`PUT /approval/WO/:id/…`) are driven by a PENDING `approval_request`, not `work_order.status`.
+- Verified with real handler calls on dev (create w/o lines → DRAFT totals 0; omitted lines keep lines+totals; present lines replace+recompute; submit w/o lines → 400 on both paths; `/lines` on PENDING_APPROVAL → 400). The throwaway test rows were deleted; dev counts matched baseline (work_order 1, work_order_line 1, status_log 2, WO approval_request 0).
+- Swagger `@Description` text for `Create`, `Update`, `UpdateLines`, `Submit` was updated to match; **`swag init` has not been run**, so `docs/` is stale.
+
+### 2. Unchanged behavior worth knowing (not fixed)
+- **`PUT /:id` overwrites omitted header fields with blanks/defaults.** The UPDATE writes every header column from the request (e.g. an omitted `remarks` becomes NULL/empty; the verification run showed `remarks` going back to `""`). Only the totals/flags are protected when `lines` is omitted. The frontend must always send the full header.
+- **`POST /:woId/payment-conditions` has no status check** — it only verifies the work order exists, so installments/retentions/penalties can be rewritten on a PENDING_APPROVAL, APPROVED or other non-DRAFT work order. No sum check against `contract_amount` either, and `contract_amount` is never compared with the line totals anywhere.
+- Submit does not validate payment-conditions totals.
+
+### 3. Numbering gap from verification
+The verification created two throwaway work orders on the dev DB, consuming `wo_seq` numbers **WO-2026-000006 and WO-2026-000007** (identity ids 11 and 12). The rows were deleted but sequences do not roll back — expect those numbers missing from dev. Same lesson as before: committed test rows on a shared DB leave sequence gaps.
+
+### 4. UAT to-do
+This change ships **together with the pending Work Order code** (the `work_order.go` changes from 2026-10-19 #4: `project_name_text`, contract types, M-prefixed `work_system`, `subcontractor_signed_name`, `wht-defaults`). It is **NOT applied on UAT**, and the UAT `work_order.work_system` is still a single varchar (CHECK P/E/S) while dev is an array — so the code must not be deployed to UAT before the `work_system` migration design is done.

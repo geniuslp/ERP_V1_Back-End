@@ -7,7 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// Head cost codes (cost_subgroup.is_head = true) are roll-up nodes: never selectable on a document.
+// Head (cost_subgroup.is_head) and Major (is_major) cost codes are roll-up nodes: never selectable on a document.
 // requireNonHeadCostCodes is the single check used by every input path (PR, PO, petty cash, IC
 // movement lines, ...). Only NEW or CHANGED values are rejected: a code already stored on the same
 // document stays valid even if it later became Head, so old documents remain editable unchanged.
@@ -76,12 +76,12 @@ func requireNonHeadCostCodes(ctx context.Context, q pgQuerier, newIDs []*int64, 
 		return nil
 	}
 	rows, err := q.Query(ctx, `
-		SELECT sub.subject_code || j.job_code || g.group_code || sg.subgroup_code
+		SELECT `+costCodeSQL("sub", "j", "g", "sg")+`, sg.is_major
 		FROM cost_subgroup sg
 		JOIN cost_group g ON g.id = sg.group_id
 		JOIN cost_job j ON j.id = g.job_id
 		JOIN cost_subject sub ON sub.id = j.subject_id
-		WHERE sg.id = ANY($1) AND sg.is_head
+		WHERE sg.id = ANY($1) AND (sg.is_head OR sg.is_major)
 		ORDER BY sg.id LIMIT 1`, cand)
 	if err != nil {
 		return err
@@ -89,8 +89,13 @@ func requireNonHeadCostCodes(ctx context.Context, q pgQuerier, newIDs []*int64, 
 	defer rows.Close()
 	if rows.Next() {
 		var code string
-		if err := rows.Scan(&code); err != nil {
+		var major bool
+		if err := rows.Scan(&code, &major); err != nil {
 			return err
+		}
+		if major {
+			return fiber.NewError(fiber.StatusBadRequest,
+				fmt.Sprintf("Cost Code นี้เป็น Major ไม่สามารถเลือกใช้ได้ กรุณาเลือกรายการย่อย (%s)", code))
 		}
 		return fiber.NewError(fiber.StatusBadRequest,
 			fmt.Sprintf("Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ กรุณาเลือกรายการย่อย (%s)", code))

@@ -352,8 +352,19 @@ id, subject_id, job_code, job_name, is_active, created_at, updated_at, created_b
 id, job_id, group_code, group_name, is_active, created_at, updated_at, created_by, updated_by
 
 -- cost_subgroup (FK → cost_group)
-id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at, created_by, updated_by
+id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at, created_by, updated_by,
+is_head, is_major
 ```
+> 🆕 2026-10 — `is_major boolean NOT NULL DEFAULT false` + `CONSTRAINT chk_cost_subgroup_major_not_head CHECK (NOT (is_major AND is_head))`.
+> **Applied on dev and UAT** (by hand in pgAdmin — no migration file, per project policy).
+> `is_head` is read/written by the code (`cost_code_handler.go`, `head_cost_code.go`) but was missing from this listing; its
+> column definition (type/default) is not verified here.
+> Hierarchy: **Major** (one per job, `group_code '00'`, `subgroup_code '000'`: MP00000, ME00000, MS00000, MF00000, MG00000,
+> MH00000 and the OH job one = 7 rows on dev) → **Head** (`is_head`, one per group) → normal rows. Only normal rows are
+> selectable on documents. There is no parent column — the relation is derived from job/group. (The "7 Major rows" count is
+> from the dev DB, not re-queried when this note was written.)
+> Display: for `cost_subject.subject_code='OH'` the subject prefix is omitted (e.g. `G00000`) — implemented by `costCodeSQL`
+> in `internal/handlers/cost_code_sql.go` and used across ~14 handler files; the DB value stays `OH`. Not every query was audited.
 
 ---
 
@@ -700,6 +711,9 @@ id           bigint      NOT NULL  PK
 memo_no      varchar(30) NOT NULL
 title        varchar(200)nullable  — legacy: ยกเลิกการใช้งาน (2026-09-30) UI ไม่เก็บแล้ว, memo ใหม่ = NULL, แถวเก่ายังมีค่าเดิม
 project_code varchar(20) nullable
+job_code     varchar(20) nullable  — 🆕 2026-10, no FK, no CHECK. **Applied on dev only (NOT on UAT).** Rule (code: `validateMemoJobCode`, memo.go):
+                                    memo has a project → job_code must be one of that project's `job_codes`
+                                    (required when the project has job_codes); no project → job_code must be empty. Read + written by memo.go; not verified with real requests.
 requested_by bigint      NOT NULL  — FK → users.id
 department   varchar(100)nullable
 delivery_location varchar(255) nullable
@@ -732,6 +746,12 @@ updated_by  bigint      nullable
 
 > ⚠️ menu_code ต้องใช้รูปแบบ MENU_XXX_YYY (UPPER_SNAKE) ให้ consistent
 > ปัจจุบัน id=43 ('stock-receiving') และ id=44 ('stock-receiving-history') ยังเป็น kebab-case อยู่
+>
+> 🆕 2026-10 — `GET /menus` (`RoleMenuPermissionHandler.ListMenus`, tree) does **not** return `is_active`
+> (`repository.MenuRow` has no such field); the effective-permission query filters `m.is_active = true`.
+> ⚠️ **UNCONFIRMED menu rename**: a SQL that renamed `MENU_PR` to "Office Service System (OF)", moved the three petty cash
+> children under it and deactivated `MENU_PETTY_CASH` was run at one point and then reverted; its final state was never
+> confirmed. Do NOT treat it as done — verify with `SELECT id, parent_id, menu_code, menu_name, is_active FROM menus ...` first.
 
 > ⚠️ Memo menu ถูก rename + reorder แล้ว (ค่าปัจจุบันจริงจาก DB):
 > - `MENU_MEMO` → menu_name = "ใบบันทึกขอซื้อ (Memo)", sort_order = 1
@@ -904,7 +924,7 @@ id, [po_id|pr_id], from_status, to_status (NOT NULL), changed_by, changed_at, re
 id                    integer     NOT NULL  PK
 project_code          varchar(20) NOT NULL  UNIQUE
 project_name          varchar(200)NOT NULL
-location_code         varchar(20) nullable
+location_code         varchar(500)nullable  — 🔴 corrected 2026-10: was documented as varchar(20); live type is varchar(500) (free-text address, no FK)
 start_date            date        nullable
 end_date              date        nullable
 status                varchar(20) NOT NULL  DEFAULT 'ACTIVE'
@@ -914,11 +934,21 @@ customer_id           bigint      nullable  — FK → customer.cus_id, dropdown
 budget_amount         numeric(18,4) NOT NULL DEFAULT 0
 consultant_name       varchar(200)nullable
 linked_warehouse_code varchar(20) nullable  — FK → warehouse.warehouse_code, 🆕 2026-09-26
+project_kind          varchar     NOT NULL? — 'NEW' | 'VO' (CHECK). Read/written by project_handler.go; nullability/default not verified here.
+job_codes             varchar[]   nullable  — array of job codes (validated against JobTypes by validateJobCodes)
+vo_amount             numeric     — "มูลค่า VO" (separate from budget_amount); NEW needs budget_amount (vo_amount saved 0), VO needs vo_amount (budget saved 0). Exact type/default not verified here.
+contract_amount, cost_amount — reported as existing project columns but NOT referenced by any Go code in this repo; columns NOT verified.
+(other owner/customer-text columns used by the code and not listed above: project_owner_name, responsible_person_name,
+ consultant_phone, dept_code — types not verified here)
 created_at            timestamp   NOT NULL  DEFAULT now()
 updated_at            timestamp   NOT NULL  DEFAULT now()
 created_by            bigint      nullable
 updated_by            bigint      nullable
 ```
+> 🆕 2026-10 — `project_code` format `{year}-{customer_code}-{3-digit running no}` (e.g. `2026-LMT-001`). The handler
+> (`project_handler.go` Create) allocates the running number from **`project_code_year_counter`** (one number per Asia/Bangkok
+> year, shared by all customers). The `project_code_counter (code_year, cus_id, last_no)` table is NOT referenced by any Go code
+> in this repo (apparently superseded) — do not use it.
 `linked_warehouse_code`: `NULL` for a normal cost-tracked project. Set to a real `warehouse_code`
 (e.g. `'FAC-S'`) for a project that is actually a warehouse proxy (e.g. `2026-WH-002`) — lets
 `ic_project_movement` TRANSFER move stock between `stock_item` and this project's
@@ -1500,9 +1530,14 @@ contact_person           varchar(100)  nullable
 supplier_address         text          nullable
 supplier_phone           varchar(50)   nullable
 contract_type            varchar(20)   NOT NULL  DEFAULT 'LABOR_MATERIAL'
-                         — LABOR_ONLY | LABOR_MATERIAL
-work_system              varchar(5)    NOT NULL  — P | E | S
-contract_description     varchar(30)   nullable  — dropdown code (ดู Important Notes)
+                         — 🆕 2026-10 (dev only): chk_wo_contract_type now allows LABOR_MATERIAL | LABOR_ONLY | RENTAL | SERVICE
+work_system              varchar(5)    NOT NULL  — P | E | S   — 🔴 DIFFERS BY ENVIRONMENT:
+                         **dev**: text[] ARRAY, chk_wo_work_system allows an array within P,E,S,MP,ME,MS,MF,MG,MH (applied on dev only).
+                         **UAT**: still a single varchar with CHECK (P, E or S) — UAT needs a SEPARATE migration design before
+                         the new code can run there. The line above is the old/UAT shape.
+contract_description     text          nullable  — 🔴 corrected 2026-10: documented as varchar(30) but is text (handler caps at 2000 chars). "dropdown code" note is old.
+project_name_text        varchar(200)  nullable  — 🆕 2026-10 (dev only). Exactly one of project_code / project_name_text is set (handler rule).
+                         project_code is varchar(20) nullable with an FK → project.project_code.
 contract_amount          numeric(18,2) NOT NULL  DEFAULT 0
 vat_rate                 numeric(5,2)  NOT NULL  DEFAULT 7.00   -- 🔴 legacy, ดูหมายเหตุ
 wht_rate                 numeric(5,2)  NOT NULL  DEFAULT 3.00   -- 🔴 legacy, ดูหมายเหตุ
@@ -1688,3 +1723,52 @@ ORDER BY row_count ASC, t.table_name;
   `ref_type='PO'`, `po_id`/`po_line_id` set). No qty_before/qty_after columns.
 - Cost return deducts from the pool's available balance first (lowers `qty_received`), then the remainder from
   `ic_project_cost_item.qty_on_hand` (logged in `ic_project_cost_item_transaction` with `ref_type='PO'`).
+
+---
+
+### 🆕 2026-10 — tables missing from the index above (columns verified only where stated)
+> All schema changes in this project are applied by hand in pgAdmin — no new files under `migrations/` (standing policy).
+> Which environment has each table is not verified unless stated.
+
+- **project_job_share** — **applied on dev only (NOT on UAT)**. Columns: `project_id` (FK → project(id) ON DELETE CASCADE),
+  `job_code varchar(10)`, `share_percent numeric(5,2)` CHECK `>0 AND <=100`, `created_at`, `created_by`; PK `(project_id, job_code)`.
+  Deferred constraint trigger `trg_project_job_share_total` rejects a total above 100 per project. Used by
+  `internal/handlers/project_job_share.go` (replace-on-save: DELETE then INSERT in the project tx). `share_amount` is derived, never stored.
+- **project_responsible_person** — PK `(project_id, user_id)`, FK ON DELETE CASCADE; code also writes `created_by`
+  (`project_handler.go`). Other columns not verified.
+- **project_code_year_counter** — `(code_year, last_no)`; used for project_code (see `project` above).
+- **project_code_counter** — `(code_year, cus_id, last_no)`; not referenced by Go code in this repo. Columns not verified.
+- **doc_number_counter** — `(prefix, year_month, last_seq)`, PK/unique on `(prefix, year_month)`; used by `doc_number.go` for IS-/TF- movement numbers.
+- **pc_number_counter**, **ret_number_counter** — monthly counters `(year_month, last_seq)` via `nextMonthlyNumber`
+  (petty cash number; PO return `RT-YYYYMM-NNNN`). Other columns not verified.
+- **ic_po_return_document** — `po_id, return_no, return_date, remarks, created_by` (+ `id`; others not verified) — written by `ic.go` return-lines.
+- **ic_po_return_line** — `return_id, line_no, po_line_id, mat_code, cost_subgroup_id, return_qty, remarks` (+ `id`; others not verified).
+- **payment_installment** — generic installments: `doc_type, doc_id, installment_no, percent, amount, description, is_paid, paid_at, paid_by, created_by, updated_by`
+  (+ `id`; others not verified) — `finance_installments.go`, `finance.go`.
+- **petty_cash_attachment** — `pc_id, file_name, file_path, file_size, file_type, uploaded_by` (+ `id`; others not verified).
+- **wht_income_type** — `id, code, label_th, rate, is_active, sort_order` as read by `petty_cash.go`; other columns not verified.
+
+---
+
+### 🆕 2026-10-19 — project_cost_budget (per-project, per-cost-code budget)
+> **Applied on dev only (NOT on UAT)** — by hand in pgAdmin, no migration file (project policy). Columns confirmed via
+> `information_schema.columns` on the dev DB (`current_database()` = `postgres`) on 2026-10-19; table had 0 rows when verified.
+```
+id                bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+project_id        integer       NOT NULL  FK → project(id) ON DELETE CASCADE
+cost_subgroup_id  integer       NOT NULL  FK → cost_subgroup(id)   -- integer, same as cost_subgroup.id
+budget_amount     numeric(18,2) NOT NULL  DEFAULT 0   CHECK (budget_amount >= 0)
+created_at        timestamp     NOT NULL  DEFAULT now()
+updated_at        timestamp     NOT NULL  DEFAULT now()   -- not auto-maintained; the handler must set it
+created_by        bigint        nullable
+updated_by        bigint        nullable
+UNIQUE (project_id, cost_subgroup_id)
+index on project_id
+```
+- **Trigger `trg_project_cost_budget_item_only`** (BEFORE INSERT OR UPDATE OF cost_subgroup_id, function
+  `trg_project_cost_budget_item_only()`): rejects a `cost_subgroup_id` whose `is_head` OR `is_major` is true. Only ITEM subgroups
+  (`NOT is_head AND NOT is_major`) may hold budget; Head / Major budgets are never stored, they are rolled up in the backend.
+- The trigger fires only on writes to this table. The Head / Major toggles guard the other direction in code (`rejectIfHasBudget`,
+  `cost_code_handler.go`) — nothing at DB level stops flipping a subgroup that already has a budget row.
+- Read by `CostBudgetDetail` (`po_cost_budget_detail.go`) via LEFT JOIN. **No endpoint writes it yet.**
+- Constraint names, trigger function body and index name were taken from the DDL proposed in the session, not re-read from `pg_constraint`/`pg_trigger`.

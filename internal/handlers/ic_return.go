@@ -123,7 +123,7 @@ func (h *ICHandler) GetReturnDocument(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.line_no,
-		       csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code,
+		       ` + costCodeSQL("csub","cj","cg","cs") + `,
 		       rl.mat_code, mn.mat_name, sp.spec_description, un.unit_name, rl.return_qty, rl.remarks
 		FROM ic_po_return_line rl
 		LEFT JOIN cost_subgroup cs ON cs.id = rl.cost_subgroup_id

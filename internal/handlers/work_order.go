@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
@@ -27,28 +30,100 @@ func NewWorkOrderHandler(db *pgxpool.Pool) *WorkOrderHandler {
 	return &WorkOrderHandler{db: db}
 }
 
-// validateWorkOrderRequest holds the validation rules shared by Create and Update — both
-// accept the same models.CreateWorkOrderRequest shape (Update reuses it rather than a
-// dedicated UpdateWorkOrderRequest, mirroring POHandler.Update reusing CreatePORequest).
-func validateWorkOrderRequest(req *models.CreateWorkOrderRequest) error {
+// woContractTypeInfo is the single source of truth for the allowed contract_type values and
+// the DEFAULT withholding-tax rate for each. Defaults only: saved lines keep their own
+// wht_rate and stored amounts are never recomputed from this table.
+type woContractTypeInfo struct {
+	Code           string
+	Label          string
+	DefaultWhtRate float64
+}
+
+var woContractTypes = []woContractTypeInfo{
+	{"LABOR_MATERIAL", "รับเหมาทั้งค่าของค่าแรง", 3},
+	{"LABOR_ONLY", "รับเหมาค่าแรงอย่างเดียว", 3},
+	{"RENTAL", "ค่าเช่า", 5},
+	{"SERVICE", "ค่าบริการ", 3},
+}
+
+// woAllowedWhtRates are the per-line wht_rate values a Work Order line may use (1 is never a default).
+var woAllowedWhtRates = []float64{1, 3, 5}
+
+const woContractDescriptionMaxRunes = 2000
+
+func isValidWOContractType(code string) bool {
+	for _, ct := range woContractTypes {
+		if ct.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// validateWorkOrderRequest holds the validation rules shared by Create and Update. It also
+// normalises the request (trims project fields, dedupes work_system) and checks that
+// project_code exists, hence the db argument.
+func (h *WorkOrderHandler) validateWorkOrderRequest(ctx context.Context, req *models.CreateWorkOrderRequest) error {
 	if strings.TrimSpace(req.EmployerName) == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "employer_name is required")
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณากรอกชื่อผู้ว่าจ้าง")
 	}
 	if strings.TrimSpace(req.SupplierName) == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "supplier_name is required")
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณากรอกชื่อผู้รับจ้าง")
 	}
-	if req.ContractType != "LABOR_ONLY" && req.ContractType != "LABOR_MATERIAL" {
-		return fiber.NewError(fiber.StatusBadRequest, "contract_type must be LABOR_ONLY or LABOR_MATERIAL")
+	if !isValidWOContractType(req.ContractType) {
+		return fiber.NewError(fiber.StatusBadRequest, "ประเภทสัญญาไม่ถูกต้อง")
 	}
+
+	// Project: exactly one of project_code (existing project) or project_name_text (free text).
+	if req.ProjectCode != nil {
+		v := strings.TrimSpace(*req.ProjectCode)
+		if v == "" {
+			req.ProjectCode = nil
+		} else {
+			req.ProjectCode = &v
+		}
+	}
+	if req.ProjectNameText != nil {
+		v := strings.TrimSpace(*req.ProjectNameText)
+		if v == "" {
+			req.ProjectNameText = nil
+		} else {
+			req.ProjectNameText = &v
+		}
+	}
+	switch {
+	case req.ProjectCode == nil && req.ProjectNameText == nil:
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกโครงการหรือกรอกชื่อโครงการ")
+	case req.ProjectCode != nil && req.ProjectNameText != nil:
+		return fiber.NewError(fiber.StatusBadRequest, "ระบุได้อย่างใดอย่างหนึ่งเท่านั้น: เลือกโครงการหรือกรอกชื่อโครงการ")
+	case req.ProjectNameText != nil && utf8.RuneCountInString(*req.ProjectNameText) > 200:
+		return fiber.NewError(fiber.StatusBadRequest, "ชื่อโครงการต้องไม่เกิน 200 ตัวอักษร")
+	case req.ProjectCode != nil:
+		var exists bool
+		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code=$1)`, *req.ProjectCode).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fiber.NewError(fiber.StatusBadRequest, "ไม่พบโครงการที่เลือก")
+		}
+	}
+
+	if req.ContractDescription != nil && utf8.RuneCountInString(*req.ContractDescription) > woContractDescriptionMaxRunes {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("รายละเอียดสัญญาต้องไม่เกิน %d ตัวอักษร", woContractDescriptionMaxRunes))
+	}
+
+	// work_system is a text[] (multiple allowed, at least 1). New/edited documents accept only
+	// "M*" job codes that exist in JobTypes (the project job type list); old P/E/S values are
+	// only ever read back, never accepted here.
 	if len(req.WorkSystem) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกระบบงานอย่างน้อย 1 ระบบ (P, E, S)")
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกงานระบบอย่างน้อย 1 ระบบ")
 	}
 	seen := make(map[string]bool, len(req.WorkSystem))
 	uniq := make([]string, 0, len(req.WorkSystem))
 	for _, ws := range req.WorkSystem {
 		ws = strings.TrimSpace(ws)
-		if ws != "P" && ws != "E" && ws != "S" {
-			return fiber.NewError(fiber.StatusBadRequest, "ระบบงานต้องเป็น P, E หรือ S เท่านั้น")
+		if !strings.HasPrefix(ws, "M") || !validJobCodes[ws] {
+			return fiber.NewError(fiber.StatusBadRequest, "งานระบบต้องเป็นประเภทงานที่ขึ้นต้นด้วย M ตามรายการประเภทงานของโครงการ")
 		}
 		if !seen[ws] {
 			seen[ws] = true
@@ -56,12 +131,14 @@ func validateWorkOrderRequest(req *models.CreateWorkOrderRequest) error {
 		}
 	}
 	req.WorkSystem = uniq
+	if req.SubcontractorSignedName != nil && strings.TrimSpace(*req.SubcontractorSignedName) == "" {
+		req.SubcontractorSignedName = nil
+	}
 	if req.ContractAmount <= 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "contract_amount must be positive")
 	}
-	if len(req.Lines) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "at least 1 line is required")
-	}
+	// Lines are optional here: a DRAFT may be created/saved without any (header totals are then 0).
+	// "At least 1 line" is enforced where it matters - on submit (see requireWOLinesForSubmit).
 	for i, l := range req.Lines {
 		if strings.TrimSpace(l.CostCode) == "" {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: cost_code is required", i))
@@ -70,8 +147,40 @@ func validateWorkOrderRequest(req *models.CreateWorkOrderRequest) error {
 	return nil
 }
 
+// woBodyHasLines reports whether the JSON body carries a non-null "lines" key, so Update can tell
+// "lines omitted" (keep existing lines + totals) from "lines: []" (replace with nothing).
+func woBodyHasLines(body []byte) bool {
+	var probe struct {
+		Lines json.RawMessage `json:"lines"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return false
+	}
+	return len(probe.Lines) > 0 && string(probe.Lines) != "null"
+}
+
+// requireWOLinesForSubmit blocks submit-for-approval of a work order with no lines. lineCount is the
+// number of lines the request carries, or -1 when the request omitted them (then the DB is counted).
+// Plain Thai messages only - never a raw DB error.
+func requireWOLinesForSubmit(ctx context.Context, db interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, woID int64, lineCount int) error {
+	if lineCount < 0 {
+		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM work_order_line WHERE wo_id=$1`, woID).Scan(&lineCount); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบรายการของหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
+		}
+	}
+	if lineCount == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเพิ่มรายการอย่างน้อย 1 รายการก่อนส่งขออนุมัติ")
+	}
+	return nil
+}
+
 // Create godoc
 // @Summary      สร้างหนังสือสั่งจ้าง (DRAFT)
+// @Description  `lines` may be omitted or empty: the work order is created as DRAFT with all header totals 0.
+// @Description  Each line that IS sent must have a non-empty cost_code. contract_amount must be > 0.
+// @Description  At least one line is required later, at submit time.
 // @Tags         WorkOrder
 // @Security     BearerAuth
 // @Accept       json
@@ -85,7 +194,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if err := validateWorkOrderRequest(&req); err != nil {
+	if err := h.validateWorkOrderRequest(context.Background(), &req); err != nil {
 		return err
 	}
 
@@ -136,6 +245,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			entered_by, entered_at, section_head_id, authorized_by, remarks,
 			use_discount, discount_type, use_vat, use_wht,
 			total_amount, discount_amount, vat_amount, wht_amount, net_amount,
+			project_name_text, subcontractor_signed_name,
 			created_by, updated_by
 		) VALUES (
 			$1,$2,$3,$4,$5,
@@ -148,6 +258,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			$30,NOW(),$31,$32,$33,
 			$34,$35,$36,$37,
 			$38,$39,$40,$41,$42,
+			$43,$44,
 			$30,$30
 		) RETURNING id`,
 		woNo, woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
@@ -160,6 +271,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		claims.UserID, req.SectionHeadID, req.AuthorizedBy, req.Remarks,
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
+		req.ProjectNameText, req.SubcontractorSignedName,
 	).Scan(&woID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "insert error: "+err.Error())
@@ -203,6 +315,29 @@ func (h *WorkOrderHandler) ReserveWONumber(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"wo_no": woNo}})
 }
 
+// WhtDefaults godoc
+// @Summary      Contract types and their default withholding-tax rate
+// @Description  Single source of truth for the allowed contract_type values and the DEFAULT wht_rate per type (LABOR_MATERIAL 3, LABOR_ONLY 3, RENTAL 5, SERVICE 3). Defaults only: saved lines keep their own wht_rate and stored amounts are never recomputed. allowed_rates are the per-line wht_rate values accepted (1, 3, 5).
+// @Tags         WorkOrder
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /work-order/wht-defaults [get]
+func (h *WorkOrderHandler) WhtDefaults(c *fiber.Ctx) error {
+	items := make([]fiber.Map, 0, len(woContractTypes))
+	for _, ct := range woContractTypes {
+		items = append(items, fiber.Map{
+			"contract_type":    ct.Code,
+			"label":            ct.Label,
+			"default_wht_rate": ct.DefaultWhtRate,
+		})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"contract_types": items,
+		"allowed_rates":  woAllowedWhtRates,
+	}})
+}
+
 const workOrderSelectCols = `
 	wo.id, wo.wo_no, TO_CHAR(wo.wo_date,'YYYY-MM-DD'), wo.employer_name, wo.project_code, p.project_name,
 	wo.project_scope_text, NULL::text AS supplier_code, wo.supplier_name, wo.contact_person,
@@ -217,7 +352,7 @@ const workOrderSelectCols = `
 	wo.created_at, wo.updated_at,
 	wo.use_discount, wo.discount_type, wo.use_vat, wo.use_wht,
 	wo.total_amount, wo.discount_amount, wo.vat_amount, wo.wht_amount, wo.net_amount,
-	wo.supplier_id`
+	wo.supplier_id, wo.project_name_text`
 
 const workOrderJoins = `
 	FROM work_order wo
@@ -242,7 +377,7 @@ func scanWorkOrder(row interface{ Scan(dest ...any) error }) (*models.WorkOrder,
 		&w.CreatedAt, &w.UpdatedAt,
 		&w.UseDiscount, &w.DiscountType, &w.UseVAT, &w.UseWHT,
 		&w.TotalAmount, &w.DiscountAmount, &w.VatAmount, &w.WhtAmount, &w.NetAmount,
-		&w.SupplierID,
+		&w.SupplierID, &w.ProjectNameText,
 	)
 	if err != nil {
 		return nil, err
@@ -482,7 +617,13 @@ func insertWorkOrderLines(ctx context.Context, tx pgx.Tx, woID int64, lines []mo
 }
 
 // UpdateLines godoc
-// @Summary      แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง
+// @Summary      แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง (เฉพาะสถานะ DRAFT)
+// @Description  Replaces ALL lines of the work order (DELETE + INSERT) and recomputes the header totals
+// @Description  (total/discount/vat/wht/net) and flags (use_discount, discount_type, use_vat, use_wht) from the
+// @Description  new lines in the same transaction. Only allowed while status = DRAFT (400 otherwise, same message
+// @Description  as PUT /work-order/{id}); 404 if the work order does not exist. At least 1 line is required
+// @Description  here (an empty or omitted `lines` is a 400) — to clear all lines use PUT /work-order/{id}
+// @Description  with `lines: []`.
 // @Tags         WorkOrder
 // @Security     BearerAuth
 // @Accept       json
@@ -520,12 +661,16 @@ func (h *WorkOrderHandler) UpdateLines(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_order WHERE id=$1)`, id).Scan(&exists); err != nil {
-		return err
+	var currentStatus string
+	if err := tx.QueryRow(ctx, `SELECT status FROM work_order WHERE id=$1 FOR UPDATE`, id).Scan(&currentStatus); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fiber.NewError(fiber.StatusNotFound, "work order not found")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถอ่านข้อมูลหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
 	}
-	if !exists {
-		return fiber.NewError(fiber.StatusNotFound, "work order not found")
+	if currentStatus != "DRAFT" {
+		return fiber.NewError(fiber.StatusBadRequest,
+			fmt.Sprintf("work order must be DRAFT to edit (current status: %s)", currentStatus))
 	}
 
 	useDiscount := req.UseDiscount != nil && *req.UseDiscount
@@ -567,11 +712,19 @@ func (h *WorkOrderHandler) UpdateLines(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      แก้ไขหนังสือสั่งจ้าง (header + line items ทั้งใบ, เฉพาะสถานะ DRAFT)
-// @Description  Accepts the same body shape as Create (models.CreateWorkOrderRequest) — lines are
-// @Description  always replaced together with the header in this single call, mirroring
-// @Description  POHandler.Update's all-in-one PUT rather than requiring a separate lines call.
-// @Description  The dedicated PUT /work-order/{id}/lines endpoint remains available for a
-// @Description  lines-only edit that doesn't touch header fields. Only allowed while
+// @Description  Accepts the same body shape as Create (models.CreateWorkOrderRequest), mirroring
+// @Description  POHandler.Update's all-in-one PUT. The `lines` key decides what happens to lines:
+// @Description  OMITTED (or null) = existing lines are kept untouched and the header totals
+// @Description  (total/discount/vat/wht/net) and their flags (use_discount, discount_type, use_vat,
+// @Description  use_wht) are NOT recomputed — header fields are still updated; PRESENT, even as an
+// @Description  empty array = existing lines are deleted and replaced by the sent ones and the totals
+// @Description  are recomputed from them (an empty array leaves 0 lines and all-zero totals).
+// @Description  Header fields that are omitted from the body are overwritten with blank/default
+// @Description  values (not kept) — always send the full header. A transition to PENDING_APPROVAL
+// @Description  requires at least one line (sent in this request, or already stored when `lines` is
+// @Description  omitted) — otherwise 400 with a Thai message. The dedicated
+// @Description  PUT /work-order/{id}/lines endpoint remains available for a lines-only edit that
+// @Description  doesn't touch header fields. Only allowed while
 // @Description  status = DRAFT — mirrors PO's Update rule exactly (PO also rejects everything
 // @Description  else, including REJECTED, and points APPROVED callers at its edit-approved
 // @Description  endpoint instead; WO has no such endpoint yet, so APPROVED/other statuses just 400).
@@ -600,9 +753,11 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if err := validateWorkOrderRequest(&req); err != nil {
+	if err := h.validateWorkOrderRequest(context.Background(), &req); err != nil {
 		return err
 	}
+	// lines omitted => keep existing lines AND existing totals; lines present (even []) => replace + recompute.
+	linesPresent := woBodyHasLines(c.Body())
 
 	claims := middleware.GetClaims(c)
 	ctx := context.Background()
@@ -628,21 +783,38 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
 
+	if newStatus == "PENDING_APPROVAL" {
+		lineCount := -1
+		if linesPresent {
+			lineCount = len(req.Lines)
+		}
+		if err := requireWOLinesForSubmit(ctx, h.db, id, lineCount); err != nil {
+			return err
+		}
+	}
+
 	woDate := ""
 	if req.WoDate != nil && *req.WoDate != "" {
 		woDate = *req.WoDate
 	}
 
-	useDiscount := req.UseDiscount != nil && *req.UseDiscount
-	useVAT := req.UseVAT != nil && *req.UseVAT
-	useWHT := req.UseWHT != nil && *req.UseWHT
-	discountType := "pct"
-	if req.DiscountType != nil && *req.DiscountType != "" {
-		discountType = *req.DiscountType
+	// Totals and the flags that drive them (use_discount/discount_type/use_vat/use_wht) are written
+	// only when lines are sent; nil => COALESCE keeps the stored value so totals never desync.
+	var useDiscount, useVAT, useWHT *bool
+	var discountType *string
+	var totalAmount, discountAmount, vatAmount, whtAmount, netAmount *float64
+	if linesPresent {
+		ud := req.UseDiscount != nil && *req.UseDiscount
+		uv := req.UseVAT != nil && *req.UseVAT
+		uw := req.UseWHT != nil && *req.UseWHT
+		dt := "pct"
+		if req.DiscountType != nil && *req.DiscountType != "" {
+			dt = *req.DiscountType
+		}
+		ta, da, va, wa, na := calcWorkOrderLines(req.Lines, ud, uv, uw)
+		useDiscount, useVAT, useWHT, discountType = &ud, &uv, &uw, &dt
+		totalAmount, discountAmount, vatAmount, whtAmount, netAmount = &ta, &da, &va, &wa, &na
 	}
-
-	totalAmount, discountAmount, vatAmount, whtAmount, netAmount :=
-		calcWorkOrderLines(req.Lines, useDiscount, useVAT, useWHT)
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
@@ -683,18 +855,20 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 			section_head_id      = $29,
 			authorized_by        = $30,
 			remarks              = $31,
-			use_discount         = $32,
-			discount_type        = $33,
-			use_vat              = $34,
-			use_wht              = $35,
-			total_amount         = $36,
-			discount_amount      = $37,
-			vat_amount           = $38,
-			wht_amount           = $39,
-			net_amount           = $40,
+			use_discount         = COALESCE($32, use_discount),
+			discount_type        = COALESCE($33, discount_type),
+			use_vat              = COALESCE($34, use_vat),
+			use_wht              = COALESCE($35, use_wht),
+			total_amount         = COALESCE($36, total_amount),
+			discount_amount      = COALESCE($37, discount_amount),
+			vat_amount           = COALESCE($38, vat_amount),
+			wht_amount           = COALESCE($39, wht_amount),
+			net_amount           = COALESCE($40, net_amount),
 			status               = $41,
 			updated_at           = NOW(),
-			updated_by           = $42
+			updated_by           = $42,
+			project_name_text    = $44,
+			subcontractor_signed_name = $45
 		WHERE id = $43`,
 		woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
 		req.SupplierID, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
@@ -706,15 +880,18 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
 		newStatus, claims.UserID, id,
+		req.ProjectNameText, req.SubcontractorSignedName,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "update error: "+err.Error())
 	}
 
-	if _, err := tx.Exec(ctx, `DELETE FROM work_order_line WHERE wo_id=$1`, id); err != nil {
-		return err
-	}
-	if err := insertWorkOrderLines(ctx, tx, id, req.Lines, claims.UserID); err != nil {
-		return err
+	if linesPresent {
+		if _, err := tx.Exec(ctx, `DELETE FROM work_order_line WHERE wo_id=$1`, id); err != nil {
+			return err
+		}
+		if err := insertWorkOrderLines(ctx, tx, id, req.Lines, claims.UserID); err != nil {
+			return err
+		}
 	}
 
 	if newStatus != currentStatus {
@@ -764,7 +941,8 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 
 // Submit godoc
 // @Summary      ยื่นขออนุมัติหนังสือสั่งจ้าง (DRAFT/REJECTED → PENDING_APPROVAL)
-// @Description  Opens the step-1 approval_request if doc_type='WO' step 1 is configured in
+// @Description  Requires at least one line (400 with a Thai message otherwise). Opens the step-1 approval_request
+// @Description  if doc_type='WO' step 1 is configured in
 // @Description  approval_config; otherwise the status change happens with no approval request
 // @Description  (mirrors MemoHandler.Submit's hasConfig guard). Actual approve/reject happens via
 // @Description  PUT /approval/WO/{id}/approve|reject (GenericApprovalHandler), not here.
@@ -792,6 +970,10 @@ func (h *WorkOrderHandler) Submit(c *fiber.Ctx) error {
 	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
 		return fiber.NewError(fiber.StatusBadRequest,
 			fmt.Sprintf("cannot submit work order with status '%s' — must be DRAFT or REJECTED", currentStatus))
+	}
+
+	if err := requireWOLinesForSubmit(ctx, h.db, id, -1); err != nil {
+		return err
 	}
 
 	tx, err := h.db.Begin(ctx)

@@ -4825,7 +4825,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "boolean",
-                        "description": "true = also return Head (roll-up) subgroups; default false hides them. Every row carries is_head.",
+                        "description": "true = also return Head AND Major subgroups; default false hides both. Every row carries is_head and is_major.",
                         "name": "include_head",
                         "in": "query"
                     }
@@ -5154,7 +5154,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active, non-Head cost_subgroup (Head subgroups are not selectable).",
+                "description": "Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active, non-Head, non-Major cost_subgroup (Head/Major subgroups are not selectable).",
                 "produces": [
                     "application/json"
                 ],
@@ -5203,7 +5203,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Rows keep their keys (id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at) and gain is_head (bool, always present). Head (roll-up) subgroups are hidden unless include_head=true; the master cost-code page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id}, .../{id}/deactivate and .../{id}/head.",
+                "description": "Rows keep their keys (id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at) and gain is_head and is_major (bool, always present). Head (roll-up) and Major subgroups are hidden unless include_head=true (which returns both); the master cost-code page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id}, .../{id}/deactivate and .../{id}/head.",
                 "produces": [
                     "application/json"
                 ],
@@ -5220,7 +5220,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "boolean",
-                        "description": "true = also return Head subgroups (default false hides them)",
+                        "description": "true = also return Head AND Major subgroups (default false hides both)",
                         "name": "include_head",
                         "in": "query"
                     }
@@ -5431,6 +5431,70 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/cost-code/subgroups/{id}/major": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same access as the Head toggle (JWT only). 400 when the row is a Head (is_head) or when is_major is missing; 409 when the job already has another Major (the message names its displayed cost code) or when the subgroup is already used (in_use). The response carries subgroup_id, is_major and in_use {pr_lines, po_lines, petty_cash_lines, movement_lines, materials}.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "CostCode"
+                ],
+                "summary": "Mark / unmark a cost subgroup as Major (top roll-up above Head, one per job; not selectable on documents)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Subgroup ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "is_major",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.SetSubgroupMajorReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -5887,6 +5951,31 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/master/job-types": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Every job code accepted in project.job_codes (the fixed JobTypes list in job_type.go) with needs_share computed by JobNeedsShare (false for F* codes, G and OH). The frontend must use this flag instead of hardcoding the rule.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "List project job types",
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -6611,7 +6700,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.ProjectFull"
+                            "$ref": "#/definitions/handlers.ProjectDetail"
                         }
                     },
                     "400": {
@@ -6750,6 +6839,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Detail also returns job_shares: [{job_code, share_percent, share_amount}] (share_amount = budget_amount * share_percent / 100, derived, read-only); [] for legacy projects with no rows.",
                 "produces": [
                     "application/json"
                 ],
@@ -6770,7 +6860,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.ProjectFull"
+                            "$ref": "#/definitions/handlers.ProjectDetail"
                         }
                     },
                     "404": {
@@ -6820,7 +6910,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.ProjectFull"
+                            "$ref": "#/definitions/handlers.ProjectDetail"
                         }
                     },
                     "400": {
@@ -11607,7 +11697,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One row per purchase_order_line.cost_subgroup_id for POs of the project that are not\nDRAFT/REJECTED/CANCELLED/deleted (order_type is NOT filtered). budget and ac_* are\nplaceholders (0) until real sources exist. pu_cost = SUM(qty_ordered * unit_price).",
+                "description": "Flat ordered list with row_type MAJOR | HEAD | ITEM. ITEM rows (NOT is_head AND NOT is_major) are the\nsubgroups that have a PO line in the project (POs not DRAFT/REJECTED/CANCELLED/deleted; order_type is NOT\nfiltered) OR a project_cost_budget row. budget comes from project_cost_budget (LEFT JOIN, no row =\u003e 0);\npu_cost = SUM(qty_ordered * unit_price); ac_cost is still a 0 placeholder. HEAD = sum of its group's ITEM\nrows, MAJOR = sum of all ITEM rows of its job (computed in the backend; a roll-up row appears only when it has\nat least one ITEM under it). Order per job: MAJOR, then each group's HEAD followed by its ITEMs.\ntotals = sum of ITEM rows only.",
                 "produces": [
                     "application/json"
                 ],
@@ -15278,6 +15368,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "` + "`" + `lines` + "`" + ` may be omitted or empty: the work order is created as DRAFT with all header totals 0.\nEach line that IS sent must have a non-empty cost_code. contract_amount must be \u003e 0.\nAt least one line is required later, at submit time.",
                 "consumes": [
                     "application/json"
                 ],
@@ -15340,6 +15431,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/work-order/wht-defaults": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Single source of truth for the allowed contract_type values and the DEFAULT wht_rate per type (LABOR_MATERIAL 3, LABOR_ONLY 3, RENTAL 5, SERVICE 3). Defaults only: saved lines keep their own wht_rate and stored amounts are never recomputed. allowed_rates are the per-line wht_rate values accepted (1, 3, 5).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "Contract types and their default withholding-tax rate",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/work-order/{id}": {
             "get": {
                 "security": [
@@ -15384,7 +15500,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Accepts the same body shape as Create (models.CreateWorkOrderRequest) — lines are\nalways replaced together with the header in this single call, mirroring\nPOHandler.Update's all-in-one PUT rather than requiring a separate lines call.\nThe dedicated PUT /work-order/{id}/lines endpoint remains available for a\nlines-only edit that doesn't touch header fields. Only allowed while\nstatus = DRAFT — mirrors PO's Update rule exactly (PO also rejects everything\nelse, including REJECTED, and points APPROVED callers at its edit-approved\nendpoint instead; WO has no such endpoint yet, so APPROVED/other statuses just 400).\nThe payload's own ` + "`" + `status` + "`" + ` field (\"บันทึกร่าง\" sends DRAFT, \"ส่งอนุมัติ\" sends\nPENDING_APPROVAL) is written to the row and, when it actually changes, logged to\nwork_order_status_log — a transition to PENDING_APPROVAL also opens the step-1\napproval_request exactly like POST /:id/submit does, since this is an alternate\nentry point into the same submit flow. Any other status value is rejected —\napproval decisions only ever happen through the dedicated Approve/Reject flow.",
+                "description": "Accepts the same body shape as Create (models.CreateWorkOrderRequest), mirroring\nPOHandler.Update's all-in-one PUT. The ` + "`" + `lines` + "`" + ` key decides what happens to lines:\nOMITTED (or null) = existing lines are kept untouched and the header totals\n(total/discount/vat/wht/net) and their flags (use_discount, discount_type, use_vat,\nuse_wht) are NOT recomputed — header fields are still updated; PRESENT, even as an\nempty array = existing lines are deleted and replaced by the sent ones and the totals\nare recomputed from them (an empty array leaves 0 lines and all-zero totals).\nHeader fields that are omitted from the body are overwritten with blank/default\nvalues (not kept) — always send the full header. A transition to PENDING_APPROVAL\nrequires at least one line (sent in this request, or already stored when ` + "`" + `lines` + "`" + ` is\nomitted) — otherwise 400 with a Thai message. The dedicated\nPUT /work-order/{id}/lines endpoint remains available for a lines-only edit that\ndoesn't touch header fields. Only allowed while\nstatus = DRAFT — mirrors PO's Update rule exactly (PO also rejects everything\nelse, including REJECTED, and points APPROVED callers at its edit-approved\nendpoint instead; WO has no such endpoint yet, so APPROVED/other statuses just 400).\nThe payload's own ` + "`" + `status` + "`" + ` field (\"บันทึกร่าง\" sends DRAFT, \"ส่งอนุมัติ\" sends\nPENDING_APPROVAL) is written to the row and, when it actually changes, logged to\nwork_order_status_log — a transition to PENDING_APPROVAL also opens the step-1\napproval_request exactly like POST /:id/submit does, since this is an alternate\nentry point into the same submit flow. Any other status value is rejected —\napproval decisions only ever happen through the dedicated Approve/Reject flow.",
                 "consumes": [
                     "application/json"
                 ],
@@ -15442,6 +15558,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Replaces ALL lines of the work order (DELETE + INSERT) and recomputes the header totals\n(total/discount/vat/wht/net) and flags (use_discount, discount_type, use_vat, use_wht) from the\nnew lines in the same transaction. Only allowed while status = DRAFT (400 otherwise, same message\nas PUT /work-order/{id}); 404 if the work order does not exist. At least 1 line is required\nhere (an empty or omitted ` + "`" + `lines` + "`" + ` is a 400) — to clear all lines use PUT /work-order/{id}\nwith ` + "`" + `lines: []` + "`" + `.",
                 "consumes": [
                     "application/json"
                 ],
@@ -15451,7 +15568,7 @@ const docTemplate = `{
                 "tags": [
                     "WorkOrder"
                 ],
-                "summary": "แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง",
+                "summary": "แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง (เฉพาะสถานะ DRAFT)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -15499,7 +15616,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Opens the step-1 approval_request if doc_type='WO' step 1 is configured in\napproval_config; otherwise the status change happens with no approval request\n(mirrors MemoHandler.Submit's hasConfig guard). Actual approve/reject happens via\nPUT /approval/WO/{id}/approve|reject (GenericApprovalHandler), not here.",
+                "description": "Requires at least one line (400 with a Thai message otherwise). Opens the step-1 approval_request\nif doc_type='WO' step 1 is configured in\napproval_config; otherwise the status change happens with no approval request\n(mirrors MemoHandler.Submit's hasConfig guard). Actual approve/reject happens via\nPUT /approval/WO/{id}/approve|reject (GenericApprovalHandler), not here.",
                 "produces": [
                     "application/json"
                 ],
@@ -15745,10 +15862,156 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.ProjectDetail": {
+            "type": "object",
+            "properties": {
+                "budget_amount": {
+                    "type": "number"
+                },
+                "consultant_name": {
+                    "type": "string"
+                },
+                "consultant_phone": {
+                    "description": "\"เบอร์ติดต่อของที่ปรึกษา\", freeform",
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "customer_id": {
+                    "description": "FK -\u003e customer.cus_id — new dropdown-selected \"เจ้าของโครงการ\" going forward",
+                    "type": "integer"
+                },
+                "customer_name": {
+                    "description": "joined from customer.customer_name via customer_id",
+                    "type": "string"
+                },
+                "dept_code": {
+                    "description": "\"แผนก\" — FK -\u003e departments.dept_code",
+                    "type": "string"
+                },
+                "dept_name": {
+                    "description": "joined from departments.dept_name via dept_code",
+                    "type": "string"
+                },
+                "end_date": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "job_codes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "job_shares": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.ProjectJobShare"
+                    }
+                },
+                "location_code": {
+                    "description": "free-text project address — no longer an FK/lookup against location.location_code",
+                    "type": "string"
+                },
+                "owner_id": {
+                    "description": "deprecated: superseded by responsible_person_name (kept, unused by new UI — not dropped, same approach as credit)",
+                    "type": "integer"
+                },
+                "owner_name": {
+                    "description": "joined from users.full_name via owner_id (\"ผู้รับผิดชอบหลัก\" — legacy)",
+                    "type": "string"
+                },
+                "paid_amount": {
+                    "type": "number"
+                },
+                "project_code": {
+                    "type": "string"
+                },
+                "project_kind": {
+                    "description": "NEW | VO — decides which of budget_amount / vo_amount applies",
+                    "type": "string"
+                },
+                "project_name": {
+                    "type": "string"
+                },
+                "project_owner_name": {
+                    "description": "free text (\"เจ้าของโครงการ\") — legacy, kept for backward compat with existing records",
+                    "type": "string"
+                },
+                "remaining_amount": {
+                    "type": "number"
+                },
+                "responsible_person_name": {
+                    "description": "free text (\"ผู้รับผิดชอบหลัก\"), required on write — replaces the owner_id dropdown",
+                    "type": "string"
+                },
+                "responsible_usernames": {
+                    "description": "usernames joined by \", \" (list + detail)",
+                    "type": "string"
+                },
+                "responsible_users": {
+                    "description": "detail/create/update only; username only",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectResponsibleUser"
+                    }
+                },
+                "spent_amount": {
+                    "type": "number"
+                },
+                "start_date": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                },
+                "vo_amount": {
+                    "description": "\"มูลค่า VO\" — separate from budget_amount, never summed with it",
+                    "type": "number"
+                }
+            }
+        },
+        "handlers.ProjectJobShare": {
+            "type": "object",
+            "properties": {
+                "job_code": {
+                    "type": "string"
+                },
+                "share_amount": {
+                    "type": "number"
+                },
+                "share_percent": {
+                    "type": "number"
+                }
+            }
+        },
         "handlers.SetSubgroupHeadReq": {
             "type": "object",
             "properties": {
                 "is_head": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "handlers.SetSubgroupMajorReq": {
+            "type": "object",
+            "properties": {
+                "is_major": {
                     "type": "boolean"
                 }
             }
@@ -16770,6 +17033,10 @@ const docTemplate = `{
                 "department": {
                     "type": "string"
                 },
+                "job_code": {
+                    "description": "required (and must be in the project's job_codes) when project_code is set and the project has job_codes",
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
                     "items": {
@@ -17245,6 +17512,13 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "type": "string"
+                    }
+                },
+                "job_shares": {
+                    "description": "share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectJobShareInput"
                     }
                 },
                 "location_code": {
@@ -17757,11 +18031,8 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "contract_type": {
-                    "type": "string",
-                    "enum": [
-                        "LABOR_ONLY",
-                        "LABOR_MATERIAL"
-                    ]
+                    "description": "allowed values: woContractTypes in handlers/work_order.go",
+                    "type": "string"
                 },
                 "discount_type": {
                     "type": "string",
@@ -17799,6 +18070,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "project_code": {
+                    "description": "exactly one of project_code / project_name_text",
+                    "type": "string"
+                },
+                "project_name_text": {
+                    "description": "free-text project name (varchar 200)",
                     "type": "string"
                 },
                 "project_scope_text": {
@@ -17820,6 +18096,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
+                    "type": "string"
+                },
+                "subcontractor_signed_name": {
+                    "description": "SubcontractorSignedName is plain free text, nullable; never auto-filled by the backend.",
                     "type": "string"
                 },
                 "supplier_address": {
@@ -17864,7 +18144,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "work_system": {
-                    "description": "at least 1 of P | E | S; validated in validateWorkOrderRequest",
+                    "description": "at least 1 M-prefixed job code; validated in validateWorkOrderRequest",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -18343,6 +18623,10 @@ const docTemplate = `{
                 "id": {
                     "type": "integer"
                 },
+                "job_code": {
+                    "description": "the ONE job (from the project's job_codes) this memo is for; NULL for old memos",
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
                     "items": {
@@ -18689,120 +18973,13 @@ const docTemplate = `{
                 }
             }
         },
-        "models.ProjectFull": {
+        "models.ProjectJobShareInput": {
             "type": "object",
             "properties": {
-                "budget_amount": {
-                    "type": "number"
-                },
-                "consultant_name": {
+                "job_code": {
                     "type": "string"
                 },
-                "consultant_phone": {
-                    "description": "\"เบอร์ติดต่อของที่ปรึกษา\", freeform",
-                    "type": "string"
-                },
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "integer"
-                },
-                "customer_id": {
-                    "description": "FK -\u003e customer.cus_id — new dropdown-selected \"เจ้าของโครงการ\" going forward",
-                    "type": "integer"
-                },
-                "customer_name": {
-                    "description": "joined from customer.customer_name via customer_id",
-                    "type": "string"
-                },
-                "dept_code": {
-                    "description": "\"แผนก\" — FK -\u003e departments.dept_code",
-                    "type": "string"
-                },
-                "dept_name": {
-                    "description": "joined from departments.dept_name via dept_code",
-                    "type": "string"
-                },
-                "end_date": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "integer"
-                },
-                "is_active": {
-                    "type": "boolean"
-                },
-                "job_codes": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "location_code": {
-                    "description": "free-text project address — no longer an FK/lookup against location.location_code",
-                    "type": "string"
-                },
-                "owner_id": {
-                    "description": "deprecated: superseded by responsible_person_name (kept, unused by new UI — not dropped, same approach as credit)",
-                    "type": "integer"
-                },
-                "owner_name": {
-                    "description": "joined from users.full_name via owner_id (\"ผู้รับผิดชอบหลัก\" — legacy)",
-                    "type": "string"
-                },
-                "paid_amount": {
-                    "type": "number"
-                },
-                "project_code": {
-                    "type": "string"
-                },
-                "project_kind": {
-                    "description": "NEW | VO — decides which of budget_amount / vo_amount applies",
-                    "type": "string"
-                },
-                "project_name": {
-                    "type": "string"
-                },
-                "project_owner_name": {
-                    "description": "free text (\"เจ้าของโครงการ\") — legacy, kept for backward compat with existing records",
-                    "type": "string"
-                },
-                "remaining_amount": {
-                    "type": "number"
-                },
-                "responsible_person_name": {
-                    "description": "free text (\"ผู้รับผิดชอบหลัก\"), required on write — replaces the owner_id dropdown",
-                    "type": "string"
-                },
-                "responsible_usernames": {
-                    "description": "usernames joined by \", \" (list + detail)",
-                    "type": "string"
-                },
-                "responsible_users": {
-                    "description": "detail/create/update only; username only",
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.ProjectResponsibleUser"
-                    }
-                },
-                "spent_amount": {
-                    "type": "number"
-                },
-                "start_date": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "updated_by": {
-                    "type": "integer"
-                },
-                "vo_amount": {
-                    "description": "\"มูลค่า VO\" — separate from budget_amount, never summed with it",
+                "share_percent": {
                     "type": "number"
                 }
             }
@@ -19373,6 +19550,10 @@ const docTemplate = `{
                 "department": {
                     "type": "string"
                 },
+                "job_code": {
+                    "description": "required (and must be in the project's job_codes) when project_code is set and the project has job_codes",
+                    "type": "string"
+                },
                 "lines": {
                     "type": "array",
                     "items": {
@@ -19621,6 +19802,13 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "type": "string"
+                    }
+                },
+                "job_shares": {
+                    "description": "share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectJobShareInput"
                     }
                 },
                 "location_code": {

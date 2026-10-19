@@ -492,7 +492,7 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		       pcl.invoice_no, to_char(pcl.invoice_date, 'YYYY-MM-DD'),
 		       mn.mat_name AS mat_name_th,
 		       CASE WHEN pcl.cost_subgroup_id IS NULL THEN NULL
-		            ELSE csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code END AS cost_code,
+		            ELSE ` + costCodeSQL("csub","cj","cg","csg") + ` END AS cost_code,
 		       wit.label_th,
 		       p.project_name, mn.mat_name, u.unit_name, COALESCE(ps.qty_on_hand, 0)
 		FROM petty_cash_requisition_line pcl

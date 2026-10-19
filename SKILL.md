@@ -422,3 +422,15 @@ if linkedWarehouseCode != nil {
 ```
 ดูตารางแยก source×destination เต็ม ๆ ใน CLAUDE.md "Session learnings (2026-09-26)" —
 `internal/handlers/ic_project_movement.go` เป็น reference implementation ของ pattern นี้
+
+---
+
+## 🆕 2026-10-19 — patterns added (docs-only pass; details in CLAUDE.md "Session learnings (2026-10-19)")
+- **Cost code selectability**: Major (`cost_subgroup.is_major`) and Head (`is_head`) rows are roll-ups, never selectable. Any picker/validator query on `cost_subgroup` must filter
+  `NOT is_head AND NOT is_major`; list endpoints hide both unless `include_head=true`. Display the code via `costCodeSQL` (`cost_code_sql.go`) — never hand-concatenate subject+job+group+subgroup.
+- **Job-share rule**: call `JobNeedsShare(code)` (`project_job_share.go`); never re-implement it. Shares are validated with exact `big.Rat` arithmetic, replaced DELETE+INSERT inside the project tx.
+- **Memo job**: `validateMemoJobCode` — job_code must belong to the memo's project `job_codes`.
+- **Work Order**: `woContractTypes` is the single source for contract types and default WHT rates; `work_system` is `text[]` on dev (varchar on UAT — do not assume); when adding a column, update
+  BOTH the INSERT and UPDATE column lists (`subcontractor_signed_name` was missing from both).
+- **Environments**: dev and UAT schemas differ. Run `SELECT current_database();` before any SQL. Schema changes go through pgAdmin by hand, no migration files; keep a UAT to-do list (see CLAUDE.md).
+- **Counters**: project_code uses `project_code_year_counter`; monthly document numbers use `nextMonthlyNumber` with a whitelisted table (`pr/po/memo/pc/ret_number_counter`); IS-/TF- use `doc_number_counter`.

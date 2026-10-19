@@ -68,9 +68,116 @@ definitions:
       temp_delivery_no:
         type: string
     type: object
+  handlers.ProjectDetail:
+    properties:
+      budget_amount:
+        type: number
+      consultant_name:
+        type: string
+      consultant_phone:
+        description: '"เบอร์ติดต่อของที่ปรึกษา", freeform'
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      customer_id:
+        description: FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
+          going forward
+        type: integer
+      customer_name:
+        description: joined from customer.customer_name via customer_id
+        type: string
+      dept_code:
+        description: '"แผนก" — FK -> departments.dept_code'
+        type: string
+      dept_name:
+        description: joined from departments.dept_name via dept_code
+        type: string
+      end_date:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      job_codes:
+        items:
+          type: string
+        type: array
+      job_shares:
+        items:
+          $ref: '#/definitions/handlers.ProjectJobShare'
+        type: array
+      location_code:
+        description: free-text project address — no longer an FK/lookup against location.location_code
+        type: string
+      owner_id:
+        description: 'deprecated: superseded by responsible_person_name (kept, unused
+          by new UI — not dropped, same approach as credit)'
+        type: integer
+      owner_name:
+        description: joined from users.full_name via owner_id ("ผู้รับผิดชอบหลัก"
+          — legacy)
+        type: string
+      paid_amount:
+        type: number
+      project_code:
+        type: string
+      project_kind:
+        description: NEW | VO — decides which of budget_amount / vo_amount applies
+        type: string
+      project_name:
+        type: string
+      project_owner_name:
+        description: free text ("เจ้าของโครงการ") — legacy, kept for backward compat
+          with existing records
+        type: string
+      remaining_amount:
+        type: number
+      responsible_person_name:
+        description: free text ("ผู้รับผิดชอบหลัก"), required on write — replaces
+          the owner_id dropdown
+        type: string
+      responsible_usernames:
+        description: usernames joined by ", " (list + detail)
+        type: string
+      responsible_users:
+        description: detail/create/update only; username only
+        items:
+          $ref: '#/definitions/models.ProjectResponsibleUser'
+        type: array
+      spent_amount:
+        type: number
+      start_date:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+      vo_amount:
+        description: '"มูลค่า VO" — separate from budget_amount, never summed with
+          it'
+        type: number
+    type: object
+  handlers.ProjectJobShare:
+    properties:
+      job_code:
+        type: string
+      share_amount:
+        type: number
+      share_percent:
+        type: number
+    type: object
   handlers.SetSubgroupHeadReq:
     properties:
       is_head:
+        type: boolean
+    type: object
+  handlers.SetSubgroupMajorReq:
+    properties:
+      is_major:
         type: boolean
     type: object
   handlers.SubmitReceiveDocumentRequest:
@@ -765,6 +872,10 @@ definitions:
         type: string
       department:
         type: string
+      job_code:
+        description: required (and must be in the project's job_codes) when project_code
+          is set and the project has job_codes
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.MemoLineRequest'
@@ -1103,6 +1214,12 @@ definitions:
         description: subset of MP/ME/MS/MF/MG/MH/G — validated server-side
         items:
           type: string
+        type: array
+      job_shares:
+        description: share of budget_amount per job in job_codes; see handlers.JobNeedsShare
+          for the exempt codes
+        items:
+          $ref: '#/definitions/models.ProjectJobShareInput'
         type: array
       location_code:
         description: free-text project address
@@ -1451,9 +1568,7 @@ definitions:
         description: free text
         type: string
       contract_type:
-        enum:
-        - LABOR_ONLY
-        - LABOR_MATERIAL
+        description: 'allowed values: woContractTypes in handlers/work_order.go'
         type: string
       discount_type:
         enum:
@@ -1480,6 +1595,10 @@ definitions:
       progress_payment_note:
         type: string
       project_code:
+        description: exactly one of project_code / project_name_text
+        type: string
+      project_name_text:
+        description: free-text project name (varchar 200)
         type: string
       project_scope_text:
         type: string
@@ -1494,6 +1613,10 @@ definitions:
       start_date:
         type: string
       status:
+        type: string
+      subcontractor_signed_name:
+        description: SubcontractorSignedName is plain free text, nullable; never auto-filled
+          by the backend.
         type: string
       supplier_address:
         type: string
@@ -1530,7 +1653,7 @@ definitions:
           rejected; approval decisions only ever happen through the dedicated Approve/Reject flow.
         type: string
       work_system:
-        description: at least 1 of P | E | S; validated in validateWorkOrderRequest
+        description: at least 1 M-prefixed job code; validated in validateWorkOrderRequest
         items:
           type: string
         type: array
@@ -1857,6 +1980,10 @@ definitions:
         type: string
       id:
         type: integer
+      job_code:
+        description: the ONE job (from the project's job_codes) this memo is for;
+          NULL for old memos
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.MemoLine'
@@ -2103,93 +2230,11 @@ definitions:
       total_pages:
         type: integer
     type: object
-  models.ProjectFull:
+  models.ProjectJobShareInput:
     properties:
-      budget_amount:
-        type: number
-      consultant_name:
+      job_code:
         type: string
-      consultant_phone:
-        description: '"เบอร์ติดต่อของที่ปรึกษา", freeform'
-        type: string
-      created_at:
-        type: string
-      created_by:
-        type: integer
-      customer_id:
-        description: FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
-          going forward
-        type: integer
-      customer_name:
-        description: joined from customer.customer_name via customer_id
-        type: string
-      dept_code:
-        description: '"แผนก" — FK -> departments.dept_code'
-        type: string
-      dept_name:
-        description: joined from departments.dept_name via dept_code
-        type: string
-      end_date:
-        type: string
-      id:
-        type: integer
-      is_active:
-        type: boolean
-      job_codes:
-        items:
-          type: string
-        type: array
-      location_code:
-        description: free-text project address — no longer an FK/lookup against location.location_code
-        type: string
-      owner_id:
-        description: 'deprecated: superseded by responsible_person_name (kept, unused
-          by new UI — not dropped, same approach as credit)'
-        type: integer
-      owner_name:
-        description: joined from users.full_name via owner_id ("ผู้รับผิดชอบหลัก"
-          — legacy)
-        type: string
-      paid_amount:
-        type: number
-      project_code:
-        type: string
-      project_kind:
-        description: NEW | VO — decides which of budget_amount / vo_amount applies
-        type: string
-      project_name:
-        type: string
-      project_owner_name:
-        description: free text ("เจ้าของโครงการ") — legacy, kept for backward compat
-          with existing records
-        type: string
-      remaining_amount:
-        type: number
-      responsible_person_name:
-        description: free text ("ผู้รับผิดชอบหลัก"), required on write — replaces
-          the owner_id dropdown
-        type: string
-      responsible_usernames:
-        description: usernames joined by ", " (list + detail)
-        type: string
-      responsible_users:
-        description: detail/create/update only; username only
-        items:
-          $ref: '#/definitions/models.ProjectResponsibleUser'
-        type: array
-      spent_amount:
-        type: number
-      start_date:
-        type: string
-      status:
-        type: string
-      updated_at:
-        type: string
-      updated_by:
-        type: integer
-      vo_amount:
-        description: '"มูลค่า VO" — separate from budget_amount, never summed with
-          it'
+      share_percent:
         type: number
     type: object
   models.ProjectResponsibleUser:
@@ -2574,6 +2619,10 @@ definitions:
         type: string
       department:
         type: string
+      job_code:
+        description: required (and must be in the project's job_codes) when project_code
+          is set and the project has job_codes
+        type: string
       lines:
         items:
           $ref: '#/definitions/models.MemoLineRequest'
@@ -2750,6 +2799,12 @@ definitions:
         description: subset of MP/ME/MS/MF/MG/MH/G — validated server-side
         items:
           type: string
+        type: array
+      job_shares:
+        description: share of budget_amount per job in job_codes; see handlers.JobNeedsShare
+          for the exempt codes
+        items:
+          $ref: '#/definitions/models.ProjectJobShareInput'
         type: array
       location_code:
         description: free-text project address
@@ -6446,8 +6501,8 @@ paths:
         in: query
         name: scope
         type: string
-      - description: true = also return Head (roll-up) subgroups; default false hides
-          them. Every row carries is_head.
+      - description: true = also return Head AND Major subgroups; default false hides
+          both. Every row carries is_head and is_major.
         in: query
         name: include_head
         type: boolean
@@ -6660,7 +6715,8 @@ paths:
   /master/cost-code/options:
     get:
       description: Returns id + combined code (subject+job+group+subgroup) + subgroup_name
-        for every active, non-Head cost_subgroup (Head subgroups are not selectable).
+        for every active, non-Head, non-Major cost_subgroup (Head/Major subgroups
+        are not selectable).
       produces:
       - application/json
       responses:
@@ -6690,16 +6746,18 @@ paths:
   /master/cost-code/subgroups:
     get:
       description: Rows keep their keys (id, group_id, subgroup_code, subgroup_name,
-        is_active, created_at, updated_at) and gain is_head (bool, always present).
-        Head (roll-up) subgroups are hidden unless include_head=true; the master cost-code
-        page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id},
-        .../{id}/deactivate and .../{id}/head.
+        is_active, created_at, updated_at) and gain is_head and is_major (bool, always
+        present). Head (roll-up) and Major subgroups are hidden unless include_head=true
+        (which returns both); the master cost-code page sends include_head=true. The
+        row's id is the id used by PATCH .../subgroups/{id}, .../{id}/deactivate and
+        .../{id}/head.
       parameters:
       - description: group_id filter
         in: query
         name: group_id
         type: integer
-      - description: true = also return Head subgroups (default false hides them)
+      - description: true = also return Head AND Major subgroups (default false hides
+          both)
         in: query
         name: include_head
         type: boolean
@@ -6849,6 +6907,52 @@ paths:
       - BearerAuth: []
       summary: Mark / unmark a cost subgroup as Head (roll-up node, not selectable
         on documents)
+      tags:
+      - CostCode
+  /master/cost-code/subgroups/{id}/major:
+    patch:
+      consumes:
+      - application/json
+      description: Same access as the Head toggle (JWT only). 400 when the row is
+        a Head (is_head) or when is_major is missing; 409 when the job already has
+        another Major (the message names its displayed cost code) or when the subgroup
+        is already used (in_use). The response carries subgroup_id, is_major and in_use
+        {pr_lines, po_lines, petty_cash_lines, movement_lines, materials}.
+      parameters:
+      - description: Subgroup ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: is_major
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.SetSubgroupMajorReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Mark / unmark a cost subgroup as Major (top roll-up above Head, one
+        per job; not selectable on documents)
       tags:
       - CostCode
   /master/cost-code/subjects:
@@ -7163,6 +7267,24 @@ paths:
       security:
       - BearerAuth: []
       summary: Update a material group's display name
+      tags:
+      - Master
+  /master/job-types:
+    get:
+      description: Every job code accepted in project.job_codes (the fixed JobTypes
+        list in job_type.go) with needs_share computed by JobNeedsShare (false for
+        F* codes, G and OH). The frontend must use this flag instead of hardcoding
+        the rule.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List project job types
       tags:
       - Master
   /master/locations:
@@ -7639,7 +7761,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.ProjectFull'
+            $ref: '#/definitions/handlers.ProjectDetail'
         "400":
           description: Bad Request
           schema:
@@ -7682,6 +7804,9 @@ paths:
       tags:
       - Master
     get:
+      description: 'Detail also returns job_shares: [{job_code, share_percent, share_amount}]
+        (share_amount = budget_amount * share_percent / 100, derived, read-only);
+        [] for legacy projects with no rows.'
       parameters:
       - description: Project ID
         in: path
@@ -7694,7 +7819,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.ProjectFull'
+            $ref: '#/definitions/handlers.ProjectDetail'
         "404":
           description: Not Found
           schema:
@@ -7735,7 +7860,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.ProjectFull'
+            $ref: '#/definitions/handlers.ProjectDetail'
         "400":
           description: Bad Request
           schema:
@@ -10614,9 +10739,13 @@ paths:
   /po/{projectCode}/cost-budget-detail:
     get:
       description: |-
-        One row per purchase_order_line.cost_subgroup_id for POs of the project that are not
-        DRAFT/REJECTED/CANCELLED/deleted (order_type is NOT filtered). budget and ac_* are
-        placeholders (0) until real sources exist. pu_cost = SUM(qty_ordered * unit_price).
+        Flat ordered list with row_type MAJOR | HEAD | ITEM. ITEM rows (NOT is_head AND NOT is_major) are the
+        subgroups that have a PO line in the project (POs not DRAFT/REJECTED/CANCELLED/deleted; order_type is NOT
+        filtered) OR a project_cost_budget row. budget comes from project_cost_budget (LEFT JOIN, no row => 0);
+        pu_cost = SUM(qty_ordered * unit_price); ac_cost is still a 0 placeholder. HEAD = sum of its group's ITEM
+        rows, MAJOR = sum of all ITEM rows of its job (computed in the backend; a roll-up row appears only when it has
+        at least one ITEM under it). Order per job: MAJOR, then each group's HEAD followed by its ITEMs.
+        totals = sum of ITEM rows only.
       parameters:
       - description: Project code
         in: path
@@ -13427,6 +13556,10 @@ paths:
     post:
       consumes:
       - application/json
+      description: |-
+        `lines` may be omitted or empty: the work order is created as DRAFT with all header totals 0.
+        Each line that IS sent must have a non-empty cost_code. contract_amount must be > 0.
+        At least one line is required later, at submit time.
       parameters:
       - description: Work Order data
         in: body
@@ -13478,11 +13611,19 @@ paths:
       consumes:
       - application/json
       description: |-
-        Accepts the same body shape as Create (models.CreateWorkOrderRequest) — lines are
-        always replaced together with the header in this single call, mirroring
-        POHandler.Update's all-in-one PUT rather than requiring a separate lines call.
-        The dedicated PUT /work-order/{id}/lines endpoint remains available for a
-        lines-only edit that doesn't touch header fields. Only allowed while
+        Accepts the same body shape as Create (models.CreateWorkOrderRequest), mirroring
+        POHandler.Update's all-in-one PUT. The `lines` key decides what happens to lines:
+        OMITTED (or null) = existing lines are kept untouched and the header totals
+        (total/discount/vat/wht/net) and their flags (use_discount, discount_type, use_vat,
+        use_wht) are NOT recomputed — header fields are still updated; PRESENT, even as an
+        empty array = existing lines are deleted and replaced by the sent ones and the totals
+        are recomputed from them (an empty array leaves 0 lines and all-zero totals).
+        Header fields that are omitted from the body are overwritten with blank/default
+        values (not kept) — always send the full header. A transition to PENDING_APPROVAL
+        requires at least one line (sent in this request, or already stored when `lines` is
+        omitted) — otherwise 400 with a Thai message. The dedicated
+        PUT /work-order/{id}/lines endpoint remains available for a lines-only edit that
+        doesn't touch header fields. Only allowed while
         status = DRAFT — mirrors PO's Update rule exactly (PO also rejects everything
         else, including REJECTED, and points APPROVED callers at its edit-approved
         endpoint instead; WO has no such endpoint yet, so APPROVED/other statuses just 400).
@@ -13528,6 +13669,13 @@ paths:
     put:
       consumes:
       - application/json
+      description: |-
+        Replaces ALL lines of the work order (DELETE + INSERT) and recomputes the header totals
+        (total/discount/vat/wht/net) and flags (use_discount, discount_type, use_vat, use_wht) from the
+        new lines in the same transaction. Only allowed while status = DRAFT (400 otherwise, same message
+        as PUT /work-order/{id}); 404 if the work order does not exist. At least 1 line is required
+        here (an empty or omitted `lines` is a 400) — to clear all lines use PUT /work-order/{id}
+        with `lines: []`.
       parameters:
       - description: Work Order ID
         in: path
@@ -13557,13 +13705,15 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง
+      summary: แทนที่รายการ line item (cost code) ทั้งหมดของหนังสือสั่งจ้าง (เฉพาะสถานะ
+        DRAFT)
       tags:
       - WorkOrder
   /work-order/{id}/submit:
     post:
       description: |-
-        Opens the step-1 approval_request if doc_type='WO' step 1 is configured in
+        Requires at least one line (400 with a Thai message otherwise). Opens the step-1 approval_request
+        if doc_type='WO' step 1 is configured in
         approval_config; otherwise the status change happens with no approval request
         (mirrors MemoHandler.Submit's hasConfig guard). Actual approve/reject happens via
         PUT /approval/WO/{id}/approve|reject (GenericApprovalHandler), not here.
@@ -13683,6 +13833,25 @@ paths:
       security:
       - BearerAuth: []
       summary: Reserve the next Work Order number (consumes wo_seq)
+      tags:
+      - WorkOrder
+  /work-order/wht-defaults:
+    get:
+      description: 'Single source of truth for the allowed contract_type values and
+        the DEFAULT wht_rate per type (LABOR_MATERIAL 3, LABOR_ONLY 3, RENTAL 5, SERVICE
+        3). Defaults only: saved lines keep their own wht_rate and stored amounts
+        are never recomputed. allowed_rates are the per-line wht_rate values accepted
+        (1, 3, 5).'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Contract types and their default withholding-tax rate
       tags:
       - WorkOrder
 securityDefinitions:

@@ -32,7 +32,7 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 	var approvedByName, approvedBySigPath, approvedBySigMime *string
 	var fallbackApproverSigPath, fallbackApproverSigMime *string
 	err := h.db.QueryRow(ctx, `
-		SELECT m.id, m.memo_no, m.title, m.project_code,
+		SELECT m.id, m.memo_no, m.title, m.project_code, m.job_code,
 		       m.requested_by, m.approver_id, m.department, m.delivery_location,
 		       m.site_delivery_date, m.responsible_factory, m.note, m.status,
 		       m.created_at, m.updated_at,
@@ -55,7 +55,7 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 		LEFT JOIN public.users ab ON ab.id = msl.changed_by
 		WHERE m.id = $1`, id,
 	).Scan(
-		&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
+		&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode, &m.JobCode,
 		&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation,
 		&siteDeliveryDate, &m.ResponsibleFactory, &m.Note, &m.Status,
 		&m.CreatedAt, &m.UpdatedAt,
@@ -157,6 +157,48 @@ func (h *MemoHandler) getByID(ctx context.Context, id int64) (*models.Memo, erro
 	}
 
 	return &m, nil
+}
+
+// validateMemoJobCode applies the Memo job rule and returns the job_code to store (nil = NULL).
+// project_code set and the project has job_codes -> job_code is required and must be one of them;
+// project_code empty -> job_code must be empty too. Plain Thai messages only (no SQLSTATE text).
+func validateMemoJobCode(ctx context.Context, db *pgxpool.Pool, projectCode, jobCode *string) (*string, error) {
+	job := ""
+	if jobCode != nil {
+		job = strings.TrimSpace(*jobCode)
+	}
+	project := ""
+	if projectCode != nil {
+		project = strings.TrimSpace(*projectCode)
+	}
+	if project == "" {
+		if job != "" {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกโครงการก่อนจึงจะระบุงาน (Job) ได้")
+		}
+		return nil, nil
+	}
+
+	var allowed []string
+	if err := db.QueryRow(ctx, `SELECT job_codes FROM public.project WHERE project_code=$1`, project).Scan(&allowed); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "ไม่พบโครงการที่เลือก")
+		}
+		log.Printf("memo job_code: load project %q job_codes: %v", project, err)
+		return nil, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบงานของโครงการได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if len(allowed) == 0 {
+		if job != "" {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "โครงการนี้ยังไม่มีงาน (Job) ให้เลือก")
+		}
+		return nil, nil
+	}
+	if job == "" {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกงาน (Job) ของโครงการ")
+	}
+	if !slices.Contains(allowed, job) {
+		return nil, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("งาน %s ไม่ได้อยู่ในรายการงานของโครงการ %s", job, project))
+	}
+	return &job, nil
 }
 
 // List godoc
@@ -288,7 +330,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 	}
 
 	dataSQL := `
-		SELECT m.id, m.memo_no, m.title, m.project_code,
+		SELECT m.id, m.memo_no, m.title, m.project_code, m.job_code,
 		       m.requested_by, m.approver_id, m.department, m.delivery_location,
 		       m.site_delivery_date, m.responsible_factory, m.note, m.status,
 		       m.created_at, m.updated_at,
@@ -323,7 +365,7 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 		var m models.Memo
 		var siteDeliveryDate *time.Time
 		dest := []any{
-			&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode,
+			&m.ID, &m.MemoNo, &m.Title, &m.ProjectCode, &m.JobCode,
 			&m.RequestedBy, &m.ApproverID, &m.Department, &m.DeliveryLocation,
 			&siteDeliveryDate, &m.ResponsibleFactory, &m.Note, &m.Status,
 			&m.CreatedAt, &m.UpdatedAt,
@@ -442,6 +484,11 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "approver not found")
 	}
 
+	jobCode, err := validateMemoJobCode(ctx, h.db, req.ProjectCode, req.JobCode)
+	if err != nil {
+		return err
+	}
+
 	status := req.Status
 	if status == "" {
 		status = "DRAFT"
@@ -468,12 +515,12 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	var memoID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO public.memo
-		    (memo_no, project_code, requested_by, approver_id,
+		    (memo_no, project_code, job_code, requested_by, approver_id,
 		     department, delivery_location, site_delivery_date, responsible_factory,
 		     note, status, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
 		RETURNING id`,
-		memoNo, req.ProjectCode, req.RequestedBy, req.ApproverID,
+		memoNo, req.ProjectCode, jobCode, req.RequestedBy, req.ApproverID,
 		req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
 		req.Note, status, claims.UserID,
 	).Scan(&memoID)
@@ -585,6 +632,13 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "cannot edit memo in this status")
 	}
 
+	// Every save of an editable memo re-applies the job rule (an old memo with no job_code must get
+	// one when its project has job_codes).
+	jobCode, err := validateMemoJobCode(ctx, h.db, req.ProjectCode, req.JobCode)
+	if err != nil {
+		return err
+	}
+
 	// Only a *changed* approver is validated against the eligible pool, so re-saving an
 	// unchanged memo isn't blocked if the existing approver has since lost eligibility.
 	approverChanged := oldApproverID == nil || *oldApproverID != *req.ApproverID
@@ -606,11 +660,11 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 
 	result, err := tx.Exec(ctx, `
 		UPDATE public.memo
-		SET project_code=$1, requested_by=$2, approver_id=$3,
-		    department=$4, delivery_location=$5, site_delivery_date=$6, responsible_factory=$7,
-		    note=$8, updated_by=$9, updated_at=NOW()
-		WHERE id=$10`,
-		req.ProjectCode, req.RequestedBy, req.ApproverID,
+		SET project_code=$1, job_code=$2, requested_by=$3, approver_id=$4,
+		    department=$5, delivery_location=$6, site_delivery_date=$7, responsible_factory=$8,
+		    note=$9, updated_by=$10, updated_at=NOW()
+		WHERE id=$11`,
+		req.ProjectCode, jobCode, req.RequestedBy, req.ApproverID,
 		req.Department, req.DeliveryLocation, req.SiteDeliveryDate, req.ResponsibleFactory,
 		req.Note, claims.UserID, id,
 	)

@@ -476,7 +476,7 @@ func (h *MasterHandler) SearchMaterials(c *fiber.Ctx) error {
         mn.mat_name,
         u.unit_name AS unit,
         lp.last_price,
-        csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code
+        ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code
         %s
     FROM material_code mc
     JOIN mat_name mn ON mn.id = mc.mat_name_id
@@ -693,7 +693,7 @@ func (h *MasterHandler) GetAllMaterial(c *fiber.Ctx) error {
 			ss.spec_description, ss.spec_code,
 			b.brand_code, b.brand_name,
 			u.unit_code, u.unit_name, mc.is_active,
-			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
 			csg.subgroup_name AS cost_subgroup_name,
 			mc.cost_subgroup_id,
 			%s AS stock_on_hand
@@ -2281,7 +2281,7 @@ func (h *MasterHandler) ExportMaterials(c *fiber.Ctx) error {
 			COALESCE(b.brand_name, '')        AS brand_name,
 			u.unit_code,
 			u.unit_name,
-			COALESCE(csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code, '') AS cost_code,
+			COALESCE(` + costCodeSQL("csub","cj","cg","csg") + `, '') AS cost_code,
 			COALESCE(csg.subgroup_name, '') AS cost_subgroup_name
 		FROM material_code mc
 		JOIN mat_group  mg ON mg.id = mc.group_id

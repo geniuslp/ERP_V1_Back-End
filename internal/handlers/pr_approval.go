@@ -396,7 +396,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 			mn.mat_name, u.unit_name, b.brand_name, ss.spec_description AS spec_name,
 			mg.group_name, sg.subgroup_name,
 			prl.cost_subgroup_id,
-			csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
 			csg.subgroup_name AS cost_subgroup_name,
 			prl.memo_line_id, ml.line_no, ml.description
 		FROM purchase_request_line prl

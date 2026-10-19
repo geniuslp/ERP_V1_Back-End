@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ─── Auth / Users ────────────────────────────────────────────────────────────
 
@@ -133,6 +136,13 @@ type ProjectResponsibleUser struct {
 	Username string `json:"username"`
 }
 
+// ProjectJobShareInput is one {job_code, share_percent} entry of job_shares. share_percent is a
+// json.Number so the handler can validate it with exact decimal arithmetic.
+type ProjectJobShareInput struct {
+	JobCode      string      `json:"job_code"`
+	SharePercent json.Number `json:"share_percent" swaggertype:"number"`
+}
+
 type CreateProjectReq struct {
 	ProjectCode           string   `json:"project_code"`
 	ProjectName           string   `json:"project_name"`
@@ -144,6 +154,7 @@ type CreateProjectReq struct {
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
+	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
 	BudgetAmount          *float64 `json:"budget_amount"` // required for NEW; forced to 0 for VO
 	VOAmount              *float64 `json:"vo_amount"`     // required for VO; forced to 0 for NEW
@@ -165,6 +176,7 @@ type UpdateProjectReq struct {
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
+	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
 	BudgetAmount          *float64 `json:"budget_amount"` // required for NEW; forced to 0 for VO
 	VOAmount              *float64 `json:"vo_amount"`     // required for VO; forced to 0 for NEW
@@ -1383,6 +1395,7 @@ type Memo struct {
 	MemoNo             string    `json:"memo_no"`
 	Title              *string   `json:"title,omitempty"` // legacy: no longer collected, NULL for new memos; kept for old rows
 	ProjectCode        *string   `json:"project_code"`
+	JobCode            *string   `json:"job_code"` // the ONE job (from the project's job_codes) this memo is for; NULL for old memos
 	RequestedBy        int64     `json:"requested_by"`
 	ApproverID         *int64    `json:"approver_id"`
 	Department         *string   `json:"department"`
@@ -1447,6 +1460,7 @@ type MemoLine struct {
 type CreateMemoRequest struct {
 	MemoNo             string            `json:"memo_no"`
 	ProjectCode        *string           `json:"project_code"`
+	JobCode            *string           `json:"job_code"` // required (and must be in the project's job_codes) when project_code is set and the project has job_codes
 	RequestedBy        int64             `json:"requested_by"`
 	ApproverID         *int64            `json:"approver_id"`
 	Department         *string           `json:"department"`
@@ -1508,6 +1522,8 @@ type WorkOrder struct {
 	EmployerName     string  `json:"employer_name"`
 	ProjectCode      *string `json:"project_code"`
 	ProjectName      *string `json:"project_name,omitempty"`
+	// ProjectNameText is the free-text alternative to ProjectCode (exactly one of the two is set).
+	ProjectNameText  *string `json:"project_name_text"`
 	ProjectScopeText *string `json:"project_scope_text"`
 	SupplierCode     *string `json:"supplier_code"`
 	// SupplierID is an optional, decoupled link to supplier.id — unlike PO/GRN,
@@ -1518,8 +1534,8 @@ type WorkOrder struct {
 	ContactPerson           *string   `json:"contact_person"`
 	SupplierAddress         *string   `json:"supplier_address"`
 	SupplierPhone           *string   `json:"supplier_phone"`
-	ContractType            string    `json:"contract_type"` // LABOR_ONLY | LABOR_MATERIAL
-	WorkSystem              []string  `json:"work_system"`   // text[] — each element P | E | S, at least 1
+	ContractType            string    `json:"contract_type"` // LABOR_MATERIAL | LABOR_ONLY | RENTAL | SERVICE
+	WorkSystem              []string  `json:"work_system"`   // text[], at least 1; new/edited docs: M-prefixed job codes (MP..MH); old docs may hold P | E | S
 	ContractDescription     *string   `json:"contract_description"`
 	ContractAmount          float64   `json:"contract_amount"`
 	VatRate                 float64   `json:"vat_rate"`
@@ -1577,7 +1593,8 @@ type CreateWorkOrderRequest struct {
 	Status              *string  `json:"status,omitempty"`
 	WoDate              *string  `json:"wo_date"`
 	EmployerName        string   `json:"employer_name" validate:"required"`
-	ProjectCode         *string  `json:"project_code"`
+	ProjectCode         *string  `json:"project_code"`      // exactly one of project_code / project_name_text
+	ProjectNameText     *string  `json:"project_name_text"` // free-text project name (varchar 200)
 	ProjectScopeText    *string  `json:"project_scope_text"`
 	SupplierCode        *string  `json:"supplier_code"`
 	SupplierID          *int64   `json:"supplier_id,omitempty"`
@@ -1585,8 +1602,8 @@ type CreateWorkOrderRequest struct {
 	ContactPerson       *string  `json:"contact_person"`
 	SupplierAddress     *string  `json:"supplier_address"`
 	SupplierPhone       *string  `json:"supplier_phone"`
-	ContractType        string   `json:"contract_type" validate:"required,oneof=LABOR_ONLY LABOR_MATERIAL"`
-	WorkSystem          []string `json:"work_system"` // at least 1 of P | E | S; validated in validateWorkOrderRequest
+	ContractType        string   `json:"contract_type" validate:"required"` // allowed values: woContractTypes in handlers/work_order.go
+	WorkSystem          []string `json:"work_system"`                       // at least 1 M-prefixed job code; validated in validateWorkOrderRequest
 	ContractDescription *string  `json:"contract_description"` // free text
 	ContractAmount      float64  `json:"contract_amount" validate:"required,gt=0"`
 	VatRate             *float64 `json:"vat_rate"`
@@ -1607,6 +1624,8 @@ type CreateWorkOrderRequest struct {
 	SectionHeadID       *int64   `json:"section_head_id"`
 	AuthorizedBy        *int64   `json:"authorized_by"`
 	Remarks             *string  `json:"remarks"`
+	// SubcontractorSignedName is plain free text, nullable; never auto-filled by the backend.
+	SubcontractorSignedName *string `json:"subcontractor_signed_name"`
 
 	// Line items + header discount/VAT/WHT flags — mirrors PO's use_discount/discount_type/
 	// use_vat/use_wht + purchase_order_line structure, with cost_code replacing mat_code.

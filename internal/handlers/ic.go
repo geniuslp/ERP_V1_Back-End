@@ -996,9 +996,9 @@ type ICReceiveLine struct {
 	CostSubgroupName *string `json:"cost_subgroup_name"`
 }
 
-const icReceiveLinesQuery = `
+var icReceiveLinesQuery = `
 	SELECT pol.id, pol.line_no,
-	       csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code,
+	       ` + costCodeSQL("csub","cj","cg","cs") + `,
 	       pol.mat_code,
 	       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
 	       pol.description,
@@ -1455,7 +1455,7 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 
 	if orderType == "cost" {
 		rows, err := h.db.Query(ctx, `
-			SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code,
+			SELECT ` + costCodeSQL("csub","cj","cg","cs") + `,
 			       t.qty, pool.mat_code, pool.item_name, COALESCE(u.unit_name, pool.unit), COALESCE(pol.unit_price, 0),
 			       cg.group_name, cg.group_code, cs.subgroup_name
 			FROM ic_project_receipt_pool_transaction t
@@ -1501,7 +1501,7 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	// 2026-09-29), but would pick an arbitrary line's price if that ever changes; adding a
 	// po_line_id column to stock_transaction would remove the ambiguity if it becomes a problem.
 	scopedRows, err := h.db.Query(ctx, `
-		SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
+		SELECT ` + costCodeSQL("csub","cj","cg","cs") + ` AS cost_code,
 		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty,
 		       cg.group_name, cg.group_code, cs.subgroup_name
 		FROM stock_transaction st
@@ -1543,7 +1543,7 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 	// Nothing linked to this document specifically — fall back to this PO's still-unlinked
 	// (receive_document_id IS NULL) rows only, never rows already linked to a different document.
 	rows, err := h.db.Query(ctx, `
-		SELECT csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code AS cost_code,
+		SELECT ` + costCodeSQL("csub","cj","cg","cs") + ` AS cost_code,
 		       si.mat_code, si.item_name, u.unit_name, COALESCE(pol.unit_price, 0), st.qty,
 		       cg.group_name, cg.group_code, cs.subgroup_name
 		FROM stock_transaction st
@@ -1808,9 +1808,9 @@ type ICReturnLine struct {
 	CostSubgroupName *string `json:"cost_subgroup_name"`
 }
 
-const icReturnLinesQuery = `
+var icReturnLinesQuery = `
 	SELECT pol.id, pol.line_no,
-	       csub.subject_code || cj.job_code || cg.group_code || cs.subgroup_code,
+	       ` + costCodeSQL("csub","cj","cg","cs") + `,
 	       pol.mat_code,
 	       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
 	       pol.description,

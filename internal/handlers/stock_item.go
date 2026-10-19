@@ -146,7 +146,7 @@ func (h *StockItemHandler) List(c *fiber.Ctx) error {
 		       si.is_active, si.created_at, si.updated_at,
 		       (SELECT file_path FROM stock_item_image
 		        WHERE item_id = si.id AND is_primary = true LIMIT 1) AS thumbnail_url,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code
+		       ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code
 		FROM stock_item si
 		LEFT JOIN stock_category sc ON sc.id = si.category_id
 		LEFT JOIN material_code mc  ON mc.mat_code = si.mat_code
@@ -682,26 +682,29 @@ func (h *StockItemHandler) ImportExcel(c *fiber.Ctx) error {
 	costSubgroupByCode := map[string]int64{}
 	if len(costCodes) > 0 {
 		dbRows, qerr := h.db.Query(ctx, `
-			SELECT csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+			SELECT ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
+			       ` + costCodeLegacySQL("csub","cj","cg","csg") + ` AS legacy_code,
 			       csg.id
 			FROM cost_subgroup csg
 			JOIN cost_group   cg   ON cg.id   = csg.group_id
 			JOIN cost_job     cj   ON cj.id   = cg.job_id
 			JOIN cost_subject csub ON csub.id = cj.subject_id
-			WHERE csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code = ANY($1)`,
+			WHERE ` + costCodeSQL("csub","cj","cg","csg") + ` = ANY($1)
+			   OR ` + costCodeLegacySQL("csub","cj","cg","csg") + ` = ANY($1)`,
 			costCodes,
 		)
 		if qerr != nil {
 			return qerr
 		}
 		for dbRows.Next() {
-			var code string
+			var code, legacy string
 			var id int64
-			if err := dbRows.Scan(&code, &id); err != nil {
+			if err := dbRows.Scan(&code, &legacy, &id); err != nil {
 				dbRows.Close()
 				return err
 			}
 			costSubgroupByCode[code] = id
+			costSubgroupByCode[legacy] = id // old-style input (OHG100100) keeps resolving
 		}
 		dbRows.Close()
 	}

@@ -77,7 +77,7 @@ func (h *ProjectOverviewHandler) Search(c *fiber.Ctx) error {
 	lineRows, err := h.db.Query(ctx, `
 		SELECT po.id, po.po_no, po.project_code, pj.project_name,
 		       pol.mat_code, mn.mat_name,
-		       csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+		       ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
 		       pol.qty_ordered, pol.unit_price, pol.amount
 		FROM purchase_order_line pol
 		JOIN purchase_order po ON po.id = pol.po_id
@@ -91,7 +91,7 @@ func (h *ProjectOverviewHandler) Search(c *fiber.Ctx) error {
 		WHERE po.status = 'APPROVED'
 		  AND (
 		    pol.mat_code ILIKE $1
-		    OR (csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code) ILIKE $1
+		    OR ` + costCodeMatchSQL("$1","csub","cj","cg","csg") + `
 		  )
 		ORDER BY po.created_at DESC
 		LIMIT 20`, like)

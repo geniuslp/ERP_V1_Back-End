@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -271,12 +272,12 @@ func (h *CostCodeHandler) DeactivateGroup(c *fiber.Ctx) error {
 
 // ListSubgroupsByGroup godoc
 // @Summary      List cost subgroups filtered by group_id
-// @Description  Rows keep their keys (id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at) and gain is_head (bool, always present). Head (roll-up) subgroups are hidden unless include_head=true; the master cost-code page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id}, .../{id}/deactivate and .../{id}/head.
+// @Description  Rows keep their keys (id, group_id, subgroup_code, subgroup_name, is_active, created_at, updated_at) and gain is_head and is_major (bool, always present). Head (roll-up) and Major subgroups are hidden unless include_head=true (which returns both); the master cost-code page sends include_head=true. The row's id is the id used by PATCH .../subgroups/{id}, .../{id}/deactivate and .../{id}/head.
 // @Tags         CostCode
 // @Security     BearerAuth
 // @Produce      json
 // @Param        group_id      query  int   false  "group_id filter"
-// @Param        include_head  query  bool  false  "true = also return Head subgroups (default false hides them)"
+// @Param        include_head  query  bool  false  "true = also return Head AND Major subgroups (default false hides both)"
 // @Success      200  {object}  fiber.Map
 // @Router       /master/cost-code/subgroups [get]
 func (h *CostCodeHandler) ListSubgroupsByGroup(c *fiber.Ctx) error {
@@ -285,9 +286,9 @@ func (h *CostCodeHandler) ListSubgroupsByGroup(c *fiber.Ctx) error {
 
 	// $1 = group_id (0 = all groups), $2 = include_head. Ordering unchanged.
 	rows, err := h.db.Query(context.Background(),
-		`SELECT id, group_id, subgroup_code, subgroup_name, is_active, is_head, created_at, updated_at
+		`SELECT id, group_id, subgroup_code, subgroup_name, is_active, is_head, is_major, created_at, updated_at
 		 FROM cost_subgroup
-		 WHERE ($1::int = 0 OR group_id = $1) AND ($2::bool OR NOT is_head)
+		 WHERE ($1::int = 0 OR group_id = $1) AND ($2::bool OR (NOT is_head AND NOT is_major))
 		 ORDER BY subgroup_code`, groupID, includeHead)
 	if err != nil {
 		return err
@@ -301,13 +302,14 @@ func (h *CostCodeHandler) ListSubgroupsByGroup(c *fiber.Ctx) error {
 		SubgroupName string    `json:"subgroup_name"`
 		IsActive     bool      `json:"is_active"`
 		IsHead       bool      `json:"is_head"`
+		IsMajor      bool      `json:"is_major"`
 		CreatedAt    time.Time `json:"created_at"`
 		UpdatedAt    time.Time `json:"updated_at"`
 	}
-	var items []subgroup
+	items := []subgroup{}
 	for rows.Next() {
 		var s subgroup
-		if err := rows.Scan(&s.ID, &s.GroupID, &s.SubgroupCode, &s.SubgroupName, &s.IsActive, &s.IsHead, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.GroupID, &s.SubgroupCode, &s.SubgroupName, &s.IsActive, &s.IsHead, &s.IsMajor, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return err
 		}
 		items = append(items, s)
@@ -440,17 +442,18 @@ type CostCodeFull struct {
 	SubgroupName string `json:"subgroup_name"`
 	IsActive     bool   `json:"is_active"`
 	IsHead       bool   `json:"is_head"` // Head = roll-up node, not selectable on documents
+	IsMajor      bool   `json:"is_major"` // Major = top roll-up above Head (one per job), not selectable
 }
 
-const costCodeFullQuery = `
+var costCodeFullQuery = `
 	SELECT
 		sg.id,
-		sub.subject_code || j.job_code || g.group_code || sg.subgroup_code AS cost_code,
+		` + costCodeSQL("sub","j","g","sg") + ` AS cost_code,
 		sub.subject_code, sub.subject_name,
 		j.job_code, j.job_name,
 		g.group_code, g.group_name,
 		sg.subgroup_code, sg.subgroup_name,
-		sg.is_active, sg.is_head
+		sg.is_active, sg.is_head, sg.is_major
 	FROM cost_subgroup sg
 	JOIN cost_group g ON g.id = sg.group_id
 	JOIN cost_job j ON j.id = g.job_id
@@ -464,14 +467,14 @@ const costCodeFullQuery = `
 // @Security     BearerAuth
 // @Produce      json
 // @Param        scope  query  string  false  "oh = only OH/General active subgroups"
-// @Param        include_head  query  bool  false  "true = also return Head (roll-up) subgroups; default false hides them. Every row carries is_head."
+// @Param        include_head  query  bool  false  "true = also return Head AND Major subgroups; default false hides both. Every row carries is_head and is_major."
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
 // @Router       /master/cost-code/full [get]
 func (h *CostCodeHandler) ListFull(c *fiber.Ctx) error {
 	// Head subgroups (is_head) are roll-up nodes, not selectable: hidden unless include_head=true
 	// (used by the master cost-code page).
-	headFilter := ` NOT sg.is_head`
+	headFilter := ` NOT sg.is_head AND NOT sg.is_major`
 	if c.QueryBool("include_head", false) {
 		headFilter = ` TRUE`
 	}
@@ -489,12 +492,12 @@ func (h *CostCodeHandler) ListFull(c *fiber.Ctx) error {
 	}
 	defer rows.Close()
 
-	var items []CostCodeFull
+	items := []CostCodeFull{}
 	for rows.Next() {
 		var f CostCodeFull
 		if err := rows.Scan(&f.SubgroupID, &f.CostCode, &f.SubjectCode, &f.SubjectName,
 			&f.JobCode, &f.JobName, &f.GroupCode, &f.GroupName,
-			&f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead); err != nil {
+			&f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead, &f.IsMajor); err != nil {
 			return err
 		}
 		items = append(items, f)
@@ -547,7 +550,7 @@ func (h *CostCodeHandler) ExportCostCode(c *fiber.Ctx) error {
 		var fr CostCodeFull
 		if err := rows.Scan(&fr.SubgroupID, &fr.CostCode, &fr.SubjectCode, &fr.SubjectName,
 			&fr.JobCode, &fr.JobName, &fr.GroupCode, &fr.GroupName,
-			&fr.SubgroupCode, &fr.SubgroupName, &fr.IsActive, &fr.IsHead); err != nil {
+			&fr.SubgroupCode, &fr.SubgroupName, &fr.IsActive, &fr.IsHead, &fr.IsMajor); err != nil {
 			return err
 		}
 		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIdx), fr.SubjectCode)
@@ -803,8 +806,9 @@ func (h *CostCodeHandler) ListCostCode(c *fiber.Ctx) error {
 			`(sub.subject_code ILIKE '%%'||$%[1]d||'%%' OR sub.subject_name ILIKE '%%'||$%[1]d||'%%'
 			  OR j.job_code ILIKE '%%'||$%[1]d||'%%' OR j.job_name ILIKE '%%'||$%[1]d||'%%'
 			  OR g.group_code ILIKE '%%'||$%[1]d||'%%' OR g.group_name ILIKE '%%'||$%[1]d||'%%'
-			  OR sg.subgroup_code ILIKE '%%'||$%[1]d||'%%' OR sg.subgroup_name ILIKE '%%'||$%[1]d||'%%')`,
-			idx))
+			  OR sg.subgroup_code ILIKE '%%'||$%[1]d||'%%' OR sg.subgroup_name ILIKE '%%'||$%[1]d||'%%'
+			  OR %[2]s)`,
+			idx, costCodeMatchSQL(fmt.Sprintf("('%%'||$%d||'%%')", idx), "sub", "j", "g", "sg")))
 		args = append(args, q)
 		idx++
 	}
@@ -826,7 +830,7 @@ func (h *CostCodeHandler) ListCostCode(c *fiber.Ctx) error {
 	selectArgs := append(append([]interface{}{}, args...), pageSize, offset)
 	rows, err := h.db.Query(context.Background(),
 		fmt.Sprintf(`SELECT
-			sub.subject_code || j.job_code || g.group_code || sg.subgroup_code AS cost_code,
+			` + costCodeSQL("sub","j","g","sg") + ` AS cost_code,
 			sub.subject_code, sub.subject_name,
 			j.job_code, j.job_name,
 			g.group_code, g.group_name,
@@ -915,7 +919,7 @@ type CostCodeOption struct {
 
 // GetCostCodeOptions godoc
 // @Summary      Flat list of active cost codes for a PR-line Cost Code dropdown
-// @Description  Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active, non-Head cost_subgroup (Head subgroups are not selectable).
+// @Description  Returns id + combined code (subject+job+group+subgroup) + subgroup_name for every active, non-Head, non-Major cost_subgroup (Head/Major subgroups are not selectable).
 // @Tags         CostCode
 // @Security     BearerAuth
 // @Produce      json
@@ -923,7 +927,7 @@ type CostCodeOption struct {
 // @Router       /master/cost-code/options [get]
 func (h *CostCodeHandler) GetCostCodeOptions(c *fiber.Ctx) error {
 	rows, err := h.db.Query(context.Background(), costCodeFullQuery+`
-		WHERE sg.is_active = true AND NOT sg.is_head
+		WHERE sg.is_active = true AND NOT sg.is_head AND NOT sg.is_major
 		ORDER BY cost_code`)
 	if err != nil {
 		return err
@@ -935,7 +939,7 @@ func (h *CostCodeHandler) GetCostCodeOptions(c *fiber.Ctx) error {
 		var f CostCodeFull
 		if err := rows.Scan(&f.SubgroupID, &f.CostCode, &f.SubjectCode, &f.SubjectName,
 			&f.JobCode, &f.JobName, &f.GroupCode, &f.GroupName,
-			&f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead); err != nil {
+			&f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead, &f.IsMajor); err != nil {
 			return err
 		}
 		opts = append(opts, CostCodeOption{ID: f.SubgroupID, CostCode: f.CostCode, SubgroupName: f.SubgroupName})
@@ -944,6 +948,20 @@ func (h *CostCodeHandler) GetCostCodeOptions(c *fiber.Ctx) error {
 		opts = []CostCodeOption{}
 	}
 	return c.JSON(fiber.Map{"success": true, "data": opts})
+}
+
+// rejectIfHasBudget blocks turning a subgroup into a Head / Major roll-up node while it still
+// holds budget rows (project_cost_budget only allows ITEM subgroups). Plain Thai message, returned
+// before the UPDATE that would otherwise leave an invalid budget row behind.
+func (h *CostCodeHandler) rejectIfHasBudget(ctx context.Context, subgroupID int, kind string) error {
+	var n int64
+	if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM project_cost_budget WHERE cost_subgroup_id = $1`, subgroupID).Scan(&n); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบงบประมาณของ Cost Code ได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if n > 0 {
+		return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("Cost Code นี้มีงบประมาณที่กำหนดไว้แล้ว (%d โครงการ) จึงไม่สามารถกำหนดเป็น %s ได้ กรุณาลบงบประมาณก่อน", n, kind))
+	}
+	return nil
 }
 
 // ─── Head toggle ─────────────────────────────────────────────────────────────
@@ -975,6 +993,15 @@ func (h *CostCodeHandler) SetSubgroupHead(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "is_head (true/false) is required")
 	}
 	ctx := context.Background()
+	if *req.IsHead {
+		if err := h.rejectIfHasBudget(ctx, id, "Head"); err != nil {
+			return err
+		}
+		var isMajor bool
+		if err := h.db.QueryRow(ctx, `SELECT is_major FROM cost_subgroup WHERE id=$1`, id).Scan(&isMajor); err == nil && isMajor {
+			return fiber.NewError(fiber.StatusBadRequest, "รหัสนี้เป็น Major อยู่แล้ว ไม่สามารถกำหนดเป็น Head ได้ กรุณายกเลิก Major ก่อน")
+		}
+	}
 	tag, err := h.db.Exec(ctx, `UPDATE cost_subgroup SET is_head=$1, updated_at=NOW() WHERE id=$2`, *req.IsHead, id)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -985,7 +1012,7 @@ func (h *CostCodeHandler) SetSubgroupHead(c *fiber.Ctx) error {
 	var f CostCodeFull
 	if err := h.db.QueryRow(ctx, costCodeFullQuery+` WHERE sg.id = $1`, id).Scan(
 		&f.SubgroupID, &f.CostCode, &f.SubjectCode, &f.SubjectName, &f.JobCode, &f.JobName,
-		&f.GroupCode, &f.GroupName, &f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead); err != nil {
+		&f.GroupCode, &f.GroupName, &f.SubgroupCode, &f.SubgroupName, &f.IsActive, &f.IsHead, &f.IsMajor); err != nil {
 		return err
 	}
 	var prLines, poLines, materials int64
@@ -1000,5 +1027,98 @@ func (h *CostCodeHandler) SetSubgroupHead(c *fiber.Ctx) error {
 		"subgroup_id": f.SubgroupID, "cost_code": f.CostCode, "subgroup_code": f.SubgroupCode,
 		"subgroup_name": f.SubgroupName, "is_active": f.IsActive, "is_head": f.IsHead,
 		"in_use": fiber.Map{"pr_lines": prLines, "po_lines": poLines, "materials": materials},
+	}})
+}
+
+// ─── Major toggle ────────────────────────────────────────────────────────────
+
+type SetSubgroupMajorReq struct {
+	IsMajor *bool `json:"is_major"`
+}
+
+// SetSubgroupMajor godoc
+// @Summary      Mark / unmark a cost subgroup as Major (top roll-up above Head, one per job; not selectable on documents)
+// @Description  Same access as the Head toggle (JWT only). 400 when the row is a Head (is_head) or when is_major is missing; 409 when the job already has another Major (the message names its displayed cost code) or when the subgroup is already used (in_use). The response carries subgroup_id, is_major and in_use {pr_lines, po_lines, petty_cash_lines, movement_lines, materials}.
+// @Tags         CostCode
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int                  true  "Subgroup ID"
+// @Param        body  body  SetSubgroupMajorReq  true  "is_major"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Failure      409   {object}  fiber.Map
+// @Router       /master/cost-code/subgroups/{id}/major [patch]
+func (h *CostCodeHandler) SetSubgroupMajor(c *fiber.Ctx) error {
+	id, err := c.ParamsInt("id")
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+	var req SetSubgroupMajorReq
+	if err := c.BodyParser(&req); err != nil || req.IsMajor == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "is_major (true/false) is required")
+	}
+	ctx := context.Background()
+
+	var isHead, curMajor bool
+	var jobID int64
+	if err := h.db.QueryRow(ctx, `
+		SELECT sg.is_head, sg.is_major, g.job_id
+		FROM cost_subgroup sg JOIN cost_group g ON g.id = sg.group_id
+		WHERE sg.id = $1`, id).Scan(&isHead, &curMajor, &jobID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fiber.NewError(fiber.StatusNotFound, "subgroup not found")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถอ่านข้อมูล Cost Code ได้ กรุณาลองใหม่อีกครั้ง")
+	}
+
+	var prLines, poLines, pcLines, mvLines, materials int64
+	if err := h.db.QueryRow(ctx, `
+		SELECT (SELECT COUNT(*) FROM purchase_request_line WHERE cost_subgroup_id = $1),
+		       (SELECT COUNT(*) FROM purchase_order_line WHERE cost_subgroup_id = $1),
+		       (SELECT COUNT(*) FROM petty_cash_requisition_line WHERE cost_subgroup_id = $1),
+		       (SELECT COUNT(*) FROM ic_project_movement_line WHERE cost_subgroup_id = $1 OR to_cost_subgroup_id = $1),
+		       (SELECT COUNT(*) FROM material_code WHERE cost_subgroup_id = $1)`, id,
+	).Scan(&prLines, &poLines, &pcLines, &mvLines, &materials); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบการใช้งาน Cost Code ได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	inUse := fiber.Map{"pr_lines": prLines, "po_lines": poLines, "petty_cash_lines": pcLines, "movement_lines": mvLines, "materials": materials}
+
+	if curMajor != *req.IsMajor {
+		if *req.IsMajor && isHead {
+			return fiber.NewError(fiber.StatusBadRequest, "รหัสนี้เป็น Head อยู่แล้ว ไม่สามารถกำหนดเป็น Major ได้ กรุณายกเลิก Head ก่อน")
+		}
+		if *req.IsMajor {
+			if err := h.rejectIfHasBudget(ctx, id, "Major"); err != nil {
+				return err
+			}
+		}
+		if prLines+poLines+pcLines+mvLines+materials > 0 {
+			return fiber.NewError(fiber.StatusConflict, "Cost Code นี้ถูกใช้งานอยู่แล้ว จึงไม่สามารถเปลี่ยนสถานะ Major ได้")
+		}
+		if *req.IsMajor {
+			var other string
+			err := h.db.QueryRow(ctx, `
+				SELECT `+costCodeSQL("sub", "j", "g", "sg")+`
+				FROM cost_subgroup sg
+				JOIN cost_group g ON g.id = sg.group_id
+				JOIN cost_job j ON j.id = g.job_id
+				JOIN cost_subject sub ON sub.id = j.subject_id
+				WHERE g.job_id = $1 AND sg.is_major AND sg.id <> $2
+				ORDER BY sg.id LIMIT 1`, jobID, id).Scan(&other)
+			if err == nil {
+				return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("Job นี้มี Major อยู่แล้ว (%s) กำหนดได้เพียง 1 รายการต่อ Job", other))
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบ Major ของ Job ได้ กรุณาลองใหม่อีกครั้ง")
+			}
+		}
+		if _, err := h.db.Exec(ctx, `UPDATE cost_subgroup SET is_major=$1, updated_at=NOW() WHERE id=$2`, *req.IsMajor, id); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกสถานะ Major ได้ กรุณาลองใหม่อีกครั้ง")
+		}
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"subgroup_id": id, "is_major": *req.IsMajor, "in_use": inUse,
 	}})
 }

@@ -1673,7 +1673,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
                 '[]'
             ) AS referenced_pos,
             prl.cost_subgroup_id,
-            csub.subject_code || cj.job_code || cg.group_code || csg.subgroup_code AS cost_code,
+            ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
             csg.subgroup_name AS cost_subgroup_name,
             cj.job_code AS job_code,
             cj.job_name AS job_name
