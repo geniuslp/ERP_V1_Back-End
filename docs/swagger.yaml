@@ -7932,14 +7932,18 @@ paths:
         STORED code; job Code is FREE TEXT with no validation: comma-separated, each
         value trimmed/upper-cased, empty values dropped, duplicates removed (order
         kept), stored as job_codes ("xx, mp ,ME" -> {XX,MP,ME}); an empty cell gives
-        empty job_codes; project_name required; dates YYYY-MM-DD or DD/MM/YYYY; budget_amount
-        numeric >= 0). Any error -> HTTP 400, nothing created, counter untouched,
-        body {success:false, error:"<first messages>", data:{imported:0, failed:N,
-        errors:[{row, reason:"แถว N: …"}]}} listing ALL row errors. Pass 2 runs one
-        transaction that allocates the numbers and inserts every row (rollback gives
-        the numbers back). job_codes = the parsed list; job_shares are never written.
-        Success: 200 {success:true, count:N, data:{imported, rows:[{row,id,project_code}],
-        errors:[]}}.'
+        empty job_codes; project_name required; start_date/end_date: real Excel date
+        cells (1900 or 1904 system, no day shift) or year-first text 2026-01-01 /
+        2026/01/01 (one-digit month/day ok, spaces/NBSP trimmed); ambiguous forms
+        (01/02/2026), years < 1900 or > 2400 are rejected with "แถว N: วันที่เริ่มต้น|วันที่สิ้นสุดไม่ถูกต้อง
+        (ใช้รูปแบบ 2026-01-01 หรือ 2026/01/01)"; empty = no date; there is no end
+        >= start rule; budget_amount numeric >= 0). Any error -> HTTP 400, nothing
+        created, counter untouched, body {success:false, error:"<first messages>",
+        data:{imported:0, failed:N, errors:[{row, reason:"แถว N: …"}]}} listing ALL
+        row errors. Pass 2 runs one transaction that allocates the numbers and inserts
+        every row (rollback gives the numbers back). job_codes = the parsed list;
+        job_shares are never written. Success: 200 {success:true, count:N, data:{imported,
+        rows:[{row,id,project_code}], errors:[]}}.'
       parameters:
       - description: Excel file (.xlsx)
         in: formData

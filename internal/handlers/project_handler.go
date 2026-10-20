@@ -936,6 +936,21 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 		}
 	}
 
+	// start_date / end_date columns are formatted as Text ("@") so Excel keeps exactly what the user
+	// types ("2026-01-01") instead of converting it; real date cells are still accepted on import.
+	textStyle, err := f.NewStyle(&excelize.Style{NumFmt: 49})
+	if err != nil {
+		return err
+	}
+	if err := f.SetColStyle(sheet, "D:E", textStyle); err != nil {
+		return err
+	}
+	for _, cell := range []string{"D1", "E1"} {
+		if err := f.AddComment(sheet, excelize.Comment{Cell: cell, Text: "รูปแบบ 2026-01-01 หรือ 2026/01/01"}); err != nil {
+			return err
+		}
+	}
+
 	// "job Code" is free text (no dropdown, no validation, no Lookup sheet): several values are typed
 	// comma-separated; a cell comment on the header (not a data row) carries the instruction.
 	if err := f.AddComment(sheet, excelize.Comment{

@@ -97,13 +97,24 @@ func TestProjectImportParsers(t *testing.T) {
 	if got := normImportCustomerCode(" w dt ​"); got != "WDT" {
 		t.Errorf("customer code = %q", got)
 	}
-	for in, want := range map[string]string{"2026-01-31": "2026-01-31", "31/01/2026": "2026-01-31", "1/2/2026": "2026-02-01"} {
-		if got, ok := parseImportDate(in); !ok || got != want {
+	for in, want := range map[string]string{"2026-01-31": "2026-01-31", "2026/1/2": "2026-01-02", " 2026/01/01 ": "2026-01-01"} {
+		if got, ok := parseImportDateText(in); !ok || got != want {
 			t.Errorf("date %q = %q,%v want %q", in, got, ok, want)
 		}
 	}
-	if _, ok := parseImportDate("31/13/2026"); ok {
-		t.Error("invalid date accepted")
+	for _, in := range []string{"01/02/2026", "1-2-2026", "2569-01-01", "1899-12-31", "2026-02-30", "2026-13-01", "20260101", "2026-01-01 10:00"} {
+		if got, ok := parseImportDateText(in); ok {
+			t.Errorf("date %q accepted as %q", in, got)
+		}
+	}
+	if got, ok := parseImportDateSerial(46023, false); !ok || got != "2026-01-01" {
+		t.Errorf("serial 46023 = %q,%v", got, ok)
+	}
+	if got, ok := parseImportDateSerial(46023.99, false); !ok || got != "2026-01-01" {
+		t.Errorf("serial 46023.99 = %q,%v", got, ok)
+	}
+	if got, ok := parseImportDateSerial(46023-1462, true); !ok || got != "2026-01-01" {
+		t.Errorf("1904 serial = %q,%v", got, ok)
 	}
 	for _, h := range []string{"job Code", "job_code", " Job Code* "} {
 		if projectImportHeaderKeys[normImportHeader(h)] != "job_code" {

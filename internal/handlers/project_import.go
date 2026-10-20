@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,17 +78,74 @@ func parseImportJobCodes(raw string) []string {
 	return out
 }
 
-var projectImportDateLayouts = []string{"2006-01-02", "2006/01/02", "02/01/2006", "2/1/2006", "02-01-2006", "2-1-2006"}
+var importDateTextRe = regexp.MustCompile(`^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$`)
 
-// parseImportDate returns the date as YYYY-MM-DD; ok=false when it is none of the accepted layouts.
-func parseImportDate(s string) (string, bool) {
-	s = strings.TrimSpace(s)
-	for _, l := range projectImportDateLayouts {
-		if t, err := time.Parse(l, s); err == nil {
-			return t.Format("2006-01-02"), true
+// importDateOK builds YYYY-MM-DD from y/m/d. Only real calendar days with 1900 <= year <= 2400 pass
+// (2400 is the cut-off that rejects Buddhist years such as 2569).
+func importDateOK(y, m, d int) (string, bool) {
+	if y < 1900 || y > 2400 {
+		return "", false
+	}
+	t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC)
+	if t.Year() != y || int(t.Month()) != m || t.Day() != d {
+		return "", false
+	}
+	return fmt.Sprintf("%04d-%02d-%02d", y, m, d), true
+}
+
+// parseImportDateText accepts ONLY year-first text: "2026-01-01" / "2026/01/01" (one-digit month/day
+// tolerated, surrounding spaces/NBSP trimmed). Ambiguous forms (01/02/2026, 1-2-2026) are rejected.
+func parseImportDateText(s string) (string, bool) {
+	m := importDateTextRe.FindStringSubmatch(normImportSpaces(s))
+	if m == nil {
+		return "", false
+	}
+	y, _ := strconv.Atoi(m[1])
+	mo, _ := strconv.Atoi(m[2])
+	d, _ := strconv.Atoi(m[3])
+	return importDateOK(y, mo, d)
+}
+
+// parseImportDateSerial converts an Excel date serial (1900 or 1904 system) to YYYY-MM-DD using the
+// calendar fields of the serial itself — the time-of-day fraction is dropped and no time zone is
+// applied, so the date can never move a day.
+func parseImportDateSerial(serial float64, date1904 bool) (string, bool) {
+	if math.IsNaN(serial) || serial < 1 || serial > 2958465 {
+		return "", false
+	}
+	t, err := excelize.ExcelDateToTime(math.Floor(serial), date1904)
+	if err != nil {
+		return "", false
+	}
+	return importDateOK(t.Year(), int(t.Month()), t.Day())
+}
+
+// normImportSpaces trims leading/trailing whitespace including NBSP and zero-width characters.
+func normImportSpaces(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return unicode.IsSpace(r) || r == 0x200B || r == 0xFEFF })
+}
+
+// importDateCell reads one start/end date cell straight from the workbook (NOT through GetRows,
+// whose display-formatted text turns a real date into "01-02-26"). present=false for an empty cell;
+// a numeric cell is an Excel date serial, anything else is text. ok=false when present but invalid.
+func importDateCell(xlsx *excelize.File, sheet string, colIdx, rowNo int, date1904 bool) (iso string, present, ok bool) {
+	name, err := excelize.CoordinatesToCellName(colIdx+1, rowNo)
+	if err != nil {
+		return "", false, true
+	}
+	raw, _ := xlsx.GetCellValue(sheet, name, excelize.Options{RawCellValue: true})
+	raw = normImportSpaces(raw)
+	if raw == "" {
+		return "", false, true
+	}
+	if t, _ := xlsx.GetCellType(sheet, name); t != excelize.CellTypeSharedString && t != excelize.CellTypeInlineString {
+		if f, perr := strconv.ParseFloat(raw, 64); perr == nil {
+			iso, ok = parseImportDateSerial(f, date1904)
+			return iso, true, ok
 		}
 	}
-	return "", false
+	iso, ok = parseImportDateText(raw)
+	return iso, true, ok
 }
 
 type projectImportRow struct {
@@ -111,7 +169,7 @@ type projectImportError struct {
 
 // Import godoc
 // @Summary      Bulk import projects from Excel
-// @Description  Sheet 1, row 1 = header; columns are found by HEADER TEXT (case/space/underscore-insensitive), so the order does not matter and unknown/legacy columns are ignored: project_name* , customer_code* , "Project location_code", start_date, end_date, budget_amount, "job Code". A project_code / consultant_name / consultant_phone / responsible_person_name column in an old file is ignored and never written — project_code is always generated exactly like POST /master/projects ({year}-{customer_code}-{NNN} from project_code_year_counter, Asia/Bangkok year). TWO PASSES, ALL-OR-NOTHING: pass 1 validates every row without writing or allocating any number (customer_code is normalised — spaces/NBSP removed, case-insensitive — and resolved with ONE query; it must exist and be active; the project code uses the customer's STORED code; job Code is FREE TEXT with no validation: comma-separated, each value trimmed/upper-cased, empty values dropped, duplicates removed (order kept), stored as job_codes ("xx, mp ,ME" -> {XX,MP,ME}); an empty cell gives empty job_codes; project_name required; dates YYYY-MM-DD or DD/MM/YYYY; budget_amount numeric >= 0). Any error -> HTTP 400, nothing created, counter untouched, body {success:false, error:"<first messages>", data:{imported:0, failed:N, errors:[{row, reason:"แถว N: …"}]}} listing ALL row errors. Pass 2 runs one transaction that allocates the numbers and inserts every row (rollback gives the numbers back). job_codes = the parsed list; job_shares are never written. Success: 200 {success:true, count:N, data:{imported, rows:[{row,id,project_code}], errors:[]}}.
+// @Description  Sheet 1, row 1 = header; columns are found by HEADER TEXT (case/space/underscore-insensitive), so the order does not matter and unknown/legacy columns are ignored: project_name* , customer_code* , "Project location_code", start_date, end_date, budget_amount, "job Code". A project_code / consultant_name / consultant_phone / responsible_person_name column in an old file is ignored and never written — project_code is always generated exactly like POST /master/projects ({year}-{customer_code}-{NNN} from project_code_year_counter, Asia/Bangkok year). TWO PASSES, ALL-OR-NOTHING: pass 1 validates every row without writing or allocating any number (customer_code is normalised — spaces/NBSP removed, case-insensitive — and resolved with ONE query; it must exist and be active; the project code uses the customer's STORED code; job Code is FREE TEXT with no validation: comma-separated, each value trimmed/upper-cased, empty values dropped, duplicates removed (order kept), stored as job_codes ("xx, mp ,ME" -> {XX,MP,ME}); an empty cell gives empty job_codes; project_name required; start_date/end_date: real Excel date cells (1900 or 1904 system, no day shift) or year-first text 2026-01-01 / 2026/01/01 (one-digit month/day ok, spaces/NBSP trimmed); ambiguous forms (01/02/2026), years < 1900 or > 2400 are rejected with "แถว N: วันที่เริ่มต้น|วันที่สิ้นสุดไม่ถูกต้อง (ใช้รูปแบบ 2026-01-01 หรือ 2026/01/01)"; empty = no date; there is no end >= start rule; budget_amount numeric >= 0). Any error -> HTTP 400, nothing created, counter untouched, body {success:false, error:"<first messages>", data:{imported:0, failed:N, errors:[{row, reason:"แถว N: …"}]}} listing ALL row errors. Pass 2 runs one transaction that allocates the numbers and inserts every row (rollback gives the numbers back). job_codes = the parsed list; job_shares are never written. Success: 200 {success:true, count:N, data:{imported, rows:[{row,id,project_code}], errors:[]}}.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       multipart/form-data
@@ -135,7 +193,12 @@ func (h *ProjectHandler) Import(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "ไฟล์ Excel ไม่ถูกต้อง")
 	}
-	sheetRows, err := xlsx.GetRows(xlsx.GetSheetName(0))
+	sheetName := xlsx.GetSheetName(0)
+	date1904 := false
+	if wp, werr := xlsx.GetWorkbookProps(); werr == nil && wp.Date1904 != nil {
+		date1904 = *wp.Date1904
+	}
+	sheetRows, err := xlsx.GetRows(sheetName)
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "ไม่สามารถอ่านชีตแรกของไฟล์ได้")
 	}
@@ -202,13 +265,18 @@ func (h *ProjectHandler) Import(c *fiber.Ctx) error {
 		for _, d := range []struct {
 			key, label string
 			dst        **string
-		}{{"start_date", "วันที่เริ่ม", &r.startDate}, {"end_date", "วันที่สิ้นสุด", &r.endDate}} {
-			if v := cell(raw, d.key); v != "" {
-				if iso, ok := parseImportDate(v); ok {
-					*d.dst = &iso
-				} else {
-					addErr(rowNo, "%s ไม่ถูกต้อง (%s) ใช้รูปแบบ YYYY-MM-DD", d.label, v)
-				}
+		}{{"start_date", "วันที่เริ่มต้น", &r.startDate}, {"end_date", "วันที่สิ้นสุด", &r.endDate}} {
+			idx, has := cols[d.key]
+			if !has {
+				continue
+			}
+			iso, present, ok := importDateCell(xlsx, sheetName, idx, rowNo, date1904)
+			switch {
+			case !present:
+			case ok:
+				*d.dst = &iso
+			default:
+				addErr(rowNo, "%sไม่ถูกต้อง (ใช้รูปแบบ 2026-01-01 หรือ 2026/01/01)", d.label)
 			}
 		}
 		if v := cell(raw, "budget_amount"); v != "" {
