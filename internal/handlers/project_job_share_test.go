@@ -91,7 +91,7 @@ func TestRecodeProjectCode(t *testing.T) {
 }
 
 func TestProjectImportParsers(t *testing.T) {
-	if got := strings.Join(parseImportJobCodes(" mp, ME ,mp;ms/ MS ,, "), "|"); got != "MP|ME|MS" {
+	if got := strings.Join(parseImportJobCodes("xx, mp ,ME,,mp"), "|"); got != "XX|MP|ME" {
 		t.Errorf("job codes = %q", got)
 	}
 	if got := normImportCustomerCode(" w dt ​"); got != "WDT" {

@@ -60,15 +60,13 @@ func normImportCustomerCode(s string) string {
 	return b.String()
 }
 
-// parseImportJobCodes splits the "job Code" cell on , / ; and whitespace, upper-cases, trims and
-// de-duplicates (first occurrence kept, order kept).
+// parseImportJobCodes parses the free-text "job Code" cell: split on ',', trim, drop empty
+// values, upper-case, de-duplicate keeping order. There is NO validation against JobTypes — whatever
+// the user types is stored. An empty cell gives an empty (nil) list.
 func parseImportJobCodes(raw string) []string {
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == '/' || r == ';' || r == 0x3001 || unicode.IsSpace(r)
-	})
 	seen := map[string]bool{}
 	var out []string
-	for _, p := range parts {
+	for _, p := range strings.Split(raw, ",") {
 		p = strings.ToUpper(strings.TrimSpace(p))
 		if p == "" || seen[p] {
 			continue
@@ -113,7 +111,7 @@ type projectImportError struct {
 
 // Import godoc
 // @Summary      Bulk import projects from Excel
-// @Description  Sheet 1, row 1 = header; columns are found by HEADER TEXT (case/space/underscore-insensitive), so the order does not matter and unknown/legacy columns are ignored: project_name* , customer_code* , "Project location_code", start_date, end_date, budget_amount, "job Code". A project_code / consultant_name / consultant_phone / responsible_person_name column in an old file is ignored and never written — project_code is always generated exactly like POST /master/projects ({year}-{customer_code}-{NNN} from project_code_year_counter, Asia/Bangkok year). TWO PASSES, ALL-OR-NOTHING: pass 1 validates every row without writing or allocating any number (customer_code is normalised — spaces/NBSP removed, case-insensitive — and resolved with ONE query; it must exist and be active; the project code uses the customer's STORED code; job Code accepts "MP,ME" with spaces/lower case/duplicates tolerated and each code must be in JobTypes; project_name required; dates YYYY-MM-DD or DD/MM/YYYY; budget_amount numeric >= 0). Any error -> HTTP 400, nothing created, counter untouched, body {success:false, error:"<first messages>", data:{imported:0, failed:N, errors:[{row, reason:"แถว N: …"}]}} listing ALL row errors. Pass 2 runs one transaction that allocates the numbers and inserts every row (rollback gives the numbers back). job_codes = the normalised list; job_shares are not written. Success: 200 {success:true, count:N, data:{imported, rows:[{row,id,project_code}], errors:[]}}.
+// @Description  Sheet 1, row 1 = header; columns are found by HEADER TEXT (case/space/underscore-insensitive), so the order does not matter and unknown/legacy columns are ignored: project_name* , customer_code* , "Project location_code", start_date, end_date, budget_amount, "job Code". A project_code / consultant_name / consultant_phone / responsible_person_name column in an old file is ignored and never written — project_code is always generated exactly like POST /master/projects ({year}-{customer_code}-{NNN} from project_code_year_counter, Asia/Bangkok year). TWO PASSES, ALL-OR-NOTHING: pass 1 validates every row without writing or allocating any number (customer_code is normalised — spaces/NBSP removed, case-insensitive — and resolved with ONE query; it must exist and be active; the project code uses the customer's STORED code; job Code is FREE TEXT with no validation: comma-separated, each value trimmed/upper-cased, empty values dropped, duplicates removed (order kept), stored as job_codes ("xx, mp ,ME" -> {XX,MP,ME}); an empty cell gives empty job_codes; project_name required; dates YYYY-MM-DD or DD/MM/YYYY; budget_amount numeric >= 0). Any error -> HTTP 400, nothing created, counter untouched, body {success:false, error:"<first messages>", data:{imported:0, failed:N, errors:[{row, reason:"แถว N: …"}]}} listing ALL row errors. Pass 2 runs one transaction that allocates the numbers and inserts every row (rollback gives the numbers back). job_codes = the parsed list; job_shares are never written. Success: 200 {success:true, count:N, data:{imported, rows:[{row,id,project_code}], errors:[]}}.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       multipart/form-data
@@ -222,11 +220,6 @@ func (h *ProjectHandler) Import(c *fiber.Ctx) error {
 			}
 		}
 		r.jobCodes = parseImportJobCodes(cell(raw, "job_code"))
-		for _, jc := range r.jobCodes {
-			if !validJobCodes[jc] {
-				addErr(rowNo, "ไม่พบประเภทงาน %s", jc)
-			}
-		}
 		rows = append(rows, r)
 	}
 	if len(rows) == 0 {

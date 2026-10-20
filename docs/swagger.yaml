@@ -7929,15 +7929,17 @@ paths:
         pass 1 validates every row without writing or allocating any number (customer_code
         is normalised — spaces/NBSP removed, case-insensitive — and resolved with
         ONE query; it must exist and be active; the project code uses the customer''s
-        STORED code; job Code accepts "MP,ME" with spaces/lower case/duplicates tolerated
-        and each code must be in JobTypes; project_name required; dates YYYY-MM-DD
-        or DD/MM/YYYY; budget_amount numeric >= 0). Any error -> HTTP 400, nothing
-        created, counter untouched, body {success:false, error:"<first messages>",
-        data:{imported:0, failed:N, errors:[{row, reason:"แถว N: …"}]}} listing ALL
-        row errors. Pass 2 runs one transaction that allocates the numbers and inserts
-        every row (rollback gives the numbers back). job_codes = the normalised list;
-        job_shares are not written. Success: 200 {success:true, count:N, data:{imported,
-        rows:[{row,id,project_code}], errors:[]}}.'
+        STORED code; job Code is FREE TEXT with no validation: comma-separated, each
+        value trimmed/upper-cased, empty values dropped, duplicates removed (order
+        kept), stored as job_codes ("xx, mp ,ME" -> {XX,MP,ME}); an empty cell gives
+        empty job_codes; project_name required; dates YYYY-MM-DD or DD/MM/YYYY; budget_amount
+        numeric >= 0). Any error -> HTTP 400, nothing created, counter untouched,
+        body {success:false, error:"<first messages>", data:{imported:0, failed:N,
+        errors:[{row, reason:"แถว N: …"}]}} listing ALL row errors. Pass 2 runs one
+        transaction that allocates the numbers and inserts every row (rollback gives
+        the numbers back). job_codes = the parsed list; job_shares are never written.
+        Success: 200 {success:true, count:N, data:{imported, rows:[{row,id,project_code}],
+        errors:[]}}.'
       parameters:
       - description: Excel file (.xlsx)
         in: formData
@@ -7967,10 +7969,9 @@ paths:
         "job Code" (project_code, consultant_name, consultant_phone and responsible_person_name
         were removed — the code is generated on import). Two sample rows use real
         customer_code values from the customer table (first two active customers),
-        job codes "MP,ME" and "MS". A hidden "Lookup" sheet is generated from JobTypes
-        (job_code + job_name, never hardcoded) and bound as a dropdown on the "job
-        Code" column; the cell comment on that header says multiple codes are typed
-        comma-separated.'
+        job codes "MP,ME" and "MS". The "job Code" column is free text: no dropdown/data
+        validation and no Lookup sheet (the template has the single sheet "Project");
+        a header comment says multiple codes are typed comma-separated.'
       produces:
       - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
       responses:

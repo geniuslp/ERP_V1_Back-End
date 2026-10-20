@@ -865,7 +865,7 @@ func (h *ProjectHandler) SoftDelete(c *fiber.Ctx) error {
 
 // ImportTemplate godoc
 // @Summary      Download the Excel template for project import
-// @Description  Generated on the fly. Sheet "Project", row 1 = header: project_name, customer_code, "Project location_code", start_date, end_date, budget_amount, "job Code" (project_code, consultant_name, consultant_phone and responsible_person_name were removed — the code is generated on import). Two sample rows use real customer_code values from the customer table (first two active customers), job codes "MP,ME" and "MS". A hidden "Lookup" sheet is generated from JobTypes (job_code + job_name, never hardcoded) and bound as a dropdown on the "job Code" column; the cell comment on that header says multiple codes are typed comma-separated.
+// @Description  Generated on the fly. Sheet "Project", row 1 = header: project_name, customer_code, "Project location_code", start_date, end_date, budget_amount, "job Code" (project_code, consultant_name, consultant_phone and responsible_person_name were removed — the code is generated on import). Two sample rows use real customer_code values from the customer table (first two active customers), job codes "MP,ME" and "MS". The "job Code" column is free text: no dropdown/data validation and no Lookup sheet (the template has the single sheet "Project"); a header comment says multiple codes are typed comma-separated.
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
@@ -873,8 +873,6 @@ func (h *ProjectHandler) SoftDelete(c *fiber.Ctx) error {
 // @Failure      500  {object}  fiber.Map
 // @Router       /master/projects/import/template [get]
 func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
-	jobs := projectJobTypeOptions()
-
 	f := excelize.NewFile()
 	defer f.Close()
 
@@ -938,22 +936,11 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 		}
 	}
 
-	_, jobRange, _, err := writeLookupSheet(f, nil, jobs, nil)
-	if err != nil {
-		return err
-	}
-	if err := addDropdown(f, sheet, "G2:G1000", jobRange); err != nil {
-		return err
-	}
-
-	// Excel's dropdown/data-validation only lets a cell hold one value from the list — there's
-	// no built-in multi-select. job_code needs to accept several codes per project (see the
-	// example row's "MP,ME"), so the dropdown here is a reference list only, not the actual
-	// input method: type the codes directly into the cell, comma-separated. A cell comment
-	// (not a data row) carries this instruction so it never pollutes the parseable data range.
+	// "job Code" is free text (no dropdown, no validation, no Lookup sheet): several values are typed
+	// comma-separated; a cell comment on the header (not a data row) carries the instruction.
 	if err := f.AddComment(sheet, excelize.Comment{
 		Cell: "G1",
-		Text: "พิมพ์ได้หลายค่า คั่นด้วยจุลภาค เช่น MP,ME,MS (ดรอปดาวน์เลือกได้ทีละค่าเท่านั้น)",
+		Text: "พิมพ์ได้หลายค่า คั่นด้วยจุลภาค เช่น MP,ME,MS",
 	}); err != nil {
 		return err
 	}
