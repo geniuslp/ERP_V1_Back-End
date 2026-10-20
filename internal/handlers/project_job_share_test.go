@@ -89,3 +89,25 @@ func TestRecodeProjectCode(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectImportParsers(t *testing.T) {
+	if got := strings.Join(parseImportJobCodes(" mp, ME ,mp;ms/ MS ,, "), "|"); got != "MP|ME|MS" {
+		t.Errorf("job codes = %q", got)
+	}
+	if got := normImportCustomerCode(" w dt ​"); got != "WDT" {
+		t.Errorf("customer code = %q", got)
+	}
+	for in, want := range map[string]string{"2026-01-31": "2026-01-31", "31/01/2026": "2026-01-31", "1/2/2026": "2026-02-01"} {
+		if got, ok := parseImportDate(in); !ok || got != want {
+			t.Errorf("date %q = %q,%v want %q", in, got, ok, want)
+		}
+	}
+	if _, ok := parseImportDate("31/13/2026"); ok {
+		t.Error("invalid date accepted")
+	}
+	for _, h := range []string{"job Code", "job_code", " Job Code* "} {
+		if projectImportHeaderKeys[normImportHeader(h)] != "job_code" {
+			t.Errorf("header %q not mapped", h)
+		}
+	}
+}

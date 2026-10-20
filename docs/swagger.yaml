@@ -7919,20 +7919,25 @@ paths:
     post:
       consumes:
       - multipart/form-data
-      description: 'Column layout (row 1 = header, data starts row 2): project_code*,
-        project_name*, customer_code, "Project location_code", start_date, end_date,
-        budget_amount, "job Code", consultant_name, consultant_phone, responsible_person_name
-        — matches the reference template used by other teams literally, including
-        that header spacing/casing. No dept_code or credit columns. Applies the same
-        validation as POST /master/projects (responsible_person_name required, status
-        defaults to ACTIVE, budget_amount >= 0). customer_code (if given) is resolved
-        against the customer table to set customer_id — an unresolvable code fails
-        that row. job_code accepts one or more comma-separated codes from the fixed
-        JobTypes enum (same list validated on POST /master/projects'' job_codes[],
-        NOT the unrelated cost_job master table) and is written to project.job_codes[].
-        Gives a clear per-row reason on failure instead of a generic "invalid". Processes
-        in partial-success mode: valid rows are inserted, invalid rows are skipped
-        and reported. Re-upload only the failed rows after fixing them.'
+      description: 'Sheet 1, row 1 = header; columns are found by HEADER TEXT (case/space/underscore-insensitive),
+        so the order does not matter and unknown/legacy columns are ignored: project_name*
+        , customer_code* , "Project location_code", start_date, end_date, budget_amount,
+        "job Code". A project_code / consultant_name / consultant_phone / responsible_person_name
+        column in an old file is ignored and never written — project_code is always
+        generated exactly like POST /master/projects ({year}-{customer_code}-{NNN}
+        from project_code_year_counter, Asia/Bangkok year). TWO PASSES, ALL-OR-NOTHING:
+        pass 1 validates every row without writing or allocating any number (customer_code
+        is normalised — spaces/NBSP removed, case-insensitive — and resolved with
+        ONE query; it must exist and be active; the project code uses the customer''s
+        STORED code; job Code accepts "MP,ME" with spaces/lower case/duplicates tolerated
+        and each code must be in JobTypes; project_name required; dates YYYY-MM-DD
+        or DD/MM/YYYY; budget_amount numeric >= 0). Any error -> HTTP 400, nothing
+        created, counter untouched, body {success:false, error:"<first messages>",
+        data:{imported:0, failed:N, errors:[{row, reason:"แถว N: …"}]}} listing ALL
+        row errors. Pass 2 runs one transaction that allocates the numbers and inserts
+        every row (rollback gives the numbers back). job_codes = the normalised list;
+        job_shares are not written. Success: 200 {success:true, count:N, data:{imported,
+        rows:[{row,id,project_code}], errors:[]}}.'
       parameters:
       - description: Excel file (.xlsx)
         in: formData
@@ -7952,18 +7957,20 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Bulk import projects จาก Excel
+      summary: Bulk import projects from Excel
       tags:
       - Master
   /master/projects/import/template:
     get:
-      description: 'Generates the .xlsx on the fly: sheet "Project" with header row
-        (project_code*, project_name*, customer_code, "Project location_code", start_date,
-        end_date, budget_amount, "job Code", consultant_name, consultant_phone, responsible_person_name
-        — literal spacing/casing to match a reference template already in use by other
-        teams, no dept_code or credit columns) and two example rows. A hidden "Lookup"
-        sheet lists job_code/job_name (the fixed JobTypes enum — NOT cost_job), bound
-        as an Excel dropdown on the "job Code" column.'
+      description: 'Generated on the fly. Sheet "Project", row 1 = header: project_name,
+        customer_code, "Project location_code", start_date, end_date, budget_amount,
+        "job Code" (project_code, consultant_name, consultant_phone and responsible_person_name
+        were removed — the code is generated on import). Two sample rows use real
+        customer_code values from the customer table (first two active customers),
+        job codes "MP,ME" and "MS". A hidden "Lookup" sheet is generated from JobTypes
+        (job_code + job_name, never hardcoded) and bound as a dropdown on the "job
+        Code" column; the cell comment on that header says multiple codes are typed
+        comma-separated.'
       produces:
       - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
       responses:
@@ -7977,7 +7984,7 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: ดาวน์โหลด template Excel สำหรับ import โครงการ
+      summary: Download the Excel template for project import
       tags:
       - Master
   /master/projects/next-code:

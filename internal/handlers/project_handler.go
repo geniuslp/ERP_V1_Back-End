@@ -29,25 +29,6 @@ func NewProjectHandler(db *pgxpool.Pool) *ProjectHandler {
 
 var validProjectStatus = map[string]bool{"ACTIVE": true, "INACTIVE": true, "CLOSED": true}
 
-// isProjectImportRowBlank reports whether every column the Project import reads (project_code
-// through responsible_person_name, i.e. columns 0-10 of the template) is empty — the actual
-// signature of a trailing blank row or the template's notes/legend section. A row with content
-// in any of these columns is real data, even if project_code itself happens to be blank.
-func isProjectImportRowBlank(row []string) bool {
-	for i := 0; i <= 10; i++ {
-		if strings.TrimSpace(cellAt(row, i)) != "" {
-			return false
-		}
-	}
-	return true
-}
-
-// enableImportExistenceChecks gates the Project bulk-import row-level existence/validity checks
-// (customer_code must resolve to a real customer, job_code must be one of the fixed JobTypes).
-// Temporarily off so early data loads aren't rejected for codes not yet set up elsewhere in the
-// system. TODO: re-enable once system goes live.
-const enableImportExistenceChecks = false
-
 // p.owner_name is aliased to project_owner_name in the SELECT below — the real column (added
 // by manual ALTER TABLE) is literally named owner_name, which collides with the unrelated
 // "u.full_name AS owner_name" alias a few tokens later (the joined name behind owner_id,
@@ -400,6 +381,21 @@ func formatProjectCode(year int, customerCode string, no int) string {
 	return fmt.Sprintf("%d-%s-%03d", year, customerCode, no)
 }
 
+// nextProjectCode takes the next running number of the Asia/Bangkok year from
+// project_code_year_counter (inside the caller's transaction, so a rollback gives the number
+// back) and returns {year}-{customer_code}-{NNN}. Shared by Create and the Excel import so the
+// two cannot drift. customerCode must be the customer's STORED customer_code.
+func nextProjectCode(ctx context.Context, tx pgx.Tx, year int, customerCode string) (string, error) {
+	var lastNo int
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO project_code_year_counter (code_year, last_no) VALUES ($1, 1)
+		ON CONFLICT (code_year) DO UPDATE SET last_no = project_code_year_counter.last_no + 1
+		RETURNING last_no`, year).Scan(&lastNo); err != nil {
+		return "", err
+	}
+	return formatProjectCode(year, customerCode, lastNo), nil
+}
+
 // NextCode godoc
 // @Summary      Preview the next project_code (read-only)
 // @Description  Never reserves or writes anything: next_no = project_code_year_counter.last_no (0 if none) + 1 for the current Asia/Bangkok year; the running number is shared by ALL customers and customer_id only supplies the customer_code part. Create still allocates the real code atomically, so the final code can differ if someone else creates a project first.
@@ -522,14 +518,10 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	var id int64
 	var projectCode string
 	for attempt := 0; attempt < 5; attempt++ {
-		var lastNo int
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO project_code_year_counter (code_year, last_no) VALUES ($1, 1)
-			ON CONFLICT (code_year) DO UPDATE SET last_no = project_code_year_counter.last_no + 1
-			RETURNING last_no`, year).Scan(&lastNo); err != nil {
+		var cerr error
+		if projectCode, cerr = nextProjectCode(ctx, tx, year, customerCode); cerr != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 		}
-		projectCode = formatProjectCode(year, customerCode, lastNo)
 
 		sp, err := tx.Begin(ctx)
 		if err != nil {
@@ -871,219 +863,9 @@ func (h *ProjectHandler) SoftDelete(c *fiber.Ctx) error {
 
 // ─── Import ──────────────────────────────────────────────────────────────────
 
-// Import godoc
-// @Summary      Bulk import projects จาก Excel
-// @Description  Column layout (row 1 = header, data starts row 2): project_code*, project_name*, customer_code, "Project location_code", start_date, end_date, budget_amount, "job Code", consultant_name, consultant_phone, responsible_person_name — matches the reference template used by other teams literally, including that header spacing/casing. No dept_code or credit columns. Applies the same validation as POST /master/projects (responsible_person_name required, status defaults to ACTIVE, budget_amount >= 0). customer_code (if given) is resolved against the customer table to set customer_id — an unresolvable code fails that row. job_code accepts one or more comma-separated codes from the fixed JobTypes enum (same list validated on POST /master/projects' job_codes[], NOT the unrelated cost_job master table) and is written to project.job_codes[]. Gives a clear per-row reason on failure instead of a generic "invalid". Processes in partial-success mode: valid rows are inserted, invalid rows are skipped and reported. Re-upload only the failed rows after fixing them.
-// @Tags         Master
-// @Security     BearerAuth
-// @Accept       multipart/form-data
-// @Produce      json
-// @Param        file  formData  file  true  "Excel file (.xlsx)"
-// @Success      200   {object}  fiber.Map
-// @Failure      400   {object}  fiber.Map
-// @Router       /master/projects/import [post]
-func (h *ProjectHandler) Import(c *fiber.Ctx) error {
-	file, err := c.FormFile("file")
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "file is required")
-	}
-	f, err := file.Open()
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "cannot open file")
-	}
-	defer f.Close()
-
-	xlsx, err := excelize.OpenReader(f)
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid excel file")
-	}
-	sheetRows, err := xlsx.GetRows(xlsx.GetSheetName(0))
-	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "cannot read sheet")
-	}
-	if len(sheetRows) < 2 {
-		return fiber.NewError(fiber.StatusBadRequest, "no data rows found")
-	}
-
-	claims := middleware.GetClaims(c)
-	if claims == nil {
-		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
-	}
-	ctx := context.Background()
-
-	jobSet := toSet(projectJobTypeOptions())
-
-	type rowError struct {
-		Row    int    `json:"row"`
-		Reason string `json:"reason"`
-	}
-	type rowSuccess struct {
-		Row         int    `json:"row"`
-		ID          int64  `json:"id"`
-		ProjectCode string `json:"project_code"`
-	}
-	var errs []rowError
-	var oks []rowSuccess
-	rowsInFile := 0
-
-	for i, row := range sheetRows[1:] {
-		rowNo := i + 2 // account for header row
-
-		projectCode := strings.TrimSpace(cellAt(row, 0))
-
-		// A blank project_code alone is NOT enough to conclude "end of data grid" — a stray
-		// separator row, a merged-cell artifact, or an accidental blank in just this one column
-		// must not truncate the rest of a real file (this previously caused later rows to be
-		// silently dropped with zero error reported for them). Only stop when the ENTIRE row is
-		// blank — that's the actual signature of the template's notes/legend section and
-		// trailing blank rows. A row with a blank project_code but content elsewhere is a
-		// genuine error row: report it and keep going.
-		if projectCode == "" && isProjectImportRowBlank(row) {
-			break
-		}
-		rowsInFile++
-		if projectCode == "" {
-			errs = append(errs, rowError{Row: rowNo, Reason: "project_code is required"})
-			continue
-		}
-
-		projectName := strings.TrimSpace(cellAt(row, 1))
-		customerCode := strings.TrimSpace(cellAt(row, 2))
-		locationCode := nullableCell(cellAt(row, 3))
-		startDate := nullableCell(cellAt(row, 4))
-		endDate := nullableCell(cellAt(row, 5))
-		budgetStr := strings.TrimSpace(cellAt(row, 6))
-		jobCodeRaw := strings.TrimSpace(cellAt(row, 7))
-		consultantName := nullableCell(cellAt(row, 8))
-		consultantPhone := nullableCell(cellAt(row, 9))
-		responsiblePersonName := strings.TrimSpace(cellAt(row, 10))
-
-		budgetAmount := 0.0
-		if budgetStr != "" {
-			var perr error
-			// Strip thousand-separator commas (e.g. "390,000.00" / "75,300,000.00") before
-			// parsing — a plain number with no commas ("390000") is unaffected by ReplaceAll.
-			budgetAmount, perr = strconv.ParseFloat(strings.ReplaceAll(budgetStr, ",", ""), 64)
-			if perr != nil {
-				errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("invalid budget_amount: %q", budgetStr)})
-				continue
-			}
-		}
-
-		// job_codes[] is the exact same storage mechanism the normal multi-select Create/Update
-		// form uses (see CreateProjectReq.JobCodes / UpdateProjectReq.JobCodes, written straight
-		// to the project.job_codes array column) — just split from one cell instead of collected
-		// from multiple checkbox selections. Accepts both "," and "/" as separators (the comma
-		// convention from this template's own dropdown/comment, and "/" as seen in reference
-		// files like "MP / ME / MS / MG / OH").
-		var jobCodes []string
-		if jobCodeRaw != "" {
-			badCode := ""
-			for _, jc := range strings.Split(strings.ReplaceAll(jobCodeRaw, "/", ","), ",") {
-				jc = strings.TrimSpace(jc)
-				if jc == "" {
-					continue
-				}
-				if enableImportExistenceChecks && !jobSet[jc] { // TODO: re-enable once system goes live
-					badCode = jc
-					break
-				}
-				jobCodes = append(jobCodes, jc)
-			}
-			if badCode != "" {
-				errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("job_code %q is not a valid option", badCode)})
-				continue
-			}
-		}
-
-		// validateProjectCore also re-validates jobCodes against the fixed JobTypes set
-		// internally (validateJobCodes) — when existence checks are disabled, skip that by
-		// validating with an empty slice here instead of duplicating validateProjectCore's other
-		// required-field checks. jobCodes itself (parsed above) is still what gets inserted.
-		jobCodesForValidation := jobCodes
-		if !enableImportExistenceChecks { // TODO: re-enable once system goes live
-			jobCodesForValidation = nil
-		}
-		status, verr := validateProjectCore(projectCode, projectName, responsiblePersonName, "", budgetAmount, jobCodesForValidation)
-		if verr != nil {
-			errs = append(errs, rowError{Row: rowNo, Reason: verr.Error()})
-			continue
-		}
-
-		var codeExists bool
-		if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code = $1)`, projectCode).Scan(&codeExists); err != nil {
-			errs = append(errs, rowError{Row: rowNo, Reason: err.Error()})
-			continue
-		}
-		if codeExists {
-			errs = append(errs, rowError{Row: rowNo, Reason: "project_code already exists"})
-			continue
-		}
-
-		var customerID *int64
-		if customerCode != "" && enableImportExistenceChecks { // TODO: re-enable once system goes live
-			var cid int64
-			if err := h.db.QueryRow(ctx, `SELECT cus_id FROM customer WHERE customer_code = $1`, customerCode).Scan(&cid); err != nil {
-				errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("customer_code %q not found", customerCode)})
-				continue
-			}
-			customerID = &cid
-		}
-		// With existence checks disabled, an unresolvable customer_code leaves customerID nil
-		// (project.customer_id is nullable) rather than failing the row.
-
-		var id int64
-		err := h.db.QueryRow(ctx, `
-			INSERT INTO project
-			    (project_code, project_name, location_code, customer_id, responsible_person_name,
-			     job_codes, budget_amount, consultant_name, consultant_phone, start_date, end_date,
-			     status, is_active, created_at, updated_at, created_by, updated_by)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,now(),now(),$13,$13)
-			RETURNING id`,
-			projectCode, projectName, locationCode, customerID, responsiblePersonName,
-			jobCodes, budgetAmount, consultantName, consultantPhone, startDate, endDate,
-			status, claims.UserID,
-		).Scan(&id)
-		if err != nil {
-			if pgErr, ok := err.(*pgconn.PgError); ok {
-				if pgErr.Code == "23505" {
-					errs = append(errs, rowError{Row: rowNo, Reason: "project_code already exists"})
-					continue
-				}
-				if pgErr.Code == "23503" {
-					if pgErr.ConstraintName == "project_customer_id_fkey" {
-						errs = append(errs, rowError{Row: rowNo, Reason: fmt.Sprintf("customer_code %q not found", customerCode)})
-						continue
-					}
-					errs = append(errs, rowError{Row: rowNo, Reason: "invalid reference in row"})
-					continue
-				}
-			}
-			errs = append(errs, rowError{Row: rowNo, Reason: err.Error()})
-			continue
-		}
-
-		oks = append(oks, rowSuccess{Row: rowNo, ID: id, ProjectCode: projectCode})
-	}
-
-	if errs == nil {
-		errs = []rowError{}
-	}
-	return c.JSON(fiber.Map{
-		"success": true,
-		"data": fiber.Map{
-			"rows_in_file": rowsInFile, // sanity check: imported + failed should always equal this
-			"imported":     len(oks),
-			"failed":       len(errs),
-			"rows":         oks,
-			"errors":       errs,
-		},
-	})
-}
-
 // ImportTemplate godoc
-// @Summary      ดาวน์โหลด template Excel สำหรับ import โครงการ
-// @Description  Generates the .xlsx on the fly: sheet "Project" with header row (project_code*, project_name*, customer_code, "Project location_code", start_date, end_date, budget_amount, "job Code", consultant_name, consultant_phone, responsible_person_name — literal spacing/casing to match a reference template already in use by other teams, no dept_code or credit columns) and two example rows. A hidden "Lookup" sheet lists job_code/job_name (the fixed JobTypes enum — NOT cost_job), bound as an Excel dropdown on the "job Code" column.
+// @Summary      Download the Excel template for project import
+// @Description  Generated on the fly. Sheet "Project", row 1 = header: project_name, customer_code, "Project location_code", start_date, end_date, budget_amount, "job Code" (project_code, consultant_name, consultant_phone and responsible_person_name were removed — the code is generated on import). Two sample rows use real customer_code values from the customer table (first two active customers), job codes "MP,ME" and "MS". A hidden "Lookup" sheet is generated from JobTypes (job_code + job_name, never hardcoded) and bound as a dropdown on the "job Code" column; the cell comment on that header says multiple codes are typed comma-separated.
 // @Tags         Master
 // @Security     BearerAuth
 // @Produce      application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
@@ -1118,11 +900,11 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 	// mirrors a reference template already in use by other teams — matched literally, not
 	// "cleaned up", so re-uploads of that existing file layout parse correctly.
 	headers := []string{
-		"project_code", "project_name", "customer_code", "Project location_code", "start_date", "end_date",
-		"budget_amount", "job Code", "consultant_name", "consultant_phone", "responsible_person_name",
+		"project_name", "customer_code", "Project location_code", "start_date", "end_date",
+		"budget_amount", "job Code",
 	}
-	required := []bool{true, true, false, false, false, false, false, false, false, false, false}
-	colWidths := []float64{16, 30, 16, 24, 14, 14, 16, 24, 24, 20, 24}
+	required := []bool{true, true, false, false, false, false, false}
+	colWidths := []float64{30, 16, 24, 14, 14, 16, 24}
 	for i, hdr := range headers {
 		col := colLetter(i)
 		cell := col + "1"
@@ -1135,11 +917,20 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 		f.SetColWidth(sheet, col, col, colWidths[i])
 	}
 
+	// Sample rows use REAL customer codes (first two active customers) so the example imports as is.
+	sampleCodes := []string{"", ""}
+	if crows, qerr := h.db.Query(context.Background(), `SELECT btrim(customer_code) FROM customer WHERE is_active AND btrim(customer_code) <> '' ORDER BY cus_id LIMIT 2`); qerr == nil {
+		for i := 0; crows.Next() && i < 2; i++ {
+			_ = crows.Scan(&sampleCodes[i])
+		}
+		crows.Close()
+	}
+	if sampleCodes[1] == "" {
+		sampleCodes[1] = sampleCodes[0]
+	}
 	examples := [][]string{
-		{"PRJ-000001", "โครงการตัวอย่าง", "CUS-000001", "123 ถนนตัวอย่าง", "2026-01-01", "2026-12-31",
-			"1000000", "MP,ME", "นายที่ปรึกษา ตัวอย่าง", "08x-xxx-xxxx", "นายผู้รับผิดชอบ ตัวอย่าง"},
-		{"PRJ-000002", "โครงการตัวอย่าง 2", "CUS-000002", "456 ถนนตัวอย่าง", "2026-02-01", "2026-11-30",
-			"500000", "MS", "นายที่ปรึกษา สอง", "08x-xxx-xxxx", "นายผู้รับผิดชอบ สอง"},
+		{"โครงการตัวอย่าง", sampleCodes[0], "123 ถนนตัวอย่าง", "2026-01-01", "2026-12-31", "1000000", "MP,ME"},
+		{"โครงการตัวอย่าง 2", sampleCodes[1], "456 ถนนตัวอย่าง", "2026-02-01", "2026-11-30", "500000", "MS"},
 	}
 	for row, example := range examples {
 		for i, v := range example {
@@ -1151,7 +942,7 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if err := addDropdown(f, sheet, "H2:H1000", jobRange); err != nil {
+	if err := addDropdown(f, sheet, "G2:G1000", jobRange); err != nil {
 		return err
 	}
 
@@ -1161,8 +952,8 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 	// input method: type the codes directly into the cell, comma-separated. A cell comment
 	// (not a data row) carries this instruction so it never pollutes the parseable data range.
 	if err := f.AddComment(sheet, excelize.Comment{
-		Cell: "H1",
-		Text: "พิมพ์ได้หลายค่า คั่นด้วยจุลภาค เช่น MP,ME,MS (ดรอปดาวน์เป็นรายการอ้างอิงเลือกได้ทีละค่าเท่านั้น)",
+		Cell: "G1",
+		Text: "พิมพ์ได้หลายค่า คั่นด้วยจุลภาค เช่น MP,ME,MS (ดรอปดาวน์เลือกได้ทีละค่าเท่านั้น)",
 	}); err != nil {
 		return err
 	}
