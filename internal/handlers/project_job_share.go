@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // JobNeedsShare is the single source of truth for "does this project job code carry a
@@ -45,6 +46,12 @@ var ratHundred = big.NewRat(100, 1)
 
 // validateJobShares checks the submitted shares against the submitted job_codes. Pure
 // function (no SQL); all sums use exact big.Rat arithmetic, never floats.
+//
+// Share-vs-value is deliberately NOT enforced here: a needs-share job may come without a
+// percent (missing / empty / zero / negative), and the total may exceed 100 — such entries
+// are simply not returned (so no project_job_share row is written for them; the table CHECK
+// requires share_percent > 0). The job stays in project.job_codes. A total above 100 is
+// caught by the DB trigger and mapped to a Thai 400 by jobShareDBError.
 func validateJobShares(jobCodes []string, shares []models.ProjectJobShareInput) ([]validatedJobShare, error) {
 	bad := func(format string, a ...any) error {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf(format, a...))
@@ -56,7 +63,6 @@ func validateJobShares(jobCodes []string, shares []models.ProjectJobShareInput) 
 	}
 
 	seen := map[string]bool{}
-	total := new(big.Rat)
 	out := make([]validatedJobShare, 0, len(shares))
 	for _, s := range shares {
 		code := strings.TrimSpace(s.JobCode)
@@ -73,29 +79,47 @@ func validateJobShares(jobCodes []string, shares []models.ProjectJobShareInput) 
 		if !JobNeedsShare(code) {
 			return nil, bad("งาน %s ไม่ต้องกำหนดสัดส่วน", code)
 		}
-		pct, ok := new(big.Rat).SetString(strings.TrimSpace(s.SharePercent.String()))
+		raw := strings.TrimSpace(s.SharePercent.String())
+		if raw == "" {
+			continue // no percent given: keep the job, write no share row
+		}
+		pct, ok := new(big.Rat).SetString(raw)
 		if !ok {
 			return nil, bad("สัดส่วนของงาน %s ต้องเป็นตัวเลข", code)
 		}
-		if pct.Sign() <= 0 || pct.Cmp(ratHundred) > 0 {
-			return nil, bad("สัดส่วนของงาน %s ต้องมากกว่า 0 และไม่เกิน 100", code)
+		if pct.Sign() <= 0 {
+			continue // zero / negative = no share; the table CHECK needs share_percent > 0
 		}
 		if !new(big.Rat).Mul(pct, ratHundred).IsInt() {
 			return nil, bad("สัดส่วนของงาน %s ต้องมีทศนิยมไม่เกิน 2 ตำแหน่ง", code)
 		}
-		total.Add(total, pct)
 		out = append(out, validatedJobShare{jobCode: code, percent: pct.FloatString(2)})
 	}
-
-	for _, jc := range jobCodes {
-		if JobNeedsShare(jc) && !seen[jc] {
-			return nil, bad("กรุณาระบุสัดส่วน (%%) ของงาน %s", jc)
-		}
-	}
-	if total.Cmp(ratHundred) > 0 {
-		return nil, bad("สัดส่วนรวมต้องไม่เกิน 100%% (ขณะนี้รวม %s%%)", total.FloatString(2))
-	}
 	return out, nil
+}
+
+// jobShareDBError maps the DB-level share guards to a plain Thai 400 so the raw Postgres
+// error never reaches the client: the deferred trigger trg_project_job_share_total (RAISE
+// EXCEPTION, SQLSTATE P0001, raised at COMMIT) and the share_percent CHECK (23514, at INSERT).
+// Returns nil for any other error.
+func jobShareDBError(err error, shares []validatedJobShare) error {
+	pgErr, ok := err.(*pgconn.PgError)
+	if !ok {
+		return nil
+	}
+	switch {
+	case pgErr.Code == "P0001" && strings.Contains(pgErr.Message, "project_job_share total"):
+		total := new(big.Rat)
+		for _, s := range shares {
+			if p, ok := new(big.Rat).SetString(s.percent); ok {
+				total.Add(total, p)
+			}
+		}
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("สัดส่วนรวมต้องไม่เกิน 100%% (ขณะนี้รวม %s%%)", total.FloatString(2)))
+	case pgErr.Code == "23514" && pgErr.ConstraintName == "project_job_share_share_percent_check":
+		return fiber.NewError(fiber.StatusBadRequest, "สัดส่วนของแต่ละงานต้องไม่เกิน 100%")
+	}
+	return nil
 }
 
 // replaceJobShares replaces the project's project_job_share rows inside the caller's

@@ -27,31 +27,44 @@ func sh(code, pct string) models.ProjectJobShareInput {
 func TestValidateJobShares(t *testing.T) {
 	codes := []string{"MP", "ME", "MS", "FS", "G"}
 	cases := []struct {
-		name    string
-		shares  []models.ProjectJobShareInput
-		wantErr string // substring, "" = ok
+		name     string
+		shares   []models.ProjectJobShareInput
+		wantErr  string   // substring, "" = ok
+		wantRows []string // "CODE=pct" rows expected back (only when ok)
 	}{
-		{"ok", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30"), sh("MS", "30")}, ""},
-		{"total 100.01", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30"), sh("MS", "30.01")}, "ขณะนี้รวม 100.01%"},
-		{"missing MS", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30")}, "ของงาน MS"},
-		{"share on FS", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30"), sh("MS", "20"), sh("FS", "10")}, "ไม่ต้องกำหนดสัดส่วน"},
-		{"share on G", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30"), sh("MS", "20"), sh("G", "10")}, "ไม่ต้องกำหนดสัดส่วน"},
-		{"share on OH not in project", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30"), sh("MS", "20"), sh("OH", "10")}, "ไม่ได้อยู่ในรายการงาน"},
-		{"duplicate", []models.ProjectJobShareInput{sh("MP", "10"), sh("MP", "10"), sh("ME", "10"), sh("MS", "10")}, "ซ้ำกัน"},
-		{"zero", []models.ProjectJobShareInput{sh("MP", "0"), sh("ME", "30"), sh("MS", "30")}, "มากกว่า 0"},
-		{"3 decimals", []models.ProjectJobShareInput{sh("MP", "33.333"), sh("ME", "30"), sh("MS", "30")}, "ทศนิยมไม่เกิน 2"},
-		{"0.1+0.2 style exact", []models.ProjectJobShareInput{sh("MP", "33.33"), sh("ME", "33.33"), sh("MS", "33.34")}, ""},
+		{"ok", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30"), sh("MS", "30")}, "", []string{"MP=40.00", "ME=30.00", "MS=30.00"}},
+		{"no shares at all (needs-share jobs, none given)", nil, "", []string{}},
+		{"missing MS is allowed", []models.ProjectJobShareInput{sh("MP", "40"), sh("ME", "30")}, "", []string{"MP=40.00", "ME=30.00"}},
+		{"total 120 not rejected by the app", []models.ProjectJobShareInput{sh("MP", "60"), sh("ME", "30"), sh("MS", "30")}, "", []string{"MP=60.00", "ME=30.00", "MS=30.00"}},
+		{"zero is skipped", []models.ProjectJobShareInput{sh("MP", "0"), sh("ME", "30"), sh("MS", "30")}, "", []string{"ME=30.00", "MS=30.00"}},
+		{"negative is skipped", []models.ProjectJobShareInput{sh("MP", "-5"), sh("ME", "30")}, "", []string{"ME=30.00"}},
+		{"empty percent is skipped", []models.ProjectJobShareInput{sh("MP", ""), sh("ME", "30")}, "", []string{"ME=30.00"}},
+		{"0.1+0.2 style exact", []models.ProjectJobShareInput{sh("MP", "33.33"), sh("ME", "33.33"), sh("MS", "33.34")}, "", []string{"MP=33.33", "ME=33.33", "MS=33.34"}},
+		// rules that are kept
+		{"share on FS", []models.ProjectJobShareInput{sh("MP", "40"), sh("FS", "10")}, "ไม่ต้องกำหนดสัดส่วน", nil},
+		{"share on G", []models.ProjectJobShareInput{sh("MP", "40"), sh("G", "10")}, "ไม่ต้องกำหนดสัดส่วน", nil},
+		{"share on OH not in project", []models.ProjectJobShareInput{sh("MP", "40"), sh("OH", "10")}, "ไม่ได้อยู่ในรายการงาน", nil},
+		{"duplicate", []models.ProjectJobShareInput{sh("MP", "10"), sh("MP", "10")}, "ซ้ำกัน", nil},
+		{"3 decimals", []models.ProjectJobShareInput{sh("MP", "33.333"), sh("ME", "30")}, "ทศนิยมไม่เกิน 2", nil},
 	}
 	for _, c := range cases {
-		_, err := validateJobShares(codes, c.shares)
+		got, err := validateJobShares(codes, c.shares)
 		switch {
 		case c.wantErr == "" && err != nil:
 			t.Errorf("%s: unexpected error %v", c.name, err)
+			continue
 		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
 			t.Errorf("%s: error %v, want containing %q", c.name, err, c.wantErr)
+			continue
 		}
-		if err != nil {
-			t.Logf("%s -> %v", c.name, err)
+		if c.wantErr == "" {
+			rows := []string{}
+			for _, g := range got {
+				rows = append(rows, g.jobCode+"="+g.percent)
+			}
+			if strings.Join(rows, ",") != strings.Join(c.wantRows, ",") {
+				t.Errorf("%s: rows %v, want %v", c.name, rows, c.wantRows)
+			}
 		}
 	}
 }

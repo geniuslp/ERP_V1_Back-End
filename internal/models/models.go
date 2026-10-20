@@ -2,6 +2,8 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -114,6 +116,8 @@ type ProjectFull struct {
 	BudgetAmount          float64    `json:"budget_amount"`
 	ResponsibleUsers      []ProjectResponsibleUser `json:"responsible_users"`     // detail/create/update only; username only
 	ResponsibleUsernames  string     `json:"responsible_usernames"` // usernames joined by ", " (list + detail)
+	InUse                 bool       `json:"in_use"`                // project_code already referenced by any work document (owner is then locked)
+	InUseBy               []string   `json:"in_use_by"`             // Thai doc-type names behind in_use; [] when unused
 	ProjectKind           string     `json:"project_kind"` // NEW | VO — decides which of budget_amount / vo_amount applies
 	VOAmount              float64    `json:"vo_amount"` // "มูลค่า VO" — separate from budget_amount, never summed with it
 	SpentAmount           float64    `json:"spent_amount"`
@@ -141,6 +145,41 @@ type ProjectResponsibleUser struct {
 type ProjectJobShareInput struct {
 	JobCode      string      `json:"job_code"`
 	SharePercent json.Number `json:"share_percent" swaggertype:"number"`
+}
+
+// UnmarshalJSON accepts share_percent as a number, a numeric string, "" or null: an empty /
+// missing percent is not an error (the job simply gets no share row), so it must not fail
+// request binding either.
+func (s *ProjectJobShareInput) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		JobCode      string          `json:"job_code"`
+		SharePercent json.RawMessage `json:"share_percent"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	s.JobCode = raw.JobCode
+	s.SharePercent = ""
+	sp := strings.TrimSpace(string(raw.SharePercent))
+	if sp == "" || sp == "null" {
+		return nil
+	}
+	if strings.HasPrefix(sp, `"`) {
+		var str string
+		if err := json.Unmarshal(raw.SharePercent, &str); err != nil {
+			return err
+		}
+		sp = strings.TrimSpace(str)
+		if sp == "" {
+			return nil
+		}
+	}
+	n := json.Number(sp)
+	if _, err := n.Float64(); err != nil {
+		return fmt.Errorf("share_percent must be a number")
+	}
+	s.SharePercent = n
+	return nil
 }
 
 type CreateProjectReq struct {

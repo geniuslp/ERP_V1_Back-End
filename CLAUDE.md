@@ -1450,3 +1450,21 @@ The verification created two throwaway work orders on the dev DB, consuming `wo_
 
 ### 4. UAT to-do
 This change ships **together with the pending Work Order code** (the `work_order.go` changes from 2026-10-19 #4: `project_name_text`, contract types, M-prefixed `work_system`, `subcontractor_signed_name`, `wht-defaults`). It is **NOT applied on UAT**, and the UAT `work_order.work_system` is still a single varchar (CHECK P/E/S) while dev is an array — so the code must not be deployed to UAT before the `work_system` migration design is done.
+
+---
+
+## 🧭 Session learnings (2026-10-20) — project job-share validation relaxed + owner lock by usage
+
+### 1. Job shares no longer block saving (`project_job_share.go`)
+- `validateJobShares` no longer requires a percent for needs-share jobs and no longer caps the total. A missing / `null` / `""` / `0` / negative `share_percent` keeps the job in `job_codes` and writes **no** `project_job_share` row (table CHECK needs `share_percent > 0`). `ProjectJobShareInput.UnmarshalJSON` (models.go) makes `""`/`null` bind instead of failing as "invalid request body".
+- Still enforced: `validateJobCodes`, job code in project's `job_codes`, no duplicates, no share on exempt jobs (F*, G, OH), max 2 decimals. Replace-on-save in the same tx is unchanged.
+- DB guards are untouched (CHECK `share_percent > 0 AND <= 100`, deferred trigger `trg_project_job_share_total` = `RAISE EXCEPTION`, SQLSTATE P0001 at COMMIT). `jobShareDBError` maps both to a plain Thai 400 in Create/Update (`สัดส่วนรวมต้องไม่เกิน 100% (ขณะนี้รวม N%)` / `สัดส่วนของแต่ละงานต้องไม่เกิน 100%`) — before this, a total > 100 surfaced as the generic Thai 500.
+
+### 2. Owner change is locked once the project_code is used (`project_usage.go`, `ProjectHandler.Update`)
+- Owner fields = `customer_id`, `owner_id`, `project_owner_name` (`owner_name` column). Before: all three were written verbatim, so any change was accepted — and an **omitted** field was written as NULL (the frontend never sends `owner_id` and omits `customer_id` when locked, so edits were wiping them). Now: omitted = keep current; a sent value that differs (NULL == '') is an owner change.
+- `projectUsage(ctx, q, codes)` (works on pool or tx): one `UNION` query over `projectUsageSources` (PR, PO, WO, Memo, Requisition, Borrow, Petty Cash header+line, IC movement + `ic_project_movement_line.to_project_code`, IC receipt pool + cost item, `project_stock`, `stock_transfer` from/to). Setup tables (`project_cost_budget`, `project_job_share`, `project_responsible_person`) are NOT counted. Any row counts, even a cancelled/draft document. Add new project-referencing tables to that list.
+- `GET /master/projects` (one query per page) and `/:id` (and Create/Update responses) return `in_use` + `in_use_by` (Thai names). On a lookup error the read path logs and returns `in_use=false`; the Update guard fails closed (500).
+- `PUT` with an owner change on an in-use project → 409 `ไม่สามารถเปลี่ยนเจ้าของโครงการได้ เนื่องจากรหัสโครงการนี้ถูกใช้งานแล้วใน: <list>`; the check runs after `SELECT … FOR UPDATE` on the project row, in the UPDATE's transaction (a document inserted concurrently by another tx is not blocked). Other fields are never blocked.
+- Excel import only INSERTs and skips an existing `project_code` ("already exists"), so it cannot change an owner — no guard needed.
+- Verified on dev with real requests (project created and deleted): unused → owner change 200; in use (memo) → 409; same owner + rename 200; omitted `customer_id` keeps it; needs-share job without shares 200 (was 400); shares 60+60 → 400 Thai; one share 150 → 400 Thai; `""`/`null`/`0` percent → 200, no row.
+- Side effect: the test consumed `2026-WDT-012` (yearly counter is now 12, so that number is a permanent gap on dev).
