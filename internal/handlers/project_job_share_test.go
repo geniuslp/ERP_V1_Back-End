@@ -68,3 +68,24 @@ func TestValidateJobShares(t *testing.T) {
 		}
 	}
 }
+
+func TestRecodeProjectCode(t *testing.T) {
+	cases := []struct {
+		cur, cust, want string
+		ok              bool
+	}{
+		{"2026-WDT-006", "ABC", "2026-ABC-006", true},
+		{"2026-WDT-006", " ABC ", "2026-ABC-006", true},
+		{"2026-A-B-006", "XY-Z", "2026-XY-Z-006", true}, // customer_code may contain '-'
+		{"2026-WDT-1234", "ABC", "2026-ABC-1234", true}, // 4+ digit number kept as is
+		{"PRJ-000001", "ABC", "", false},                // legacy code
+		{"2026-WDT-006", "", "", false},                 // customer without code
+		{"2026-WDT-", "ABC", "", false},
+	}
+	for _, c := range cases {
+		got, ok := recodeProjectCode(c.cur, c.cust)
+		if ok != c.ok || got != c.want {
+			t.Errorf("recodeProjectCode(%q,%q) = %q,%v want %q,%v", c.cur, c.cust, got, ok, c.want, c.ok)
+		}
+	}
+}

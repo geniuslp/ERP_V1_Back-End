@@ -7872,7 +7872,13 @@ paths:
         used by any work document — otherwise 409 "ไม่สามารถเปลี่ยนเจ้าของโครงการได้
         เนื่องจากรหัสโครงการนี้ถูกใช้งานแล้วใน: <list>" (the check runs inside the
         UPDATE transaction). Other fields are never blocked by usage. See in_use /
-        in_use_by on GET.'
+        in_use_by on GET. PROJECT CODE FOLLOWS THE CUSTOMER: when customer_id changes
+        on an unused project, project_code is recomputed as {year}-{new customer_code}-{same
+        NNN} (year and number kept, project_code_year_counter untouched); 409 "รหัสโครงการ
+        <code> ซ้ำกับโครงการอื่น" if that code exists. A legacy code that does not
+        match YYYY-*-N, or a customer without customer_code, keeps the code and still
+        saves the owner. A project_code in the body is always ignored; the response
+        returns the saved project_code.'
       parameters:
       - description: Project ID
         in: path

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -104,6 +105,20 @@ func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 		&p.BudgetAmount, &p.VOAmount, &p.ProjectKind, &p.ResponsibleUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
+}
+
+var projectCodeRe = regexp.MustCompile(`^(\d{4})-(.*)-(\d+)$`)
+
+// recodeProjectCode swaps the customer segment of {year}-{customer_code}-{NNN}, keeping year and
+// number. The middle group is greedy (customer_code may contain '-'). ok=false when the current
+// code is not in that shape or the new customer has no code.
+func recodeProjectCode(current, newCustomerCode string) (string, bool) {
+	newCustomerCode = strings.TrimSpace(newCustomerCode)
+	m := projectCodeRe.FindStringSubmatch(current)
+	if m == nil || newCustomerCode == "" {
+		return "", false
+	}
+	return m[1] + "-" + newCustomerCode + "-" + m[3], true
 }
 
 func sameInt64Ptr(a, b *int64) bool {
@@ -593,7 +608,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      Update project
-// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward; both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation. job_shares: a needs-share job may be sent without a percent (missing / null / "" / 0) — it stays in job_codes and no share row is written; the total is not capped by the app, but a total above 100 (or one share above 100) is rejected with a plain Thai 400 from the DB guards (trg_project_job_share_total / share_percent CHECK). OWNER CHANGE: customer_id, owner_id and project_owner_name are the owner fields; an omitted owner field keeps its current value, and a sent value that differs from the stored one is saved only while the project_code is NOT used by any work document — otherwise 409 "ไม่สามารถเปลี่ยนเจ้าของโครงการได้ เนื่องจากรหัสโครงการนี้ถูกใช้งานแล้วใน: <list>" (the check runs inside the UPDATE transaction). Other fields are never blocked by usage. See in_use / in_use_by on GET.
+// @Description  location_code is now a free-text project address (no longer validated/joined against the location master). dept_code ("แผนก") is validated against the departments master (400 on an unknown code). job_codes is a subset of MP/ME/MS/MF/MG/MH/G (validated server-side, 400 on any other value). project_owner_name is free text ("เจ้าของโครงการ") — legacy, kept for backward compat. customer_id (FK -> customer.cus_id) is the new dropdown-selected "เจ้าของโครงการ" going forward; both fields are accepted independently. responsible_person_name ("ผู้รับผิดชอบหลัก") is required free text, replacing the old owner_id dropdown — owner_id is still accepted for backward compatibility but no longer required or used to drive anything. consultant_phone ("เบอร์ติดต่อของที่ปรึกษา") is freeform, no validation. job_shares: a needs-share job may be sent without a percent (missing / null / "" / 0) — it stays in job_codes and no share row is written; the total is not capped by the app, but a total above 100 (or one share above 100) is rejected with a plain Thai 400 from the DB guards (trg_project_job_share_total / share_percent CHECK). OWNER CHANGE: customer_id, owner_id and project_owner_name are the owner fields; an omitted owner field keeps its current value, and a sent value that differs from the stored one is saved only while the project_code is NOT used by any work document — otherwise 409 "ไม่สามารถเปลี่ยนเจ้าของโครงการได้ เนื่องจากรหัสโครงการนี้ถูกใช้งานแล้วใน: <list>" (the check runs inside the UPDATE transaction). Other fields are never blocked by usage. See in_use / in_use_by on GET. PROJECT CODE FOLLOWS THE CUSTOMER: when customer_id changes on an unused project, project_code is recomputed as {year}-{new customer_code}-{same NNN} (year and number kept, project_code_year_counter untouched); 409 "รหัสโครงการ <code> ซ้ำกับโครงการอื่น" if that code exists. A legacy code that does not match YYYY-*-N, or a customer without customer_code, keeps the code and still saves the owner. A project_code in the body is always ignored; the response returns the saved project_code.
 // @Tags         Master
 // @Security     BearerAuth
 // @Accept       json
@@ -666,47 +681,6 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		isActive = &currentIsActive
 	}
 
-	// project_code is an FK target (not project.id) for petty_cash_requisition_line,
-	// purchase_order, and requisition, all with ON UPDATE NO ACTION — the plain UPDATE below
-	// would fail with a raw 23503 for any project with existing dependents in those tables.
-	// Proactively check and return a clear, itemized 409 before attempting the UPDATE at all,
-	// rather than relying solely on the DB error (which we also still map below as a backstop —
-	// e.g. a dependent row inserted concurrently between this check and the UPDATE).
-	//
-	// TODO: work_order.project_code has no FK constraint (confirmed via
-	// information_schema query, 2026-09-09) — it is NOT checked here and
-	// will silently go stale if project_code changes. Deliberately out of
-	// scope for now; must be addressed before this feature is considered
-	// fully safe. See conversation notes for the CASCADE/new-FK options
-	// considered.
-	if req.ProjectCode != currentProjectCode {
-		var pclCount, poCount, reqCount int
-		if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM petty_cash_requisition_line WHERE project_code=$1`, currentProjectCode).Scan(&pclCount); err != nil {
-			return err
-		}
-		if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM purchase_order WHERE project_code=$1`, currentProjectCode).Scan(&poCount); err != nil {
-			return err
-		}
-		if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM requisition WHERE project_code=$1`, currentProjectCode).Scan(&reqCount); err != nil {
-			return err
-		}
-		if pclCount > 0 || poCount > 0 || reqCount > 0 {
-			var parts []string
-			if poCount > 0 {
-				parts = append(parts, fmt.Sprintf("%d purchase order(s)", poCount))
-			}
-			if reqCount > 0 {
-				parts = append(parts, fmt.Sprintf("%d requisition(s)", reqCount))
-			}
-			if pclCount > 0 {
-				parts = append(parts, fmt.Sprintf("%d petty cash entries", pclCount))
-			}
-			return fiber.NewError(fiber.StatusConflict, fmt.Sprintf(
-				"project_code cannot be changed: this project has existing %s referencing it",
-				strings.Join(parts, ", ")))
-		}
-	}
-
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
@@ -750,6 +724,32 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusConflict,
 				"ไม่สามารถเปลี่ยนเจ้าของโครงการได้ เนื่องจากรหัสโครงการนี้ถูกใช้งานแล้วใน: "+strings.Join(by, ", "))
 		}
+		// Not in use: when the CUSTOMER changed, project_code follows it — only the customer segment is
+		// replaced; year and running number stay (no new number, project_code_year_counter untouched).
+		if req.CustomerID != nil && !sameInt64Ptr(req.CustomerID, curCustomerID) {
+			var newCustomerCode string
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(btrim(customer_code), '') FROM customer WHERE cus_id = $1`, *req.CustomerID).Scan(&newCustomerCode); err != nil {
+				if err == pgx.ErrNoRows {
+					return fiber.NewError(fiber.StatusBadRequest, "ไม่พบข้อมูลลูกค้าที่เลือก")
+				}
+				log.Printf("project update: customer_code lookup: %v", err)
+				return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
+			}
+			if newCode, ok := recodeProjectCode(currentProjectCode, newCustomerCode); !ok {
+				// legacy code shape or customer without a code: owner is saved, code stays.
+				log.Printf("project update: id=%d code %q kept on owner change (customer_code=%q)", id, currentProjectCode, newCustomerCode)
+			} else if newCode != currentProjectCode {
+				var taken bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project WHERE project_code = $1 AND id <> $2)`, newCode, id).Scan(&taken); err != nil {
+					log.Printf("project update: code exists check: %v", err)
+					return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลโครงการได้ กรุณาลองใหม่อีกครั้ง")
+				}
+				if taken {
+					return fiber.NewError(fiber.StatusConflict, "รหัสโครงการ "+newCode+" ซ้ำกับโครงการอื่น")
+				}
+				req.ProjectCode = newCode
+			}
+		}
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE project
@@ -765,17 +765,16 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			if pgErr.Code == "23505" {
-				return fiber.NewError(fiber.StatusConflict, "project_code already exists")
+				return fiber.NewError(fiber.StatusConflict, "รหัสโครงการ "+req.ProjectCode+" ซ้ำกับโครงการอื่น")
 			}
 			if pgErr.Code == "23503" {
 				if pgErr.ConstraintName == "project_customer_id_fkey" {
 					return fiber.NewError(fiber.StatusBadRequest, "invalid customer_id")
 				}
-				switch pgErr.ConstraintName {
-				case "fk_pcl_project_code", "purchase_order_project_fk", "requisition_project_code_fkey":
-					// Backstop for the proactive check above (e.g. a dependent row inserted
-					// concurrently between the count check and this UPDATE).
-					return fiber.NewError(fiber.StatusConflict, "project_code cannot be changed: this project has existing purchase orders/requisitions/petty cash entries referencing it")
+				if strings.Contains(pgErr.Message, "update or delete on table") {
+					// Backstop: a table with an FK on project(project_code) (NO ACTION) holds a row the
+					// usage check did not see (e.g. inserted concurrently) — nothing is changed.
+					return fiber.NewError(fiber.StatusConflict, "ไม่สามารถเปลี่ยนรหัสโครงการได้ เนื่องจากมีเอกสารอ้างอิงรหัสโครงการนี้อยู่")
 				}
 				return fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
 			}
