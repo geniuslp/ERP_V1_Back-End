@@ -12437,7 +12437,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One row per project, computed in a single set-based query.\ncontract_budget = vo_amount for project_kind VO, else budget_amount.\npu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.\nac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.\npu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).\nstatus (from pu_cost / contract_budget): CLOSED or INACTIVE (project.status / is_active) first, then NO_BUDGET (budget \u003c= 0), OVER_BUDGET (\u003e 100%), NEAR_LIMIT (\u003e= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).",
+                "description": "One row per project, computed in a single set-based query.\ncontract_budget = vo_amount for project_kind VO, else budget_amount.\npu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.\nac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.\npu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).\nstatus (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget \u003c= 0), OVER_BUDGET (\u003e 100%), NEAR_LIMIT (\u003e= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).\nDefault list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.",
                 "produces": [
                     "application/json"
                 ],
@@ -12468,7 +12468,7 @@ const docTemplate = `{
                     {
                         "type": "integer",
                         "default": 20,
-                        "description": "page size (max 100)",
+                        "description": "page size (max 200)",
                         "name": "page_size",
                         "in": "query"
                     }

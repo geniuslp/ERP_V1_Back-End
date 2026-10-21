@@ -36,6 +36,9 @@ var overviewStatusLabels = map[string]string{
 	"INACTIVE":    "ไม่ใช้งาน",
 }
 
+// overviewMaxPageSize caps page_size (the page shows a whole portfolio).
+const overviewMaxPageSize = 200
+
 const overviewStatusList = "NORMAL, NEAR_LIMIT, OVER_BUDGET, NO_BUDGET, CLOSED, INACTIVE"
 
 // overviewListSQL is one set-based query: every source is aggregated once per project_code in its own CTE and
@@ -73,7 +76,7 @@ WITH po AS (
 	WHERE h.status = 'APPROVED' AND l.project_code IS NOT NULL
 	GROUP BY l.project_code
 ), base AS (
-	SELECT p.id, p.project_code, p.project_name, cu.customer_name,
+	SELECT p.id, p.customer_id, p.project_code, p.project_name, cu.customer_name,
 	       p.status AS project_status, p.is_active, p.project_kind,
 	       (CASE WHEN p.project_kind = 'VO' THEN p.vo_amount ELSE p.budget_amount END) AS contract_budget,
 	       COALESCE(po.pu, 0) AS pu_po, COALESCE(wo.pu, 0) AS pu_wo, COALESCE(pc.amt, 0) AS pu_pc,
@@ -99,7 +102,7 @@ WITH po AS (
 	          ELSE 'NORMAL' END) AS overview_status
 	FROM base b
 )
-SELECT c.id, c.project_code, c.project_name, c.customer_name, c.project_status, c.is_active, c.project_kind,
+SELECT c.id, c.customer_id, c.project_code, c.project_name, c.customer_name, c.project_status, c.is_active, c.project_kind,
        c.contract_budget::float8,
        c.pu_cost::float8, (c.contract_budget - c.pu_cost)::float8,
        c.ac_cost::float8, (c.contract_budget - c.ac_cost)::float8,
@@ -109,7 +112,7 @@ SELECT c.id, c.project_code, c.project_name, c.customer_name, c.project_status, 
        c.ac_po::float8, c.ac_wo::float8, c.ac_pc::float8,
        COUNT(*) OVER ()
 FROM calc c
-WHERE ($2::text IS NULL OR c.overview_status = $2)
+WHERE (($2::text IS NULL AND c.overview_status <> 'INACTIVE') OR c.overview_status = $2::text)
 ORDER BY c.project_code
 LIMIT $3 OFFSET $4`
 
@@ -120,7 +123,8 @@ type overviewBucket struct {
 }
 
 type overviewRow struct {
-	ProjectID     int64    `json:"project_id"`
+	ID            int64    `json:"id"`
+	CustomerID    *int64   `json:"customer_id"`
 	ProjectCode   string   `json:"project_code"`
 	ProjectName   string   `json:"project_name"`
 	CustomerName  *string  `json:"customer_name"`
@@ -147,14 +151,15 @@ type overviewRow struct {
 // @Description  pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.
 // @Description  ac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.
 // @Description  pu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).
-// @Description  status (from pu_cost / contract_budget): CLOSED or INACTIVE (project.status / is_active) first, then NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
+// @Description  status (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
+// @Description  Default list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.
 // @Tags         Project Overview
 // @Security     BearerAuth
 // @Produce      json
 // @Param        search     query  string  false  "project_code / project_name / customer_name"
 // @Param        status     query  string  false  "NORMAL | NEAR_LIMIT | OVER_BUDGET | NO_BUDGET | CLOSED | INACTIVE"
 // @Param        page       query  int     false  "page number"  default(1)
-// @Param        page_size  query  int     false  "page size (max 100)"  default(20)
+// @Param        page_size  query  int     false  "page size (max 200)"  default(20)
 // @Success      200  {object}  models.PaginatedResponse
 // @Failure      400  {object}  fiber.Map
 // @Router       /project-overview [get]
@@ -167,8 +172,8 @@ func (h *ProjectOverviewHandler) List(c *fiber.Ctx) error {
 	if size < 1 {
 		return fiber.NewError(fiber.StatusBadRequest, "จำนวนต่อหน้าต้องมากกว่า 0")
 	}
-	if size > 100 {
-		size = 100
+	if size > overviewMaxPageSize {
+		size = overviewMaxPageSize
 	}
 
 	var search, statusFilter interface{}
@@ -193,7 +198,7 @@ func (h *ProjectOverviewHandler) List(c *fiber.Ctx) error {
 	var total int64
 	for rows.Next() {
 		var r overviewRow
-		if err := rows.Scan(&r.ProjectID, &r.ProjectCode, &r.ProjectName, &r.CustomerName, &r.ProjectStatus, &r.IsActive, &r.ProjectKind,
+		if err := rows.Scan(&r.ID, &r.CustomerID, &r.ProjectCode, &r.ProjectName, &r.CustomerName, &r.ProjectStatus, &r.IsActive, &r.ProjectKind,
 			&r.Contract, &r.PuCost, &r.PuBalance, &r.AcCost, &r.AcBalance, &r.UsagePct, &r.Status,
 			&r.PuBreakdown.PO, &r.PuBreakdown.WO, &r.PuBreakdown.PC,
 			&r.AcBreakdown.PO, &r.AcBreakdown.WO, &r.AcBreakdown.PC, &total); err != nil {
