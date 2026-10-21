@@ -115,6 +115,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	master.Get("/job-types", projectH.ListJobTypes)
 	master.Get("/projects", projectH.List)
 	master.Get("/projects/next-code", projectH.NextCode) // static, before /projects/:id
+	master.Get("/projects/options", projectH.Options)   // static, before /projects/:id — unpaginated dropdown list
 	master.Get("/projects/:id", projectH.GetByID)
 	master.Post("/projects", projectH.Create)
 	master.Post("/projects/import", projectH.Import)
@@ -140,6 +141,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Project Overview (cross-entity search: projects + approved PO line items)
 	projectOverview := api.Group("/project-overview")
 	projectOverview.Use(jwt)
+	projectOverview.Get("/", projectOverviewH.List) // money columns: Contract Budget / Pu / Ac / Status
 	projectOverview.Get("/search", projectOverviewH.Search)
 
 	// Inventory
@@ -344,6 +346,13 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	stock := api.Group("/stock", jwt)
 
+	// Project-first Stock page (/master/stock): project list -> balance -> history. Registered before
+	// the other /stock routes; the two stock systems are returned typed by `source`, never UNIONed.
+	stockByProjectH := handlers.NewStockByProjectHandler(db)
+	stock.Get("/by-project", stockByProjectH.ListProjects)
+	stock.Get("/by-project/:projectCode/balance", stockByProjectH.GetBalance)
+	stock.Get("/by-project/:projectCode/transactions", stockByProjectH.ListTransactions)
+
 	// Item Master
 	stock.Get("/categories", stockItemH.ListCategories)
 	stock.Get("/items", stockItemH.List)
@@ -418,6 +427,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	workOrder.Post("/", workOrderH.Create)
 	workOrder.Get("/:id", workOrderH.Get)
 	workOrder.Put("/:id", workOrderH.Update)
+	workOrder.Put("/:id/edit-approved", workOrderH.EditApproved)
 	workOrder.Post("/:id/submit", workOrderH.Submit)
 	workOrder.Put("/:id/lines", workOrderH.UpdateLines)
 	workOrder.Get("/:woId/payment-conditions", workOrderH.GetPaymentConditions)

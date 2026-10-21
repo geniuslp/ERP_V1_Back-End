@@ -6827,6 +6827,63 @@
                 }
             }
         },
+        "/master/projects/options": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Every matching project in one response for form selectors (Memo, PR, PO, WO, Petty Cash) — GET /master/projects is paginated (max page_size 100, default 20) and cuts the list off. Ordered by project_code. Default = status ACTIVE and is_active = true; include_closed adds status CLOSED, include_inactive adds status INACTIVE and is_active = false. search matches project_code or project_name. A warehouse project is one where COALESCE(linked_warehouse_code, warehouse_code) is set (same rule as the Stock page): warehouse_only keeps only those, exclude_warehouse drops them (if both are sent, nothing matches).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Master"
+                ],
+                "summary": "Project dropdown options (unpaginated)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project_code / project_name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "also status CLOSED (default false)",
+                        "name": "include_closed",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "also status INACTIVE / is_active=false (default false)",
+                        "name": "include_inactive",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "only warehouse projects",
+                        "name": "warehouse_only",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "drop warehouse projects",
+                        "name": "exclude_warehouse",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/master/projects/{id}": {
             "get": {
                 "security": [
@@ -12367,6 +12424,65 @@
                 }
             }
         },
+        "/project-overview": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One row per project, computed in a single set-based query.\ncontract_budget = vo_amount for project_kind VO, else budget_amount.\npu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.\nac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.\npu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).\nstatus (from pu_cost / contract_budget): CLOSED or INACTIVE (project.status / is_active) first, then NO_BUDGET (budget \u003c= 0), OVER_BUDGET (\u003e 100%), NEAR_LIMIT (\u003e= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Project Overview"
+                ],
+                "summary": "Project Overview — Contract Budget / Pu.Cost / Pu.Balance / Ac.Cost / Ac.Balance / Status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project_code / project_name / customer_name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "NORMAL | NEAR_LIMIT | OVER_BUDGET | NO_BUDGET | CLOSED | INACTIVE",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size (max 100)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/project-overview/search": {
             "get": {
                 "security": [
@@ -13659,6 +13775,233 @@
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/by-project": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Lists every project (active only by default), ordered by project_code, whether or not it has stock. Projects with no stock return item_count = 0 and total_qty = 0. Warehouse project = COALESCE(linked_warehouse_code, warehouse_code) is set. item_count / total_qty only count rows with qty \u003e 0 (warehouse project: its warehouse's stock_item rows; normal project: ic_project_cost_item rows). source = WAREHOUSE | PROJECT. Same envelope as GET /ic/projects.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "All projects (Stock page, step 1)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project_code / project_name / customer_name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "include inactive projects (default false)",
+                        "name": "include_inactive",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "dropdown mode: no pagination, data = [{project_code, project_name, source}] ordered by project_code",
+                        "name": "all",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size (max 100)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaginatedResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/by-project/{projectCode}/balance": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "data.source = WAREHOUSE -\u003e stock_item rows of the project's warehouse (COALESCE(linked_warehouse_code, warehouse_code)), never the whole table; data.source = PROJECT -\u003e ic_project_cost_item rows of the project. The two systems are never combined. only_with_stock defaults to true (qty \u003e 0); pass only_with_stock=false to include zero-qty rows. data.no_stock = true when the list is empty (frontend shows \"ยังไม่มีสินค้าในคลังนี้\"). job_code (e.g. MP) applies to PROJECT only. Newest updated_at first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Stock balance of one project (Stock page, step 2)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "mat_code / material name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "only qty \u003e 0 (default true)",
+                        "name": "only_with_stock",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PROJECT source only, e.g. MP",
+                        "name": "job_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size (max 100)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/stock/by-project/{projectCode}/transactions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "data.source = PROJECT -\u003e ic_project_cost_item_transaction rows (same query and row shape as GET /ic/projects/{projectCode}/cost-transactions; supports ref_type). data.source = WAREHOUSE -\u003e stock_transaction rows of stock_item in the project's warehouse (the row shape differs: txn_no, txn_type, from/to_location, ref_doc_type...). Never combined.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Movement history of one project (Stock page, step 3)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "project.project_code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "PROJECT source only: PO, MOVEMENT_ISSUE or MOVEMENT_TRANSFER",
+                        "name": "ref_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "mat_code / material name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "page size (max 100)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -15552,6 +15895,64 @@
                 }
             }
         },
+        "/work-order/{id}/edit-approved": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Mirrors PO's PUT /po/{id}/edit-approved. Only allowed while status = APPROVED or\nPENDING_REAPPROVAL (400 otherwise). Body = the same shape as PUT /work-order/{id} plus a\nmandatory `reason` (plain Thai 400 when empty). In ONE transaction: header and lines are\nupdated exactly like the normal edit (`lines` omitted = lines and totals kept; present = replaced\nand recomputed), status becomes PENDING_REAPPROVAL, a row is added to work_order_edit_log\n(this is what revision_round counts) and to work_order_status_log, and the document's existing\napproval_request is reopened (status PENDING) — same request, same assigned_to, so it goes\nback to the SAME approver. A sent approver_id and status are ignored. At least one line is\nrequired. wo_no never changes; the response/detail/list carry revision_round instead.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "แก้ไขหนังสือสั่งจ้างที่อนุมัติแล้ว (ต้องระบุเหตุผล, ส่งกลับอนุมัติใหม่)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Work Order data + reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateWorkOrderRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/work-order/{id}/lines": {
             "put": {
                 "security": [
@@ -15875,6 +16276,9 @@
                 "consultant_phone": {
                     "description": "\"เบอร์ติดต่อของที่ปรึกษา\", freeform",
                     "type": "string"
+                },
+                "cost_amount": {
+                    "type": "number"
                 },
                 "created_at": {
                     "type": "string"
@@ -17498,7 +17902,7 @@
             ],
             "properties": {
                 "budget_amount": {
-                    "description": "required for NEW; forced to 0 for VO",
+                    "description": "optional; blank/null -\u003e 0; forced to 0 for VO",
                     "type": "number"
                 },
                 "consultant_name": {
@@ -17507,6 +17911,10 @@
                 "consultant_phone": {
                     "description": "freeform, no validation",
                     "type": "string"
+                },
+                "cost_amount": {
+                    "description": "optional; blank/null -\u003e 0",
+                    "type": "number"
                 },
                 "customer_id": {
                     "description": "FK -\u003e customer.cus_id — new dropdown-selected \"เจ้าของโครงการ\"",
@@ -17572,7 +17980,7 @@
                     "type": "string"
                 },
                 "vo_amount": {
-                    "description": "required for VO; forced to 0 for NEW",
+                    "description": "optional; blank/null -\u003e 0; forced to 0 for NEW",
                     "type": "number"
                 }
             }
@@ -18023,11 +18431,20 @@
                 "advance_amount": {
                     "type": "number"
                 },
+                "advance_deduct_amount": {
+                    "description": "Create: omitted =\u003e ROUND(contract_amount*pct/100,2); Update: omitted =\u003e stored amount kept",
+                    "type": "number"
+                },
                 "advance_deduct_pct": {
+                    "description": "display value, stored as sent",
                     "type": "number"
                 },
                 "advance_pct": {
                     "type": "number"
+                },
+                "approver_id": {
+                    "description": "chosen from GET /master/eligible-approvers?doc_type=WO; required at submit; omitted on PUT keeps the stored value",
+                    "type": "integer"
                 },
                 "authorized_by": {
                     "type": "integer"
@@ -19783,7 +20200,7 @@
             ],
             "properties": {
                 "budget_amount": {
-                    "description": "required for NEW; forced to 0 for VO",
+                    "description": "optional; blank/null -\u003e 0; forced to 0 for VO",
                     "type": "number"
                 },
                 "consultant_name": {
@@ -19792,6 +20209,10 @@
                 "consultant_phone": {
                     "description": "freeform, no validation",
                     "type": "string"
+                },
+                "cost_amount": {
+                    "description": "optional; blank/null -\u003e 0",
+                    "type": "number"
                 },
                 "customer_id": {
                     "description": "FK -\u003e customer.cus_id — new dropdown-selected \"เจ้าของโครงการ\"",
@@ -19863,7 +20284,7 @@
                     "type": "string"
                 },
                 "vo_amount": {
-                    "description": "required for VO; forced to 0 for NEW",
+                    "description": "optional; blank/null -\u003e 0; forced to 0 for NEW",
                     "type": "number"
                 }
             }

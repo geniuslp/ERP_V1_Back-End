@@ -120,6 +120,7 @@ type ProjectFull struct {
 	InUseBy               []string   `json:"in_use_by"`             // Thai doc-type names behind in_use; [] when unused
 	ProjectKind           string     `json:"project_kind"` // NEW | VO — decides which of budget_amount / vo_amount applies
 	VOAmount              float64    `json:"vo_amount"` // "มูลค่า VO" — separate from budget_amount, never summed with it
+	CostAmount            float64    `json:"cost_amount"`
 	SpentAmount           float64    `json:"spent_amount"`
 	PaidAmount            float64    `json:"paid_amount"`
 	RemainingAmount       float64    `json:"remaining_amount"`
@@ -182,6 +183,31 @@ func (s *ProjectJobShareInput) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// AmountInput is an optional money field on project requests: a number, a numeric string, ""
+// or null all bind (blank/null -> pointer stays nil, saved as 0). No range validation.
+type AmountInput float64
+
+func (a *AmountInput) UnmarshalJSON(b []byte) error {
+	sp := strings.TrimSpace(string(b))
+	if strings.HasPrefix(sp, `"`) {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return err
+		}
+		sp = strings.TrimSpace(str)
+	}
+	if sp == "" || sp == "null" {
+		*a = 0
+		return nil
+	}
+	f, err := json.Number(sp).Float64()
+	if err != nil {
+		return fmt.Errorf("amount must be a number")
+	}
+	*a = AmountInput(f)
+	return nil
+}
+
 type CreateProjectReq struct {
 	ProjectCode           string   `json:"project_code"`
 	ProjectName           string   `json:"project_name"`
@@ -195,8 +221,9 @@ type CreateProjectReq struct {
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
 	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
-	BudgetAmount          *float64 `json:"budget_amount"` // required for NEW; forced to 0 for VO
-	VOAmount              *float64 `json:"vo_amount"`     // required for VO; forced to 0 for NEW
+	BudgetAmount          *AmountInput `json:"budget_amount"` // optional; blank/null -> 0; forced to 0 for VO
+	VOAmount              *AmountInput `json:"vo_amount"`     // optional; blank/null -> 0; forced to 0 for NEW
+	CostAmount            *AmountInput `json:"cost_amount"`   // optional; blank/null -> 0
 	ConsultantName        *string  `json:"consultant_name,omitempty"`
 	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
 	StartDate             *string  `json:"start_date,omitempty"`
@@ -217,8 +244,9 @@ type UpdateProjectReq struct {
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
 	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
-	BudgetAmount          *float64 `json:"budget_amount"` // required for NEW; forced to 0 for VO
-	VOAmount              *float64 `json:"vo_amount"`     // required for VO; forced to 0 for NEW
+	BudgetAmount          *AmountInput `json:"budget_amount"` // optional; blank/null -> 0; forced to 0 for VO
+	VOAmount              *AmountInput `json:"vo_amount"`     // optional; blank/null -> 0; forced to 0 for NEW
+	CostAmount            *AmountInput `json:"cost_amount"`   // optional; blank/null -> 0
 	ConsultantName        *string  `json:"consultant_name,omitempty"`
 	ConsultantPhone       *string  `json:"consultant_phone,omitempty"` // freeform, no validation
 	StartDate             *string  `json:"start_date,omitempty"`       // "YYYY-MM-DD" — pgx casts to date automatically
@@ -1584,6 +1612,12 @@ type WorkOrder struct {
 	ProgressPaymentNote     *string   `json:"progress_payment_note"`
 	RetentionPct            float64   `json:"retention_pct"`
 	AdvanceDeductPct        float64   `json:"advance_deduct_pct"`
+	AdvanceDeductAmount     float64   `json:"advance_deduct_amount"`
+	ApproverID              *int64    `json:"approver_id"`
+	RevisionRound           int       `json:"revision_round"` // COUNT(work_order_edit_log); wo_no never changes
+	// RevisionRoundPrint is the same count under the key the print components read (camelCase, like PO's
+	// print-data). Only set by GET /work-order/:id, which is the print data source; nil (omitted) elsewhere.
+	RevisionRoundPrint *int `json:"revisionRound,omitempty"`
 	OtherDeductionNote      *string   `json:"other_deduction_note"`
 	StartDate               *string   `json:"start_date"`
 	DurationDays            *int      `json:"duration_days"`
@@ -1651,7 +1685,9 @@ type CreateWorkOrderRequest struct {
 	AdvanceAmount       *float64 `json:"advance_amount"`
 	ProgressPaymentNote *string  `json:"progress_payment_note"`
 	RetentionPct        *float64 `json:"retention_pct"`
-	AdvanceDeductPct    *float64 `json:"advance_deduct_pct"`
+	AdvanceDeductPct    *float64 `json:"advance_deduct_pct"`    // display value, stored as sent
+	ApproverID          *int64   `json:"approver_id"` // chosen from GET /master/eligible-approvers?doc_type=WO; required at submit; omitted on PUT keeps the stored value
+	AdvanceDeductAmount *float64 `json:"advance_deduct_amount"` // Create: omitted => ROUND(contract_amount*pct/100,2); Update: omitted => stored amount kept
 	OtherDeductionNote  *string  `json:"other_deduction_note"`
 	StartDate           *string  `json:"start_date"`
 	DurationDays        *int     `json:"duration_days"`

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -198,8 +200,20 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
+	// advance_deduct_amount: sent => as is; omitted => ROUND(contract_amount * advance_deduct_pct / 100, 2).
+	advanceDeductAmount := computeAdvanceDeductAmount(req.AdvanceDeductAmount, req.ContractAmount, req.AdvanceDeductPct)
+	if err := checkAdvanceDeductAmount(advanceDeductAmount, req.ContractAmount); err != nil {
+		return err
+	}
+
 	ctx := context.Background()
 	claims := middleware.GetClaims(c)
+	// approver_id is optional at create (required at submit); when sent it must be in the eligible pool.
+	if req.ApproverID != nil {
+		if err := requireWOApprover(ctx, h.db, req.ApproverID); err != nil {
+			return err
+		}
+	}
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
@@ -245,7 +259,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			entered_by, entered_at, section_head_id, authorized_by, remarks,
 			use_discount, discount_type, use_vat, use_wht,
 			total_amount, discount_amount, vat_amount, wht_amount, net_amount,
-			project_name_text, subcontractor_signed_name,
+			project_name_text, subcontractor_signed_name, advance_deduct_amount, approver_id,
 			created_by, updated_by
 		) VALUES (
 			$1,$2,$3,$4,$5,
@@ -258,7 +272,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			$30,NOW(),$31,$32,$33,
 			$34,$35,$36,$37,
 			$38,$39,$40,$41,$42,
-			$43,$44,
+			$43,$44,COALESCE($45,0),$46,
 			$30,$30
 		) RETURNING id`,
 		woNo, woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
@@ -271,7 +285,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		claims.UserID, req.SectionHeadID, req.AuthorizedBy, req.Remarks,
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
-		req.ProjectNameText, req.SubcontractorSignedName,
+		req.ProjectNameText, req.SubcontractorSignedName, advanceDeductAmount, req.ApproverID,
 	).Scan(&woID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "insert error: "+err.Error())
@@ -338,6 +352,67 @@ func (h *WorkOrderHandler) WhtDefaults(c *fiber.Ctx) error {
 	}})
 }
 
+const (
+	msgWOApproverRequired    = "กรุณาเลือกผู้อนุมัติก่อนส่งขออนุมัติ"
+	msgWOApproverNotEligible = "ผู้อนุมัติที่เลือกไม่มีสิทธิ์อนุมัติหนังสือสั่งจ้าง กรุณาเลือกใหม่"
+)
+
+const msgWOContractAmountLowerOnlyEditApproved = "การลดมูลค่าสัญญาทำได้เฉพาะการแก้ไขหลังอนุมัติ"
+
+// woEditableStatuses: statuses in which the header / lines may still be edited (APPROVED, CANCELLED are locked).
+var woEditableStatuses = map[string]bool{"DRAFT": true, "REJECTED": true, "PENDING_APPROVAL": true}
+
+func woNotEditableErr(status string) error {
+	if status == "APPROVED" || status == "PENDING_REAPPROVAL" {
+		return fiber.NewError(fiber.StatusBadRequest,
+			fmt.Sprintf("หนังสือสั่งจ้างที่มีสถานะ %s แก้ไขได้ผ่านการแก้ไขพร้อมระบุเหตุผล (PUT /work-order/{id}/edit-approved) เท่านั้น", status))
+	}
+	return fiber.NewError(fiber.StatusBadRequest,
+		fmt.Sprintf("ไม่สามารถแก้ไขหนังสือสั่งจ้างที่มีสถานะ %s ได้ (แก้ไขได้เฉพาะ DRAFT, REJECTED หรือ PENDING_APPROVAL)", status))
+}
+
+// requireWOApprover checks the approver exists in the eligible pool for doc_type WO — the same pool
+// GET /master/eligible-approvers returns (approval_config roles + approval_delegation).
+func requireWOApprover(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, approverID *int64) error {
+	if approverID == nil {
+		return fiber.NewError(fiber.StatusBadRequest, msgWOApproverRequired)
+	}
+	ok, err := isEligibleApproverPick(ctx, db, "WO", *approverID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบผู้อนุมัติได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if !ok {
+		return fiber.NewError(fiber.StatusBadRequest, msgWOApproverNotEligible)
+	}
+	return nil
+}
+
+const msgAdvanceDeductOverContract = "เงินล่วงหน้าที่จ่ายแล้วมากกว่ามูลค่าสัญญา กรุณาตรวจสอบ"
+
+// computeAdvanceDeductAmount returns the sent amount, or ROUND(contract*pct/100, 2) when it was omitted.
+func computeAdvanceDeductAmount(sent *float64, contractAmount float64, pct *float64) float64 {
+	if sent != nil {
+		return *sent
+	}
+	if pct == nil {
+		return 0
+	}
+	return math.Round(contractAmount*(*pct)/100*100) / 100
+}
+
+// checkAdvanceDeductAmount rejects a negative amount or one above contract_amount (plain Thai 400, before any SQL).
+func checkAdvanceDeductAmount(amount, contractAmount float64) error {
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "เงินล่วงหน้าที่จ่ายแล้วต้องไม่ติดลบ")
+	}
+	if amount > contractAmount {
+		return fiber.NewError(fiber.StatusBadRequest, msgAdvanceDeductOverContract)
+	}
+	return nil
+}
+
 const workOrderSelectCols = `
 	wo.id, wo.wo_no, TO_CHAR(wo.wo_date,'YYYY-MM-DD'), wo.employer_name, wo.project_code, p.project_name,
 	wo.project_scope_text, NULL::text AS supplier_code, wo.supplier_name, wo.contact_person,
@@ -352,7 +427,8 @@ const workOrderSelectCols = `
 	wo.created_at, wo.updated_at,
 	wo.use_discount, wo.discount_type, wo.use_vat, wo.use_wht,
 	wo.total_amount, wo.discount_amount, wo.vat_amount, wo.wht_amount, wo.net_amount,
-	wo.supplier_id, wo.project_name_text`
+	wo.supplier_id, wo.project_name_text, wo.advance_deduct_amount, wo.approver_id,
+	(SELECT COUNT(*) FROM work_order_edit_log wel WHERE wel.wo_id = wo.id) AS revision_round`
 
 const workOrderJoins = `
 	FROM work_order wo
@@ -377,7 +453,7 @@ func scanWorkOrder(row interface{ Scan(dest ...any) error }) (*models.WorkOrder,
 		&w.CreatedAt, &w.UpdatedAt,
 		&w.UseDiscount, &w.DiscountType, &w.UseVAT, &w.UseWHT,
 		&w.TotalAmount, &w.DiscountAmount, &w.VatAmount, &w.WhtAmount, &w.NetAmount,
-		&w.SupplierID, &w.ProjectNameText,
+		&w.SupplierID, &w.ProjectNameText, &w.AdvanceDeductAmount, &w.ApproverID, &w.RevisionRound,
 	)
 	if err != nil {
 		return nil, err
@@ -459,7 +535,8 @@ func (h *WorkOrderHandler) List(c *fiber.Ctx) error {
 		ORDER BY wo.id DESC
 		LIMIT $%d OFFSET $%d`, workOrderSelectCols, workOrderJoins, whereClause, i, i+1), args...)
 	if err != nil {
-		return err
+		log.Printf("work order list query: %v", err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายการหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
 	}
 	defer rows.Close()
 
@@ -467,7 +544,8 @@ func (h *WorkOrderHandler) List(c *fiber.Ctx) error {
 	for rows.Next() {
 		w, err := scanWorkOrder(rows)
 		if err != nil {
-			return err
+			log.Printf("work order list scan: %v", err)
+			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายการหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
 		}
 		items = append(items, *w)
 	}
@@ -508,12 +586,22 @@ func (h *WorkOrderHandler) Get(c *fiber.Ctx) error {
 		%s
 		WHERE wo.id=$1`, workOrderSelectCols, workOrderJoins), id))
 	if err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "work order not found")
+		// Only a genuinely missing row is a 404; any other failure (query/scan/schema) is a 500 whose real
+		// cause goes to the log, never to the client.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fiber.NewError(fiber.StatusNotFound, "work order not found")
+		}
+		log.Printf("[WO Get] id=%d step=main-query/scan err=%v", id, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูลหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
 	}
+	// Print components (WorkOrderPrintPOStyle etc.) read data.revisionRound; this endpoint is their data source.
+	rr := w.RevisionRound
+	w.RevisionRoundPrint = &rr
 
 	lines, err := fetchWorkOrderLines(ctx, h.db, id)
 	if err != nil {
-		return err
+		log.Printf("[WO Get] id=%d step=lines err=%v", id, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูลหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
 	}
 	w.Lines = lines
 
@@ -542,6 +630,9 @@ func fetchWorkOrderLines(ctx context.Context, db *pgxpool.Pool, woID int64) ([]m
 			return nil, err
 		}
 		lines = append(lines, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return lines, nil
 }
@@ -668,9 +759,8 @@ func (h *WorkOrderHandler) UpdateLines(c *fiber.Ctx) error {
 		}
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถอ่านข้อมูลหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
 	}
-	if currentStatus != "DRAFT" {
-		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("work order must be DRAFT to edit (current status: %s)", currentStatus))
+	if !woEditableStatuses[currentStatus] {
+		return woNotEditableErr(currentStatus)
 	}
 
 	useDiscount := req.UseDiscount != nil && *req.UseDiscount
@@ -744,7 +834,33 @@ func (h *WorkOrderHandler) UpdateLines(c *fiber.Ctx) error {
 // @Failure      400   {object}  fiber.Map
 // @Failure      404   {object}  fiber.Map
 // @Router       /work-order/{id} [put]
-func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
+func (h *WorkOrderHandler) Update(c *fiber.Ctx) error { return h.update(c, false) }
+
+// EditApproved godoc
+// @Summary      แก้ไขหนังสือสั่งจ้างที่อนุมัติแล้ว (ต้องระบุเหตุผล, ส่งกลับอนุมัติใหม่)
+// @Description  Mirrors PO's PUT /po/{id}/edit-approved. Only allowed while status = APPROVED or
+// @Description  PENDING_REAPPROVAL (400 otherwise). Body = the same shape as PUT /work-order/{id} plus a
+// @Description  mandatory `reason` (plain Thai 400 when empty). In ONE transaction: header and lines are
+// @Description  updated exactly like the normal edit (`lines` omitted = lines and totals kept; present = replaced
+// @Description  and recomputed), status becomes PENDING_REAPPROVAL, a row is added to work_order_edit_log
+// @Description  (this is what revision_round counts) and to work_order_status_log, and the document's existing
+// @Description  approval_request is reopened (status PENDING) — same request, same assigned_to, so it goes
+// @Description  back to the SAME approver. A sent approver_id and status are ignored. At least one line is
+// @Description  required. wo_no never changes; the response/detail/list carry revision_round instead.
+// @Tags         WorkOrder
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id    path  int                            true  "Work Order ID"
+// @Param        body  body  models.CreateWorkOrderRequest  true  "Work Order data + reason"
+// @Success      200   {object}  fiber.Map
+// @Failure      400   {object}  fiber.Map
+// @Failure      404   {object}  fiber.Map
+// @Router       /work-order/{id}/edit-approved [put]
+func (h *WorkOrderHandler) EditApproved(c *fiber.Ctx) error { return h.update(c, true) }
+
+// update is the shared body of PUT /:id (editApproved=false) and PUT /:id/edit-approved (true).
+func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
@@ -752,6 +868,20 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 	var req models.CreateWorkOrderRequest
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	var reason string
+	if editApproved {
+		var rb struct {
+			Reason string `json:"reason"`
+		}
+		_ = c.BodyParser(&rb)
+		reason = strings.TrimSpace(rb.Reason)
+		if reason == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "กรุณาระบุเหตุผลในการแก้ไข")
+		}
+		// Re-approval goes back to the same approver / same approval_request: nothing sent here may re-route it.
+		req.ApproverID = nil
+		req.Status = nil
 	}
 	if err := h.validateWorkOrderRequest(context.Background(), &req); err != nil {
 		return err
@@ -763,32 +893,84 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 	ctx := context.Background()
 
 	var currentStatus string
-	if err := h.db.QueryRow(ctx, `SELECT status FROM work_order WHERE id=$1`, id).Scan(&currentStatus); err != nil {
+	var currentAdvanceDeduct, currentContractAmount float64
+	var currentApprover *int64
+	if err := h.db.QueryRow(ctx, `SELECT status, advance_deduct_amount, contract_amount, approver_id FROM work_order WHERE id=$1`, id).
+		Scan(&currentStatus, &currentAdvanceDeduct, &currentContractAmount, &currentApprover); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "work order not found")
 	}
-	if currentStatus != "DRAFT" {
-		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("work order must be DRAFT to edit (current status: %s)", currentStatus))
+	if editApproved {
+		if currentStatus != "APPROVED" && currentStatus != "PENDING_REAPPROVAL" {
+			return fiber.NewError(fiber.StatusBadRequest,
+				fmt.Sprintf("แก้ไขพร้อมเหตุผลได้เฉพาะหนังสือสั่งจ้างที่มีสถานะ APPROVED หรือ PENDING_REAPPROVAL (สถานะปัจจุบัน: %s)", currentStatus))
+		}
+	} else if !woEditableStatuses[currentStatus] {
+		return woNotEditableErr(currentStatus)
+	}
+	// Lowering contract_amount is only possible through edit-approved (increase / same value is fine).
+	// 0.005 tolerance so numeric(…,2) round-trips never read as a decrease.
+	if !editApproved && req.ContractAmount < currentContractAmount-0.005 {
+		return fiber.NewError(fiber.StatusBadRequest, msgWOContractAmountLowerOnlyEditApproved)
+	}
+	// advance_deduct_amount: sent => stored as is; omitted => the stored amount is kept (never recomputed
+	// from the pct). Either way the amount that will be stored must not exceed the (new) contract_amount.
+	effectiveAdvanceDeduct := currentAdvanceDeduct
+	if req.AdvanceDeductAmount != nil {
+		effectiveAdvanceDeduct = *req.AdvanceDeductAmount
+	}
+	if err := checkAdvanceDeductAmount(effectiveAdvanceDeduct, req.ContractAmount); err != nil {
+		return err
 	}
 
-	// Since currentStatus is guaranteed DRAFT above, the only legal transitions through this
-	// endpoint are DRAFT->DRAFT (no-op save, "บันทึกร่าง") and DRAFT->PENDING_APPROVAL (inline
-	// submit, "ส่งอนุมัติ"). Anything else — jumping straight to APPROVED/REJECTED/CANCELLED —
-	// is rejected; those only ever happen through the dedicated Approve/Reject flow.
-	newStatus := "DRAFT"
-	if req.Status != nil && *req.Status != "" {
-		newStatus = *req.Status
-	}
-	if newStatus != "DRAFT" && newStatus != "PENDING_APPROVAL" {
+	// Status: an edit never changes the status by itself. The only transition through this endpoint is
+	// DRAFT/REJECTED -> PENDING_APPROVAL (inline submit, "ส่งอนุมัติ"); a PENDING_APPROVAL document stays
+	// PENDING_APPROVAL whatever is sent. Anything other than DRAFT / PENDING_APPROVAL is rejected —
+	// approval decisions only ever happen through the dedicated Approve/Reject flow.
+	if req.Status != nil && *req.Status != "" && *req.Status != "DRAFT" && *req.Status != "PENDING_APPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
+	newStatus := currentStatus
+	submitting := false
+	if req.Status != nil && *req.Status == "PENDING_APPROVAL" && currentStatus != "PENDING_APPROVAL" {
+		newStatus = "PENDING_APPROVAL"
+		submitting = true
+	}
 
-	if newStatus == "PENDING_APPROVAL" {
+	if submitting {
 		lineCount := -1
 		if linesPresent {
 			lineCount = len(req.Lines)
 		}
 		if err := requireWOLinesForSubmit(ctx, h.db, id, lineCount); err != nil {
+			return err
+		}
+	}
+
+	if editApproved {
+		// Edit-approved always re-submits: it needs at least one line (sent now, or already stored).
+		lineCount := -1
+		if linesPresent {
+			lineCount = len(req.Lines)
+		}
+		if err := requireWOLinesForSubmit(ctx, h.db, id, lineCount); err != nil {
+			return err
+		}
+		newStatus = "PENDING_REAPPROVAL"
+	}
+
+	// approver_id: omitted => the stored value is kept. A sent value that differs from the stored one is
+	// validated against the eligible pool; a submit always needs one (sent now or already stored).
+	effectiveApprover := currentApprover
+	approverChanged := false
+	if req.ApproverID != nil {
+		effectiveApprover = req.ApproverID
+		approverChanged = currentApprover == nil || *currentApprover != *req.ApproverID
+	}
+	if submitting && effectiveApprover == nil {
+		return fiber.NewError(fiber.StatusBadRequest, msgWOApproverRequired)
+	}
+	if approverChanged || submitting {
+		if err := requireWOApprover(ctx, h.db, effectiveApprover); err != nil {
 			return err
 		}
 	}
@@ -868,7 +1050,9 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 			updated_at           = NOW(),
 			updated_by           = $42,
 			project_name_text    = $44,
-			subcontractor_signed_name = $45
+			subcontractor_signed_name = $45,
+			advance_deduct_amount = COALESCE($46, advance_deduct_amount),
+			approver_id = COALESCE($47, approver_id)
 		WHERE id = $43`,
 		woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
 		req.SupplierID, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
@@ -880,7 +1064,7 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
 		newStatus, claims.UserID, id,
-		req.ProjectNameText, req.SubcontractorSignedName,
+		req.ProjectNameText, req.SubcontractorSignedName, req.AdvanceDeductAmount, req.ApproverID,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "update error: "+err.Error())
 	}
@@ -894,7 +1078,32 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
-	if newStatus != currentStatus {
+	if editApproved {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO work_order_edit_log (wo_id, edited_by, reason, edited_at)
+			VALUES ($1,$2,$3,NOW())`, id, claims.UserID, reason); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "edit log error: "+err.Error())
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO work_order_status_log (wo_id, from_status, to_status, changed_by, remarks)
+			VALUES ($1,$2,'PENDING_REAPPROVAL',$3,$4)`, id, currentStatus, claims.UserID, reason); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "status log error: "+err.Error())
+		}
+		// Reopen the document's existing approval_request (same id / assigned_to — routing is not recomputed).
+		tag, err := tx.Exec(ctx, `
+			UPDATE approval_request SET status='PENDING', updated_at=NOW()
+			WHERE id = (
+				SELECT id FROM approval_request
+				WHERE doc_type='WO' AND doc_id=$1
+				ORDER BY created_at DESC, id DESC LIMIT 1
+			)`, id)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "approval_request update error: "+err.Error())
+		}
+		if tag.RowsAffected() == 0 {
+			return fiber.NewError(fiber.StatusConflict, "ไม่พบคำขออนุมัติเดิมของหนังสือสั่งจ้างนี้ จึงไม่สามารถส่งกลับเพื่ออนุมัติใหม่ได้")
+		}
+	} else if newStatus != currentStatus {
 		var logRemarks *string
 		if newStatus == "PENDING_APPROVAL" {
 			remarks := "Submitted for approval"
@@ -913,9 +1122,22 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error {
 			if err := tx.QueryRow(ctx, `SELECT wo_no FROM work_order WHERE id=$1`, id).Scan(&woNo); err != nil {
 				return err
 			}
-			if err := openWorkOrderApproval(ctx, tx, id, woNo, claims.UserID); err != nil {
+			if err := openWorkOrderApproval(ctx, tx, id, woNo, claims.UserID, *effectiveApprover); err != nil {
 				return err
 			}
+		}
+	} else if approverChanged && currentStatus == "PENDING_APPROVAL" {
+		// Explicitly re-assigned while pending: move the open request to the new approver (same as Memo).
+		if _, err := tx.Exec(ctx, `
+			UPDATE approval_request SET assigned_to=$1, updated_at=NOW()
+			WHERE doc_type='WO' AND doc_id=$2 AND status='PENDING'`, *effectiveApprover, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO work_order_status_log (wo_id, from_status, to_status, changed_by, remarks)
+			VALUES ($1,'PENDING_APPROVAL','PENDING_APPROVAL',$2,$3)`,
+			id, claims.UserID, fmt.Sprintf("approver changed to user %d", *effectiveApprover)); err != nil {
+			return err
 		}
 	}
 
@@ -963,8 +1185,9 @@ func (h *WorkOrderHandler) Submit(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
 
 	var currentStatus, woNo string
-	if err := h.db.QueryRow(ctx, `SELECT status, wo_no FROM work_order WHERE id=$1`, id).
-		Scan(&currentStatus, &woNo); err != nil {
+	var approverID *int64
+	if err := h.db.QueryRow(ctx, `SELECT status, wo_no, approver_id FROM work_order WHERE id=$1`, id).
+		Scan(&currentStatus, &woNo, &approverID); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "work order not found")
 	}
 	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
@@ -973,6 +1196,9 @@ func (h *WorkOrderHandler) Submit(c *fiber.Ctx) error {
 	}
 
 	if err := requireWOLinesForSubmit(ctx, h.db, id, -1); err != nil {
+		return err
+	}
+	if err := requireWOApprover(ctx, h.db, approverID); err != nil {
 		return err
 	}
 
@@ -997,7 +1223,7 @@ func (h *WorkOrderHandler) Submit(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := openWorkOrderApproval(ctx, tx, id, woNo, claims.UserID); err != nil {
+	if err := openWorkOrderApproval(ctx, tx, id, woNo, claims.UserID, *approverID); err != nil {
 		return err
 	}
 
@@ -1329,7 +1555,7 @@ func (h *WorkOrderHandler) UpdatePaymentConditions(c *fiber.Ctx) error {
 // "ส่งอนุมัติ" button submits inline via PUT /work-order/:id with status=PENDING_APPROVAL rather
 // than a separate call to POST /:id/submit, so both entry points must open the same request or
 // the WO would sit in PENDING_APPROVAL with no approval_request row for anyone to act on).
-func openWorkOrderApproval(ctx context.Context, tx pgx.Tx, woID int64, woNo string, requestedBy int64) error {
+func openWorkOrderApproval(ctx context.Context, tx pgx.Tx, woID int64, woNo string, requestedBy, approverID int64) error {
 	var hasConfig bool
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='WO' AND step_no=1 AND is_active=true)`,
@@ -1341,8 +1567,8 @@ func openWorkOrderApproval(ctx context.Context, tx pgx.Tx, woID int64, woNo stri
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
-		SELECT 'WO',$1,$2,1,$3,NULL,'PENDING',contract_amount FROM work_order WHERE id=$1`,
-		woID, woNo, requestedBy,
+		SELECT 'WO',$1,$2,1,$3,$4,'PENDING',contract_amount FROM work_order WHERE id=$1`,
+		woID, woNo, requestedBy, approverID,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "approval request error: "+err.Error())
 	}

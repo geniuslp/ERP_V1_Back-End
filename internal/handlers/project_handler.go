@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,7 +39,7 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name,
 	p.customer_id, cu.customer_name,
 	p.responsible_person_name, p.job_codes,
-	p.budget_amount, p.vo_amount::float8, p.project_kind,
+	p.budget_amount, p.vo_amount::float8, p.cost_amount::float8, p.project_kind,
 	COALESCE((SELECT string_agg(ru.username, ', ' ORDER BY ru.username)
 		FROM project_responsible_person prp JOIN users ru ON ru.id = prp.user_id
 		WHERE prp.project_id = p.id), '') AS responsible_usernames,
@@ -83,7 +82,7 @@ func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName,
 		&p.CustomerID, &p.CustomerName,
 		&p.ResponsiblePersonName, &p.JobCodes,
-		&p.BudgetAmount, &p.VOAmount, &p.ProjectKind, &p.ResponsibleUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
+		&p.BudgetAmount, &p.VOAmount, &p.CostAmount, &p.ProjectKind, &p.ResponsibleUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }
@@ -114,7 +113,7 @@ func sameInt64Ptr(a, b *int64) bool {
 // validateProjectCore is the single source of truth for project field validation — used by
 // Create, Update, and Import so the three paths can't drift apart. Returns the normalized
 // status (defaulted to ACTIVE when blank) for the caller to use.
-func validateProjectCore(projectCode, projectName, responsiblePersonName, status string, budgetAmount float64, jobCodes []string) (string, error) {
+func validateProjectCore(projectCode, projectName, responsiblePersonName, status string, jobCodes []string) (string, error) {
 	if projectCode == "" || projectName == "" {
 		return "", fmt.Errorf("project_code and project_name are required")
 	}
@@ -127,56 +126,33 @@ func validateProjectCore(projectCode, projectName, responsiblePersonName, status
 	if !validProjectStatus[status] {
 		return "", fmt.Errorf("status must be one of ACTIVE, INACTIVE, CLOSED")
 	}
-	if budgetAmount < 0 {
-		return "", fmt.Errorf("budget_amount must be >= 0")
-	}
 	if err := validateJobCodes(jobCodes); err != nil {
 		return "", err
 	}
 	return status, nil
 }
 
-// normalizeVOAmount validates project.vo_amount ("มูลค่า VO", separate from budget_amount):
-// nil -> 0, must be >= 0 and fit numeric(18,4); rounded to 2 decimals.
-func normalizeVOAmount(v *float64) (float64, error) {
+// amountOrZero maps an omitted / null / "" amount to 0. No range validation (all three amounts are optional).
+func amountOrZero(v *models.AmountInput) float64 {
 	if v == nil {
-		return 0, nil
+		return 0
 	}
-	if math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 {
-		return 0, fmt.Errorf("มูลค่า VO ต้องเป็นตัวเลขที่ไม่ติดลบ")
-	}
-	if *v >= 1e14 {
-		return 0, fmt.Errorf("มูลค่า VO มากเกินกำหนด")
-	}
-	return math.Round(*v*100) / 100, nil
+	return float64(*v)
 }
 
-// resolveProjectValues applies the project_kind rule: NEW needs budget_amount (vo_amount saved as 0),
-// VO needs vo_amount (budget_amount saved as 0). Blank kind falls back to defaultKind. Returns the
-// normalized kind and the two amounts to store, whatever the client sent for the other field.
-func resolveProjectValues(kind, defaultKind string, budget, vo *float64) (string, float64, float64, error) {
+// resolveProjectValues applies the project_kind rule: NEW stores budget_amount (vo_amount saved as 0),
+// VO stores vo_amount (budget_amount saved as 0). Both are optional: missing/null/"" -> 0. Blank kind
+// falls back to defaultKind. Returns the normalized kind and the two amounts to store.
+func resolveProjectValues(kind, defaultKind string, budget, vo *models.AmountInput) (string, float64, float64, error) {
 	kind = strings.ToUpper(strings.TrimSpace(kind))
 	if kind == "" {
 		kind = defaultKind
 	}
 	switch kind {
 	case "NEW":
-		if budget == nil {
-			return "", 0, 0, fmt.Errorf("กรุณาระบุมูลค่าโครงการ")
-		}
-		if math.IsNaN(*budget) || math.IsInf(*budget, 0) || *budget < 0 {
-			return "", 0, 0, fmt.Errorf("มูลค่าโครงการต้องเป็นตัวเลขที่ไม่ติดลบ")
-		}
-		return kind, *budget, 0, nil
+		return kind, amountOrZero(budget), 0, nil
 	case "VO":
-		if vo == nil {
-			return "", 0, 0, fmt.Errorf("กรุณาระบุมูลค่า VO")
-		}
-		v, err := normalizeVOAmount(vo)
-		if err != nil {
-			return "", 0, 0, err
-		}
-		return kind, 0, v, nil
+		return kind, 0, amountOrZero(vo), nil
 	default:
 		return "", 0, 0, fmt.Errorf("ประเภทโครงการต้องเป็น NEW หรือ VO")
 	}
@@ -481,7 +457,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
-	status, verr := validateProjectCore("(auto)", req.ProjectName, req.ResponsiblePersonName, req.Status, budgetAmount, req.JobCodes)
+	status, verr := validateProjectCore("(auto)", req.ProjectName, req.ResponsiblePersonName, req.Status, req.JobCodes)
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
@@ -531,12 +507,12 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 			INSERT INTO project
 			    (project_code, project_name, location_code, dept_code, owner_id, owner_name, customer_id, responsible_person_name, job_codes,
 			     budget_amount, consultant_name, consultant_phone, start_date, end_date,
-			     status, is_active, created_at, updated_at, created_by, updated_by, vo_amount, project_kind)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,now(),now(),$16,$16,$17,$18)
+			     status, is_active, created_at, updated_at, created_by, updated_by, vo_amount, project_kind, cost_amount)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,now(),now(),$16,$16,$17,$18,$19)
 			RETURNING id`,
 			projectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID, req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
 			budgetAmount, req.ConsultantName, req.ConsultantPhone,
-			req.StartDate, req.EndDate, req.Status, claims.UserID, voAmount, kind,
+			req.StartDate, req.EndDate, req.Status, claims.UserID, voAmount, kind, amountOrZero(req.CostAmount),
 		).Scan(&id)
 		if err == nil {
 			if err := sp.Commit(ctx); err != nil {
@@ -547,6 +523,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		_ = sp.Rollback(ctx)
 		pgErr, ok := err.(*pgconn.PgError)
 		if !ok {
+			log.Printf("project create: insert: %v", err)
 			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 		}
 		if pgErr.Code == "23505" {
@@ -559,6 +536,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 			}
 			return fiber.NewError(fiber.StatusBadRequest, "รหัสแผนกไม่ถูกต้อง")
 		}
+		log.Printf("project create: insert: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 	}
 	if id == 0 {
@@ -659,7 +637,7 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
-	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, budgetAmount, req.JobCodes)
+	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, req.JobCodes)
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
@@ -748,12 +726,12 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		SET project_code=$1, project_name=$2, location_code=$3, dept_code=$4, owner_id=$5,
 		    owner_name=$6, customer_id=$7, responsible_person_name=$8, job_codes=$9,
 		    budget_amount=$10, consultant_name=$11, consultant_phone=$12,
-		    start_date=$13, end_date=$14, status=$15, is_active=$16, updated_at=now(), updated_by=$17, vo_amount=$19, project_kind=$20
+		    start_date=$13, end_date=$14, status=$15, is_active=$16, updated_at=now(), updated_by=$17, vo_amount=$19, project_kind=$20, cost_amount=$21
 		WHERE id=$18`,
 		req.ProjectCode, req.ProjectName, req.LocationCode, req.DeptCode, req.OwnerID,
 		req.ProjectOwnerName, req.CustomerID, req.ResponsiblePersonName, req.JobCodes,
 		budgetAmount, req.ConsultantName, req.ConsultantPhone,
-		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id, voAmount, kind)
+		req.StartDate, req.EndDate, req.Status, *isActive, claims.UserID, id, voAmount, kind, amountOrZero(req.CostAmount))
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
 			if pgErr.Code == "23505" {

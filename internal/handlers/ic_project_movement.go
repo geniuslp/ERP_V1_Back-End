@@ -1461,33 +1461,9 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 
 // ─── Cost transaction history ───────────────────────────────────────────────
 
-// ListCostTransactions godoc
-// @Summary      List IC Project cost-item transaction history for a project
-// @Description  Parallel to the Stock Transaction page, but scoped to one project and reading from ic_project_cost_item_transaction. created_by_name is resolved via users.full_name (matching this project's established display convention everywhere else — e.g. GetMovement, ListMovements — not username).
-// @Tags         IC Project Movement
-// @Security     BearerAuth
-// @Produce      json
-// @Param        projectCode  path   string  true   "project.project_code"
-// @Param        ref_type     query  string  false  "Filter: PO, MOVEMENT_ISSUE, or MOVEMENT_TRANSFER"
-// @Param        search       query  string  false  "Search mat_code/mat_name"
-// @Param        date_from    query  string  false  "Date from (YYYY-MM-DD)"
-// @Param        date_to      query  string  false  "Date to (YYYY-MM-DD)"
-// @Param        page         query  int     false  "page number"  default(1)
-// @Param        page_size    query  int     false  "page size"    default(20)
-// @Success      200  {object}  models.PaginatedResponse
-// @Failure      400  {object}  fiber.Map
-// @Failure      500  {object}  fiber.Map
-// @Router       /ic/projects/{projectCode}/cost-transactions [get]
-func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
-	projectCode := c.Params("projectCode")
-	if projectCode == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "projectCode is required")
-	}
-
-	var f models.IcProjectCostTransactionFilter
-	if err := c.QueryParser(&f); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid query params")
-	}
+// queryProjectCostTransactions is the shared ic_project_cost_item_transaction history query: used by
+// GET /ic/projects/:projectCode/cost-transactions and GET /stock/by-project/:projectCode/transactions.
+func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, projectCode string, f models.IcProjectCostTransactionFilter) ([]models.IcProjectCostTransaction, int64, int, int, error) {
 	page := max(f.Page, 1)
 	size := f.PageSize
 	if size < 1 {
@@ -1541,12 +1517,12 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 		LEFT JOIN users u             ON u.id = t.created_by`
 
 	var total int64
-	if err := h.db.QueryRow(context.Background(), fmt.Sprintf(`SELECT COUNT(*) %s WHERE %s`, joinClause, whereClause), args...).Scan(&total); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to count cost transactions: "+err.Error())
+	if err := db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) %s WHERE %s`, joinClause, whereClause), args...).Scan(&total); err != nil {
+		return nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to count cost transactions: "+err.Error())
 	}
 
 	args = append(args, size, offset)
-	rows, err := h.db.Query(context.Background(), fmt.Sprintf(`
+	rows, err := db.Query(ctx, fmt.Sprintf(`
 		SELECT t.id, t.qty, t.qty_before, t.qty_after, t.unit_cost, t.remarks, t.txn_date::text, t.ref_type,
 		       ici.mat_code,
 		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ici.mat_code),
@@ -1562,7 +1538,7 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 		ORDER BY t.txn_date DESC, t.id DESC
 		LIMIT $%d OFFSET $%d`, joinClause, whereClause, i, i+1), args...)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to list cost transactions: "+err.Error())
+		return nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to list cost transactions: "+err.Error())
 	}
 	defer rows.Close()
 
@@ -1571,9 +1547,44 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 		var t models.IcProjectCostTransaction
 		if err := rows.Scan(&t.ID, &t.Qty, &t.QtyBefore, &t.QtyAfter, &t.UnitCost, &t.Remarks, &t.TxnDate, &t.RefType,
 			&t.MatCode, &t.MatName, &t.CostSubgroupID, &t.CostCode, &t.CostName, &t.RefNo, &t.CreatedByName, &t.CreatedByUsername, &t.CreatedAt); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "failed to scan cost transaction: "+err.Error())
+			return nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to scan cost transaction: "+err.Error())
 		}
 		items = append(items, t)
+	}
+
+	return items, total, page, size, nil
+}
+
+// ListCostTransactions godoc
+// @Summary      List IC Project cost-item transaction history for a project
+// @Description  Parallel to the Stock Transaction page, but scoped to one project and reading from ic_project_cost_item_transaction. created_by_name is resolved via users.full_name (matching this project's established display convention everywhere else — e.g. GetMovement, ListMovements — not username).
+// @Tags         IC Project Movement
+// @Security     BearerAuth
+// @Produce      json
+// @Param        projectCode  path   string  true   "project.project_code"
+// @Param        ref_type     query  string  false  "Filter: PO, MOVEMENT_ISSUE, or MOVEMENT_TRANSFER"
+// @Param        search       query  string  false  "Search mat_code/mat_name"
+// @Param        date_from    query  string  false  "Date from (YYYY-MM-DD)"
+// @Param        date_to      query  string  false  "Date to (YYYY-MM-DD)"
+// @Param        page         query  int     false  "page number"  default(1)
+// @Param        page_size    query  int     false  "page size"    default(20)
+// @Success      200  {object}  models.PaginatedResponse
+// @Failure      400  {object}  fiber.Map
+// @Failure      500  {object}  fiber.Map
+// @Router       /ic/projects/{projectCode}/cost-transactions [get]
+func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
+	projectCode := c.Params("projectCode")
+	if projectCode == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "projectCode is required")
+	}
+
+	var f models.IcProjectCostTransactionFilter
+	if err := c.QueryParser(&f); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid query params")
+	}
+	items, total, page, size, err := queryProjectCostTransactions(context.Background(), h.db, projectCode, f)
+	if err != nil {
+		return err
 	}
 
 	totalPages := int(total) / size

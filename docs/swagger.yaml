@@ -77,6 +77,8 @@ definitions:
       consultant_phone:
         description: '"เบอร์ติดต่อของที่ปรึกษา", freeform'
         type: string
+      cost_amount:
+        type: number
       created_at:
         type: string
       created_by:
@@ -1204,13 +1206,16 @@ definitions:
   models.CreateProjectReq:
     properties:
       budget_amount:
-        description: required for NEW; forced to 0 for VO
+        description: optional; blank/null -> 0; forced to 0 for VO
         type: number
       consultant_name:
         type: string
       consultant_phone:
         description: freeform, no validation
         type: string
+      cost_amount:
+        description: optional; blank/null -> 0
+        type: number
       customer_id:
         description: FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
         type: integer
@@ -1260,7 +1265,7 @@ definitions:
       status:
         type: string
       vo_amount:
-        description: required for VO; forced to 0 for NEW
+        description: optional; blank/null -> 0; forced to 0 for NEW
         type: number
     required:
     - responsible_person_name
@@ -1563,10 +1568,19 @@ definitions:
     properties:
       advance_amount:
         type: number
+      advance_deduct_amount:
+        description: 'Create: omitted => ROUND(contract_amount*pct/100,2); Update:
+          omitted => stored amount kept'
+        type: number
       advance_deduct_pct:
+        description: display value, stored as sent
         type: number
       advance_pct:
         type: number
+      approver_id:
+        description: chosen from GET /master/eligible-approvers?doc_type=WO; required
+          at submit; omitted on PUT keeps the stored value
+        type: integer
       authorized_by:
         type: integer
       contact_person:
@@ -2783,13 +2797,16 @@ definitions:
   models.UpdateProjectReq:
     properties:
       budget_amount:
-        description: required for NEW; forced to 0 for VO
+        description: optional; blank/null -> 0; forced to 0 for VO
         type: number
       consultant_name:
         type: string
       consultant_phone:
         description: freeform, no validation
         type: string
+      cost_amount:
+        description: optional; blank/null -> 0
+        type: number
       customer_id:
         description: FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
         type: integer
@@ -2845,7 +2862,7 @@ definitions:
       status:
         type: string
       vo_amount:
-        description: required for VO; forced to 0 for NEW
+        description: optional; blank/null -> 0; forced to 0 for NEW
         type: number
     required:
     - responsible_person_name
@@ -8021,6 +8038,49 @@ paths:
       summary: Preview the next project_code (read-only)
       tags:
       - Master
+  /master/projects/options:
+    get:
+      description: 'Every matching project in one response for form selectors (Memo,
+        PR, PO, WO, Petty Cash) — GET /master/projects is paginated (max page_size
+        100, default 20) and cuts the list off. Ordered by project_code. Default =
+        status ACTIVE and is_active = true; include_closed adds status CLOSED, include_inactive
+        adds status INACTIVE and is_active = false. search matches project_code or
+        project_name. A warehouse project is one where COALESCE(linked_warehouse_code,
+        warehouse_code) is set (same rule as the Stock page): warehouse_only keeps
+        only those, exclude_warehouse drops them (if both are sent, nothing matches).'
+      parameters:
+      - description: project_code / project_name
+        in: query
+        name: search
+        type: string
+      - description: also status CLOSED (default false)
+        in: query
+        name: include_closed
+        type: boolean
+      - description: also status INACTIVE / is_active=false (default false)
+        in: query
+        name: include_inactive
+        type: boolean
+      - description: only warehouse projects
+        in: query
+        name: warehouse_only
+        type: boolean
+      - description: drop warehouse projects
+        in: query
+        name: exclude_warehouse
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Project dropdown options (unpaginated)
+      tags:
+      - Master
   /master/roles:
     get:
       description: |-
@@ -11653,6 +11713,51 @@ paths:
       summary: Submit PR (no approval required — goes straight to COMPLETED)
       tags:
       - Purchase Request
+  /project-overview:
+    get:
+      description: |-
+        One row per project, computed in a single set-based query.
+        contract_budget = vo_amount for project_kind VO, else budget_amount.
+        pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.
+        ac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.
+        pu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).
+        status (from pu_cost / contract_budget): CLOSED or INACTIVE (project.status / is_active) first, then NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
+      parameters:
+      - description: project_code / project_name / customer_name
+        in: query
+        name: search
+        type: string
+      - description: NORMAL | NEAR_LIMIT | OVER_BUDGET | NO_BUDGET | CLOSED | INACTIVE
+        in: query
+        name: status
+        type: string
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size (max 100)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Project Overview — Contract Budget / Pu.Cost / Pu.Balance / Ac.Cost
+        / Ac.Balance / Status
+      tags:
+      - Project Overview
   /project-overview/search:
     get:
       description: 'Searches projects (project_code/project_name) and approved PO
@@ -12500,6 +12605,170 @@ paths:
       security:
       - BearerAuth: []
       summary: Scan QR Code เพื่อดูข้อมูล Item
+      tags:
+      - Stock
+  /stock/by-project:
+    get:
+      description: 'Lists every project (active only by default), ordered by project_code,
+        whether or not it has stock. Projects with no stock return item_count = 0
+        and total_qty = 0. Warehouse project = COALESCE(linked_warehouse_code, warehouse_code)
+        is set. item_count / total_qty only count rows with qty > 0 (warehouse project:
+        its warehouse''s stock_item rows; normal project: ic_project_cost_item rows).
+        source = WAREHOUSE | PROJECT. Same envelope as GET /ic/projects.'
+      parameters:
+      - description: project_code / project_name / customer_name
+        in: query
+        name: search
+        type: string
+      - description: include inactive projects (default false)
+        in: query
+        name: include_inactive
+        type: boolean
+      - description: 'dropdown mode: no pagination, data = [{project_code, project_name,
+          source}] ordered by project_code'
+        in: query
+        name: all
+        type: boolean
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size (max 100)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.PaginatedResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: All projects (Stock page, step 1)
+      tags:
+      - Stock
+  /stock/by-project/{projectCode}/balance:
+    get:
+      description: data.source = WAREHOUSE -> stock_item rows of the project's warehouse
+        (COALESCE(linked_warehouse_code, warehouse_code)), never the whole table;
+        data.source = PROJECT -> ic_project_cost_item rows of the project. The two
+        systems are never combined. only_with_stock defaults to true (qty > 0); pass
+        only_with_stock=false to include zero-qty rows. data.no_stock = true when
+        the list is empty (frontend shows "ยังไม่มีสินค้าในคลังนี้"). job_code (e.g.
+        MP) applies to PROJECT only. Newest updated_at first.
+      parameters:
+      - description: project.project_code
+        in: path
+        name: projectCode
+        required: true
+        type: string
+      - description: mat_code / material name
+        in: query
+        name: search
+        type: string
+      - description: only qty > 0 (default true)
+        in: query
+        name: only_with_stock
+        type: boolean
+      - description: PROJECT source only, e.g. MP
+        in: query
+        name: job_code
+        type: string
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size (max 100)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Stock balance of one project (Stock page, step 2)
+      tags:
+      - Stock
+  /stock/by-project/{projectCode}/transactions:
+    get:
+      description: 'data.source = PROJECT -> ic_project_cost_item_transaction rows
+        (same query and row shape as GET /ic/projects/{projectCode}/cost-transactions;
+        supports ref_type). data.source = WAREHOUSE -> stock_transaction rows of stock_item
+        in the project''s warehouse (the row shape differs: txn_no, txn_type, from/to_location,
+        ref_doc_type...). Never combined.'
+      parameters:
+      - description: project.project_code
+        in: path
+        name: projectCode
+        required: true
+        type: string
+      - description: 'PROJECT source only: PO, MOVEMENT_ISSUE or MOVEMENT_TRANSFER'
+        in: query
+        name: ref_type
+        type: string
+      - description: mat_code / material name
+        in: query
+        name: search
+        type: string
+      - description: YYYY-MM-DD
+        in: query
+        name: date_from
+        type: string
+      - description: YYYY-MM-DD
+        in: query
+        name: date_to
+        type: string
+      - default: 1
+        description: page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: page size (max 100)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Movement history of one project (Stock page, step 3)
       tags:
       - Stock
   /stock/categories:
@@ -13716,6 +13985,52 @@ paths:
       security:
       - BearerAuth: []
       summary: แก้ไขหนังสือสั่งจ้าง (header + line items ทั้งใบ, เฉพาะสถานะ DRAFT)
+      tags:
+      - WorkOrder
+  /work-order/{id}/edit-approved:
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Mirrors PO's PUT /po/{id}/edit-approved. Only allowed while status = APPROVED or
+        PENDING_REAPPROVAL (400 otherwise). Body = the same shape as PUT /work-order/{id} plus a
+        mandatory `reason` (plain Thai 400 when empty). In ONE transaction: header and lines are
+        updated exactly like the normal edit (`lines` omitted = lines and totals kept; present = replaced
+        and recomputed), status becomes PENDING_REAPPROVAL, a row is added to work_order_edit_log
+        (this is what revision_round counts) and to work_order_status_log, and the document's existing
+        approval_request is reopened (status PENDING) — same request, same assigned_to, so it goes
+        back to the SAME approver. A sent approver_id and status are ignored. At least one line is
+        required. wo_no never changes; the response/detail/list carry revision_round instead.
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Work Order data + reason
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.CreateWorkOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แก้ไขหนังสือสั่งจ้างที่อนุมัติแล้ว (ต้องระบุเหตุผล, ส่งกลับอนุมัติใหม่)
       tags:
       - WorkOrder
   /work-order/{id}/lines:
