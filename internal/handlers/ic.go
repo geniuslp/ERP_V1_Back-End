@@ -225,7 +225,7 @@ func (h *ICHandler) ListProjectPOs(c *fiber.Ctx) error {
 	size := min(c.QueryInt("page_size", 20), 100)
 	offset := (page - 1) * size
 
-	where := []string{"po.project_code = $1", "po.status = 'APPROVED'", "po.order_type IN ('stock','cost')"}
+	where := []string{"po.project_code = $1", "po.status = 'APPROVED'", "po.deleted_at IS NULL", "po.order_type IN ('stock','cost')"}
 	args := []interface{}{projectCode}
 	idx := 2
 
@@ -237,7 +237,9 @@ func (h *ICHandler) ListProjectPOs(c *fiber.Ctx) error {
 	}
 
 	if search != "" {
-		where = append(where, fmt.Sprintf("(po.po_no ILIKE $%d OR pr.pr_no ILIKE $%d)", idx, idx))
+		// pr_no matches the header PR (po.pr_id) OR any PR a line was ordered from (pr_line_id) — a PO can
+		// be built from several PRs, and po.pr_id alone misses them.
+		where = append(where, fmt.Sprintf("(po.po_no ILIKE $%[1]d OR pr.pr_no ILIKE $%[1]d OR "+poLinePRNoMatchSQL+")", idx))
 		args = append(args, "%"+search+"%")
 		idx++
 	}
@@ -312,11 +314,12 @@ type ICSearchOption struct {
 
 // POSearchOptions godoc
 // @Summary      Lightweight PR/PO number list for the IC PO-search dropdown
-// @Description  Returns PR numbers and PO numbers for one project, tagged with type ('PR' or 'PO') for a grouped dropdown.
+// @Description  Returns PR numbers and PO numbers for one project, tagged with type ('PR' or 'PO') for a grouped dropdown. PO options: status APPROVED and not deleted. PR options (default, for receiving): not deleted/CANCELLED, at least one live PO (not CANCELLED/REJECTED/deleted) linked, and every non-cancelled line with qty_requested - qty_reserved > 0 fully ordered by live PO lines. for=return skips the fully-ordered condition (returns can target any live PR).
 // @Tags         IC
 // @Security     BearerAuth
 // @Produce      json
-// @Param        projectId  path  int  true  "project.id"
+// @Param        projectId  path  int     true   "project.id"
+// @Param        for        query string  false  "return = do not require PRs to be fully ordered"
 // @Success      200  {object}  fiber.Map
 // @Failure      404  {object}  fiber.Map
 // @Failure      500  {object}  fiber.Map
@@ -336,8 +339,15 @@ func (h *ICHandler) POSearchOptions(c *fiber.Ctx) error {
 
 	options := []ICSearchOption{}
 
-	prRows, err := h.db.Query(ctx,
-		`SELECT id, pr_no FROM purchase_request WHERE project_code = $1 AND order_type IN ('stock','cost') ORDER BY pr_no`, projectCode)
+	// PR options: for receiving, only PRs fully converted to POs (prFullyOrderedSQL); for=return keeps every
+	// live PR of the project, since goods can be returned against a PR that is not fully ordered.
+	prSQL := `SELECT pr.id, pr.pr_no FROM purchase_request pr
+		WHERE pr.project_code = $1 AND pr.order_type IN ('stock','cost')
+		  AND pr.deleted_at IS NULL AND pr.status <> 'CANCELLED'`
+	if c.Query("for") != "return" {
+		prSQL += ` AND ` + prFullyOrderedSQL
+	}
+	prRows, err := h.db.Query(ctx, prSQL+` ORDER BY pr.pr_no`, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list PRs: "+err.Error())
 	}
@@ -353,7 +363,7 @@ func (h *ICHandler) POSearchOptions(c *fiber.Ctx) error {
 	prRows.Close()
 
 	poRows, err := h.db.Query(ctx,
-		`SELECT id, po_no FROM purchase_order WHERE project_code = $1 AND status = 'APPROVED' AND order_type IN ('stock','cost') ORDER BY po_no`, projectCode)
+		`SELECT id, po_no FROM purchase_order WHERE project_code = $1 AND status = 'APPROVED' AND deleted_at IS NULL AND order_type IN ('stock','cost') ORDER BY po_no`, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list POs: "+err.Error())
 	}
@@ -442,7 +452,7 @@ func (h *ICHandler) GetReceiveDocument(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if poStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+		return fiber.NewError(fiber.StatusBadRequest, msgPONotApproved)
 	}
 	ctxRow.CreditDaysFromSupplier = parsePaymentTermsDays(paymentTerms)
 
@@ -520,7 +530,7 @@ func (h *ICHandler) SubmitReceiveDocument(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if poStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+		return fiber.NewError(fiber.StatusBadRequest, msgPONotApproved)
 	}
 
 	var remainingQty float64
@@ -1101,7 +1111,7 @@ func (h *ICHandler) ListReceiveLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if poStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+		return fiber.NewError(fiber.StatusBadRequest, msgPONotApproved)
 	}
 	if docID != 0 {
 		if err := validateReceiveDocumentBelongsToPO(ctx, h.db, docID, poID); err != nil {
@@ -1229,7 +1239,7 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusNotFound, "PO not found")
 		}
 		if hdrPOStatus != "APPROVED" {
-			return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+			return fiber.NewError(fiber.StatusBadRequest, msgPONotApproved)
 		}
 		var remainingQty float64
 		if err := tx.QueryRow(ctx, `
@@ -1285,7 +1295,7 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if poStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+		return fiber.NewError(fiber.StatusBadRequest, msgPONotApproved)
 	}
 
 	for _, in := range toProcess {
@@ -1717,12 +1727,12 @@ func (h *ICHandler) ListReturnPOs(c *fiber.Ctx) error {
 	size := min(c.QueryInt("page_size", 20), 100)
 	offset := (page - 1) * size
 
-	where := []string{"po.project_code = $1", "po.status = 'APPROVED'", "po.order_type IN ('stock','cost')", "po.status_receive IN ('PARTIALLY_RECEIVED','RECEIVED')"}
+	where := []string{"po.project_code = $1", "po.status = 'APPROVED'", "po.deleted_at IS NULL", "po.order_type IN ('stock','cost')", "po.status_receive IN ('PARTIALLY_RECEIVED','RECEIVED')"}
 	args := []interface{}{projectCode}
 	idx := 2
 
 	if search != "" {
-		where = append(where, fmt.Sprintf("(po.po_no ILIKE $%d OR pr.pr_no ILIKE $%d)", idx, idx))
+		where = append(where, fmt.Sprintf("(po.po_no ILIKE $%[1]d OR pr.pr_no ILIKE $%[1]d OR "+poLinePRNoMatchSQL+")", idx))
 		args = append(args, "%"+search+"%")
 		idx++
 	}
@@ -1885,7 +1895,7 @@ func (h *ICHandler) ListReturnLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
 	}
 	if poStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "PO is not approved")
+		return fiber.NewError(fiber.StatusBadRequest, msgPONotApproved)
 	}
 
 	lines, err := fetchICReturnLines(ctx, h.db, poID)
@@ -1986,7 +1996,7 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "ไม่พบใบสั่งซื้อ")
 	}
 	if poStatus != "APPROVED" {
-		return fiber.NewError(fiber.StatusBadRequest, "ใบสั่งซื้อนี้ยังไม่ได้รับการอนุมัติ")
+		return fiber.NewError(fiber.StatusBadRequest, msgPONotApproved)
 	}
 
 	// Phase 1 — validate everything (no document number is consumed yet).

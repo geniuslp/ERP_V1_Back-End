@@ -3668,6 +3668,24 @@ paths:
       summary: Get approval history for a document
       tags:
       - Approvals
+  /approvals/my-pending-counts:
+    get:
+      description: 'Number of Memo / PO / WO documents waiting for the caller: status
+        PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned
+        to the caller (approver_id) or legacy NULL-approver documents the caller can
+        approve by role. Same filter as the approval lists.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Pending-approval counts for the current user (sidebar badges)
+      tags:
+      - Approvals
   /approvals/pending:
     get:
       parameters:
@@ -6051,14 +6069,23 @@ paths:
       - IC
   /ic/projects/{projectId}/po-search-options:
     get:
-      description: Returns PR numbers and PO numbers for one project, tagged with
-        type ('PR' or 'PO') for a grouped dropdown.
+      description: 'Returns PR numbers and PO numbers for one project, tagged with
+        type (''PR'' or ''PO'') for a grouped dropdown. PO options: status APPROVED
+        and not deleted. PR options (default, for receiving): not deleted/CANCELLED,
+        at least one live PO (not CANCELLED/REJECTED/deleted) linked, and every non-cancelled
+        line with qty_requested - qty_reserved > 0 fully ordered by live PO lines.
+        for=return skips the fully-ordered condition (returns can target any live
+        PR).'
       parameters:
       - description: project.id
         in: path
         name: projectId
         required: true
         type: integer
+      - description: return = do not require PRs to be fully ordered
+        in: query
+        name: for
+        type: string
       produces:
       - application/json
       responses:
@@ -9465,7 +9492,9 @@ paths:
         in: query
         name: date_to
         type: string
-      - description: true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)
+      - description: 'true = approval-page scope for the JWT user: memos assigned
+          to them (approver_id), legacy NULL-approver memos they can approve by role
+          (approval_config), and memos they already approved/rejected'
         in: query
         name: my_approvals
         type: string
@@ -9553,6 +9582,12 @@ paths:
         name: id
         required: true
         type: integer
+      - description: 'true = approval page: 403 unless the memo is assigned to the
+          caller (or legacy NULL-approver they can approve by role, or already decided
+          by them)'
+        in: query
+        name: for_approval
+        type: boolean
       produces:
       - application/json
       responses:
@@ -9560,6 +9595,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/models.Memo'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
       summary: ดูรายละเอียด Memo
@@ -10966,6 +11005,49 @@ paths:
       security:
       - BearerAuth: []
       summary: Cost Budget page — Level 2 cost-code breakdown for a project
+      tags:
+      - Purchase Order
+  /po/cost-budget/{projectCode}/cost-codes/{costSubgroupId}/po-lines:
+    get:
+      description: 'Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail.
+        Filtered by ids only (project_code + cost_subgroup_id, never the displayed
+        cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT
+        IN (DRAFT, REJECTED, CANCELLED), line status <> CANCELLED. So SUM(amount)
+        = the row''s pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price
+        (reference only). item_name = material name + spec, falling back to the line
+        description (same as the purchases drill-down). unit = material_code unit.
+        Ordered by po_no, line_no; not paginated (one cost code in one project). 404
+        when the cost code is not an ITEM of this project''s budget page (no budget
+        row and no PO line).'
+      parameters:
+      - description: Project code
+        in: path
+        name: projectCode
+        required: true
+        type: string
+      - description: cost_subgroup.id
+        in: path
+        name: costSubgroupId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Cost Budget — PO lines charged to one cost code of a project
       tags:
       - Purchase Order
   /po/export:

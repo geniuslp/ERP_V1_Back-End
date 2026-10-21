@@ -241,6 +241,18 @@ func buildPOListFilters(c *fiber.Ctx) (string, []any, error) {
 		args = append(args, claims.UserID)
 		conditions = append(conditions, fmt.Sprintf("po.created_by = $%d", len(args)))
 	}
+	if c.QueryBool("my_approvals", false) {
+		// Approval-page scope for the JWT user (approval_scope.go) — never from client input.
+		claims := middleware.GetClaims(c)
+		if claims == nil {
+			return "", nil, fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+		}
+		var cond string
+		cond, args = approvalListCond(claims, "PO", "po", args)
+		if cond != "" {
+			conditions = append(conditions, cond)
+		}
+	}
 	if v := strings.TrimSpace(c.Query("status")); v != "" {
 		var statuses []string
 		for _, s := range strings.Split(v, ",") {
@@ -796,6 +808,11 @@ func (h *POHandler) CostBudget(c *fiber.Ctx) error {
 // @Router       /po/{id} [get]
 func (h *POHandler) Get(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if poID, perr := strconv.ParseInt(id, 10, 64); perr == nil {
+		if err := requireApprovalDetailAccess(c, h.db, "PO", poID); err != nil {
+			return err
+		}
+	}
 	row := h.db.QueryRow(context.Background(), `
 		SELECT po.id, po.po_no, po.po_date, po.supplier_id, po.pr_id, po.rfq_id, po.ref,
 		       po.location_text, po.warehouse_code, po.project_code,
@@ -2085,6 +2102,15 @@ func (h *POHandler) Approve(c *fiber.Ctx) error {
 	h.db.QueryRow(context.Background(), `SELECT status, po_no FROM purchase_order WHERE id=$1`, id).Scan(&currentStatus, &poNo)
 	if currentStatus != "PENDING_APPROVAL" && currentStatus != "PENDING_REAPPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "PO is not pending approval")
+	}
+	if poID, perr := strconv.ParseInt(id, 10, 64); perr == nil {
+		ok, err := approverMayAct(context.Background(), h.db, claims, "PO", poID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fiber.NewError(fiber.StatusForbidden, msgNotAssignedApprover)
+		}
 	}
 
 	newStatus := "APPROVED"

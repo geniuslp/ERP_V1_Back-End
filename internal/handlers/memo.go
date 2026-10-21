@@ -210,7 +210,7 @@ func validateMemoJobCode(ctx context.Context, db *pgxpool.Pool, projectCode, job
 // @Param        project_code query  string  false  "กรอง project"
 // @Param        date_from    query  string  false  "วันที่เริ่ม (YYYY-MM-DD)"
 // @Param        date_to      query  string  false  "วันที่สิ้นสุด (YYYY-MM-DD)"
-// @Param        my_approvals query  string  false  "true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)"
+// @Param        my_approvals query  string  false  "true = approval-page scope for the JWT user: memos assigned to them (approver_id), legacy NULL-approver memos they can approve by role (approval_config), and memos they already approved/rejected"
 // @Param        exclude_used_by_pr query string false "true = (PR memo panel) hide memos with no available line left; adds total_lines/taken_lines/remaining_lines. A line is taken by a live PR (not CANCELLED, not soft-deleted); a memo linked by a live PR that has no memo_line_id lines (legacy whole-memo link) counts as fully used"
 // @Param        include_used query  string  false  "true = with exclude_used_by_pr, return fully-used memos too (still adds the line counts)"
 // @Param        page         query  int     false  "หน้า (default 1)"
@@ -300,13 +300,15 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 	isMyApprovals := f.MyApprovals == "true"
 
 	if isMyApprovals {
-		// Approver's own queue: filter by approver_id derived from the JWT,
-		// never from client input. Bypasses the owner-only filter below since
-		// this is an intentional cross-user query (the approver is usually not
-		// the requester).
-		where += fmt.Sprintf(" AND m.approver_id = $%d", i)
-		args = append(args, claims.UserID)
-		i++
+		// Approver's own queue: scoped by the JWT user, never client input (approval_scope.go): memos assigned
+		// to this user, legacy NULL-approver memos they can approve by role, and — once decided — memos they
+		// approved/rejected. Bypasses the owner-only filter below since this is an intentional cross-user query.
+		var cond string
+		cond, args = approvalListCond(claims, "MEMO", "m", args)
+		if cond != "" {
+			where += " AND " + cond
+			i = len(args) + 1
+		}
 	} else if f.AllUsers != "true" && !isAdmin {
 		where += fmt.Sprintf(" AND m.requested_by = $%d", i)
 		args = append(args, claims.UserID)
@@ -404,12 +406,18 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 // @Security     BearerAuth
 // @Produce      json
 // @Param        id  path  int  true  "Memo ID"
+// @Param        for_approval query bool false "true = approval page: 403 unless the memo is assigned to the caller (or legacy NULL-approver they can approve by role, or already decided by them)"
 // @Success      200  {object}  models.Memo
+// @Failure      403  {object}  fiber.Map
 // @Router       /memo/{id} [get]
 func (h *MemoHandler) GetByID(c *fiber.Ctx) error {
 	id, err := c.ParamsInt("id")
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
+	}
+
+	if err := requireApprovalDetailAccess(c, h.db, "MEMO", int64(id)); err != nil {
+		return err
 	}
 
 	m, err := h.getByID(context.Background(), int64(id))
@@ -914,7 +922,7 @@ func (h *MemoHandler) Cancel(c *fiber.Ctx) error {
 	isOwner := claims.UserID == requestedBy
 	if currentStatus == "PENDING_APPROVAL" {
 		if !isOwner {
-			isAssigned, err := isEligibleApprover(ctx, h.db, "MEMO", 1, int64(id), claims.UserID)
+			isAssigned, err := eligibleForApproval(ctx, h.db, claims, "MEMO", 1, int64(id))
 			if err != nil {
 				return err
 			}
@@ -1017,12 +1025,12 @@ func (h *MemoHandler) Approve(c *fiber.Ctx) error {
 	}
 	// Eligible = the memo's assigned approver_id, or an active MEMO extra-approver
 	// (approval_delegation) — matches isEligibleApprover's MEMO rule in approval_status.go.
-	isAssigned, err := isEligibleApprover(ctx, h.db, "MEMO", 1, int64(id), claims.UserID)
+	isAssigned, err := eligibleForApproval(ctx, h.db, claims, "MEMO", 1, int64(id))
 	if err != nil {
 		return err
 	}
 	if !isAssigned {
-		return fiber.NewError(fiber.StatusForbidden, "you are not the assigned approver for this memo")
+		return fiber.NewError(fiber.StatusForbidden, msgNotAssignedApprover)
 	}
 
 	newStatus := "APPROVED"

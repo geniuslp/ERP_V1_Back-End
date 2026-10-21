@@ -790,6 +790,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/approvals/my-pending-counts": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Number of Memo / PO / WO documents waiting for the caller: status PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id) or legacy NULL-approver documents the caller can approve by role. Same filter as the approval lists.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Approvals"
+                ],
+                "summary": "Pending-approval counts for the current user (sidebar badges)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/approvals/pending": {
             "get": {
                 "security": [
@@ -4166,7 +4191,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns PR numbers and PO numbers for one project, tagged with type ('PR' or 'PO') for a grouped dropdown.",
+                "description": "Returns PR numbers and PO numbers for one project, tagged with type ('PR' or 'PO') for a grouped dropdown. PO options: status APPROVED and not deleted. PR options (default, for receiving): not deleted/CANCELLED, at least one live PO (not CANCELLED/REJECTED/deleted) linked, and every non-cancelled line with qty_requested - qty_reserved \u003e 0 fully ordered by live PO lines. for=return skips the fully-ordered condition (returns can target any live PR).",
                 "produces": [
                     "application/json"
                 ],
@@ -4181,6 +4206,12 @@ const docTemplate = `{
                         "name": "projectId",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "return = do not require PRs to be fully ordered",
+                        "name": "for",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -9227,7 +9258,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "true = แสดงเฉพาะ memo ที่ approver คือผู้ใช้ปัจจุบัน (จาก JWT)",
+                        "description": "true = approval-page scope for the JWT user: memos assigned to them (approver_id), legacy NULL-approver memos they can approve by role (approval_config), and memos they already approved/rejected",
                         "name": "my_approvals",
                         "in": "query"
                     },
@@ -9324,6 +9355,12 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true = approval page: 403 unless the memo is assigned to the caller (or legacy NULL-approver they can approve by role, or already decided by them)",
+                        "name": "for_approval",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -9331,6 +9368,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.Memo"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
                         }
                     }
                 }
@@ -10495,6 +10538,59 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/po/cost-budget/{projectCode}/cost-codes/{costSubgroupId}/po-lines": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail. Filtered by ids only (project_code + cost_subgroup_id, never the displayed cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT IN (DRAFT, REJECTED, CANCELLED), line status \u003c\u003e CANCELLED. So SUM(amount) = the row's pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price (reference only). item_name = material name + spec, falling back to the line description (same as the purchases drill-down). unit = material_code unit. Ordered by po_no, line_no; not paginated (one cost code in one project). 404 when the cost code is not an ITEM of this project's budget page (no budget row and no PO line).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Purchase Order"
+                ],
+                "summary": "Cost Budget — PO lines charged to one cost code of a project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project code",
+                        "name": "projectCode",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "cost_subgroup.id",
+                        "name": "costSubgroupId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }

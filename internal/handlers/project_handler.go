@@ -140,6 +140,19 @@ func amountOrZero(v *models.AmountInput) float64 {
 	return float64(*v)
 }
 
+// voProjectNamePrefix: the name of a VO project must start with this, followed by a non-blank name.
+const voProjectNamePrefix = "Q - "
+
+const msgVOProjectName = "ชื่อโครงการประเภท VO ต้องขึ้นต้นด้วย Q - และมีชื่อต่อท้าย"
+
+// checkVOProjectName enforces the VO naming rule: voProjectNamePrefix + at least one non-space character.
+func checkVOProjectName(name string) error {
+	if !strings.HasPrefix(name, voProjectNamePrefix) || strings.TrimSpace(name[len(voProjectNamePrefix):]) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, msgVOProjectName)
+	}
+	return nil
+}
+
 // resolveProjectValues applies the project_kind rule: NEW stores budget_amount (vo_amount saved as 0),
 // VO stores vo_amount (budget_amount saved as 0). Both are optional: missing/null/"" -> 0. Blank kind
 // falls back to defaultKind. Returns the normalized kind and the two amounts to store.
@@ -457,6 +470,11 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
 	}
+	if kind == "VO" {
+		if err := checkVOProjectName(req.ProjectName); err != nil {
+			return err
+		}
+	}
 	status, verr := validateProjectCore("(auto)", req.ProjectName, req.ResponsiblePersonName, req.Status, req.JobCodes)
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
@@ -606,9 +624,9 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	}
 	ctx := context.Background()
 
-	var currentProjectCode, currentKind string
+	var currentProjectCode, currentKind, currentName string
 	var currentIsActive bool
-	if err := h.db.QueryRow(ctx, `SELECT project_code, is_active, project_kind FROM project WHERE id=$1`, id).Scan(&currentProjectCode, &currentIsActive, &currentKind); err != nil {
+	if err := h.db.QueryRow(ctx, `SELECT project_code, is_active, project_kind, project_name FROM project WHERE id=$1`, id).Scan(&currentProjectCode, &currentIsActive, &currentKind, &currentName); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "project not found")
 	}
 	// project_code is immutable: it is generated at create time and any client value is ignored.
@@ -636,6 +654,13 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	kind, budgetAmount, voAmount, verr := resolveProjectValues(req.ProjectKind, currentKind, req.BudgetAmount, req.VOAmount)
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
+	}
+	// VO naming rule: only when this save changes the name or the kind, so old VO projects without the
+	// prefix stay editable for their other fields.
+	if kind == "VO" && (kind != currentKind || strings.TrimSpace(req.ProjectName) != strings.TrimSpace(currentName)) {
+		if err := checkVOProjectName(req.ProjectName); err != nil {
+			return err
+		}
 	}
 	status, verr := validateProjectCore(req.ProjectCode, req.ProjectName, req.ResponsiblePersonName, req.Status, req.JobCodes)
 	if verr != nil {

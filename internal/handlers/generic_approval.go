@@ -128,11 +128,14 @@ func (h *GenericApprovalHandler) decide(c *fiber.Ctx, action string) error {
 	// isEligibleApprover helper), so the Approve/Reject button gating and the actual
 	// server-side enforcement never diverge. MEMO uses its own approver_id + extra-approver
 	// rule instead of role-based matching — see isEligibleApprover's doc comment.
-	eligible, err := isEligibleApprover(ctx, h.db, docType, stepNo, int64(docID), claims.UserID)
+	eligible, err := eligibleForApproval(ctx, h.db, claims, docType, stepNo, int64(docID))
 	if err != nil {
 		return err
 	}
 	if !eligible {
+		if isApprovalScopedDocType(docType) {
+			return fiber.NewError(fiber.StatusForbidden, msgNotAssignedApprover)
+		}
 		return fiber.NewError(fiber.StatusForbidden, "you are not an eligible approver for this document")
 	}
 

@@ -405,6 +405,18 @@ func (h *POApprovalHandler) Approve(c *fiber.Ctx) error {
 	if status != "PENDING_APPROVAL" && status != "PENDING_REAPPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "PO is not pending approval")
 	}
+	if claims := middleware.GetClaims(c); claims != nil {
+		ok, err := approverMayAct(context.Background(), h.db, claims, "PO", id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fiber.NewError(fiber.StatusForbidden, msgNotAssignedApprover)
+		}
+	} else {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
 
 	if _, err := h.db.Exec(context.Background(),
 		`UPDATE purchase_order SET status = 'APPROVED', updated_at = NOW(), updated_by = $1 WHERE id = $2`,
@@ -467,6 +479,18 @@ func (h *POApprovalHandler) Reject(c *fiber.Ctx) error {
 	if status != "PENDING_APPROVAL" && status != "PENDING_REAPPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "PO is not pending approval")
 	}
+	if claims := middleware.GetClaims(c); claims != nil {
+		ok, err := approverMayAct(context.Background(), h.db, claims, "PO", id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fiber.NewError(fiber.StatusForbidden, msgNotAssignedApprover)
+		}
+	} else {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+
 
 	if _, err := h.db.Exec(context.Background(),
 		`UPDATE purchase_order SET status = 'REJECTED', remarks = $1, updated_at = NOW(), updated_by = $2 WHERE id = $3`,

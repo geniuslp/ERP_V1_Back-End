@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"erp-api/internal/auth"
 	"erp-api/internal/middleware"
 
 	"github.com/gofiber/fiber/v2"
@@ -14,7 +15,7 @@ import (
 // given document, and is shared by MyApprovalStatus (button gating) and
 // GenericApprovalHandler.decide (server-side enforcement) so the two never diverge.
 //
-// MEMO is a special case: each memo names a specific approver_id at create/edit time
+// MEMO, PO and WO (see approval_scope.go): each document names a specific approver_id at create/edit time
 // (chosen from the eligible pool returned by GET /master/eligible-approvers, which IS
 // role-based via approval_config). Once that specific person is chosen, eligibility to
 // act on THAT memo is just "are you that person" (or an extra approver from
@@ -30,38 +31,11 @@ import (
 // All other doc types (BORROW, ...) keep the original role-based + extra-approver +
 // assigned_to union, since they have no per-document approver_id field.
 func isEligibleApprover(ctx context.Context, db *pgxpool.Pool, docType string, stepNo int, docID int64, userID int64) (bool, error) {
-	if docType == "MEMO" {
-		var eligible bool
-		err := db.QueryRow(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM memo WHERE id = $2 AND approver_id = $1
-
-				UNION
-
-				SELECT 1
-				FROM approval_delegation ad
-				WHERE (ad.doc_type = 'MEMO' OR ad.doc_type IS NULL) AND ad.user_id = $1
-			)`,
-			userID, docID,
-		).Scan(&eligible)
-		return eligible, err
-	}
-
-	if docType == "PO" {
-		var eligible bool
-		err := db.QueryRow(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM purchase_order WHERE id = $2 AND approver_id = $1
-
-				UNION
-
-				SELECT 1
-				FROM approval_delegation ad
-				WHERE (ad.doc_type = 'PO' OR ad.doc_type IS NULL) AND ad.user_id = $1
-			)`,
-			userID, docID,
-		).Scan(&eligible)
-		return eligible, err
+	// MEMO / PO / WO: only the document's own approver_id (or, for legacy NULL-approver rows, a holder of an
+	// approving role in approval_config) — see approval_scope.go. approval_delegation no longer widens this.
+	if isApprovalScopedDocType(docType) {
+		_, allowed, err := docApprovalAccess(ctx, db, docType, docID, userID, true)
+		return allowed, err
 	}
 
 	// PETTY_CASH follows the exact same per-document approver_id model as PO/MEMO.
@@ -232,7 +206,7 @@ func (h *ApprovalHandler) MyApprovalStatus(c *fiber.Ctx) error {
 		}})
 	}
 
-	isAssigned, err := isEligibleApprover(ctx, h.db, docType, stepNo, int64(docID), claims.UserID)
+	isAssigned, err := eligibleForApproval(ctx, h.db, claims, docType, stepNo, int64(docID))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -243,4 +217,13 @@ func (h *ApprovalHandler) MyApprovalStatus(c *fiber.Ctx) error {
 		"current_step_name":    stepName,
 		"doc_status":           stepStatus,
 	}})
+}
+
+// eligibleForApproval is isEligibleApprover plus the canViewAllApprovals exception hook; the approve/reject
+// paths and the my-status button gating call this so the exception stays a one-line change.
+func eligibleForApproval(ctx context.Context, db *pgxpool.Pool, claims *auth.Claims, docType string, stepNo int, docID int64) (bool, error) {
+	if isApprovalScopedDocType(docType) {
+		return approverMayAct(ctx, db, claims, docType, docID)
+	}
+	return isEligibleApprover(ctx, db, docType, stepNo, docID, claims.UserID)
 }

@@ -493,9 +493,31 @@ func (h *WorkOrderHandler) List(c *fiber.Ctx) error {
 	args := []any{}
 	i := 1
 	if f.Status != "" {
-		where = append(where, fmt.Sprintf("wo.status = $%d", i))
-		args = append(args, f.Status)
-		i++
+		// One status, or several comma-separated (e.g. PENDING_APPROVAL,PENDING_REAPPROVAL for the approval page).
+		var statuses []string
+		for _, st := range strings.Split(f.Status, ",") {
+			if st = strings.TrimSpace(st); st != "" {
+				statuses = append(statuses, st)
+			}
+		}
+		if len(statuses) > 0 {
+			where = append(where, fmt.Sprintf("wo.status = ANY($%d)", i))
+			args = append(args, statuses)
+			i++
+		}
+	}
+	if c.QueryBool("my_approvals", false) {
+		// Approval-page scope for the JWT user (approval_scope.go) — never from client input.
+		claims := middleware.GetClaims(c)
+		if claims == nil {
+			return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+		}
+		var cond string
+		cond, args = approvalListCond(claims, "WO", "wo", args)
+		if cond != "" {
+			where = append(where, cond)
+			i = len(args) + 1
+		}
 	}
 	if f.ProjectCode != "" {
 		where = append(where, fmt.Sprintf("wo.project_code = $%d", i))
@@ -580,6 +602,9 @@ func (h *WorkOrderHandler) Get(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
 	}
 	ctx := context.Background()
+	if err := requireApprovalDetailAccess(c, h.db, "WO", id); err != nil {
+		return err
+	}
 
 	w, err := scanWorkOrder(h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s

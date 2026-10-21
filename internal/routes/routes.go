@@ -190,6 +190,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	po.Get("/export", poH.ExportSummary)
 	po.Get("/list-export", poH.ListExport)
 	po.Get("/cost-budget", poH.CostBudget)
+	po.Get("/cost-budget/:projectCode/cost-codes/:costSubgroupId/po-lines", poH.CostBudgetPOLines)
 	po.Get("/:projectCode/cost-budget-detail", poH.CostBudgetDetail)
 	po.Get("/:projectCode/cost-budget-detail/:subgroupId/purchases", poH.CostBudgetDetailPurchases)
 	po.Get("/", poH.List)
@@ -259,6 +260,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Approvals & Audit
 	approvals := api.Group("/approvals")
 	approvals.Get("/pending", approvalH.Pending)
+	approvals.Get("/my-pending-counts", approvalH.MyPendingCounts) // Memo/PO/WO approver-scoped badge counts
 	approvals.Get("/logs", approvalH.Logs)
 	approvals.Get("/audit", approvalH.AuditLogs)
 
