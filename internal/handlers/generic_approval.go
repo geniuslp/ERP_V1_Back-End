@@ -121,7 +121,7 @@ func (h *GenericApprovalHandler) decide(c *fiber.Ctx, action string) error {
 		ORDER BY step_no DESC LIMIT 1`,
 		docType, docID,
 	).Scan(&approvalReqID, &stepNo); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "no pending approval for this document")
+		return fiber.NewError(fiber.StatusBadRequest, "เอกสารนี้ไม่มีคำขออนุมัติที่รออยู่")
 	}
 
 	// Eligibility mirrors approval_status.go's MyApprovalStatus exactly (via the shared

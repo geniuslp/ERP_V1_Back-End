@@ -390,11 +390,6 @@ func (h *POApprovalHandler) Approve(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"success": false, "message": "invalid id"})
 	}
 
-	var userID int64
-	if claims := middleware.GetClaims(c); claims != nil {
-		userID = claims.UserID
-	}
-
 	var status string
 	if err := h.db.QueryRow(context.Background(),
 		`SELECT status FROM purchase_order WHERE id = $1`, id,
@@ -419,8 +414,8 @@ func (h *POApprovalHandler) Approve(c *fiber.Ctx) error {
 
 
 	if _, err := h.db.Exec(context.Background(),
-		`UPDATE purchase_order SET status = 'APPROVED', updated_at = NOW(), updated_by = $1 WHERE id = $2`,
-		userID, id,
+		`UPDATE purchase_order SET status = 'APPROVED', updated_at = NOW() WHERE id = $1`,
+		id,
 	); err != nil {
 		log.Printf("❌ PO approve update error: %v", err)
 		return err
@@ -464,11 +459,6 @@ func (h *POApprovalHandler) Reject(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "reason is required")
 	}
 
-	var userID int64
-	if claims := middleware.GetClaims(c); claims != nil {
-		userID = claims.UserID
-	}
-
 	var status string
 	if err := h.db.QueryRow(context.Background(),
 		`SELECT status FROM purchase_order WHERE id = $1`, id,
@@ -493,8 +483,8 @@ func (h *POApprovalHandler) Reject(c *fiber.Ctx) error {
 
 
 	if _, err := h.db.Exec(context.Background(),
-		`UPDATE purchase_order SET status = 'REJECTED', remarks = $1, updated_at = NOW(), updated_by = $2 WHERE id = $3`,
-		req.Reason, userID, id,
+		`UPDATE purchase_order SET status = 'REJECTED', remarks = $1, updated_at = NOW() WHERE id = $2`,
+		req.Reason, id,
 	); err != nil {
 		log.Printf("❌ PO reject update error: %v", err)
 		return err
@@ -565,8 +555,8 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 	}
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE purchase_order SET status = 'CANCELLED', updated_at = NOW(), updated_by = $1 WHERE id = $2`,
-		userID, id,
+		`UPDATE purchase_order SET status = 'CANCELLED', updated_at = NOW() WHERE id = $1`,
+		id,
 	); err != nil {
 		log.Printf("❌ PO cancel update error: %v", err)
 		return err

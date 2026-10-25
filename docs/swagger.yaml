@@ -256,6 +256,29 @@ definitions:
       tax_id:
         type: string
     type: object
+  handlers.departmentCreateRequest:
+    properties:
+      dept_code:
+        type: string
+      dept_name:
+        type: string
+      is_active:
+        type: boolean
+      sort_order:
+        type: integer
+    type: object
+  handlers.departmentUpdateRequest:
+    properties:
+      dept_code:
+        description: 'immutable: only accepted when it equals the stored code'
+        type: string
+      dept_name:
+        type: string
+      is_active:
+        type: boolean
+      sort_order:
+        type: integer
+    type: object
   handlers.icRateReceiveDocumentRequest:
     properties:
       score_notes:
@@ -341,6 +364,85 @@ definitions:
     properties:
       deposit_paid:
         type: boolean
+    type: object
+  handlers.woBillInvoice:
+    properties:
+      bill_date:
+        type: string
+      delivery_date:
+        type: string
+      invoice_date:
+        type: string
+      invoice_no:
+        type: string
+      pay_date:
+        type: string
+    type: object
+  handlers.woBillLine:
+    properties:
+      amount:
+        type: number
+      line_code:
+        description: ADV | PROGRESS | ADV_DEDUCT | VAT | RETENTION | WHT | OTHER
+        type: string
+      percent:
+        type: number
+    type: object
+  handlers.woBillRequest:
+    properties:
+      ap_voucher_no:
+        type: string
+      bill_type:
+        description: ADV | PROGRESS | RETENTION
+        type: string
+      credit_term_days:
+        type: integer
+      description:
+        type: string
+      installment_no:
+        type: integer
+      invoices:
+        items:
+          $ref: '#/definitions/handlers.woBillInvoice'
+        type: array
+      lines:
+        items:
+          $ref: '#/definitions/handlers.woBillLine'
+        type: array
+      pay_to:
+        type: string
+      progress_installment_no:
+        type: integer
+      status:
+        description: DRAFT (default) | SAVED
+        type: string
+      wht_type:
+        type: string
+    type: object
+  handlers.woContractorLogRequest:
+    properties:
+      project_code:
+        type: string
+      terms:
+        items:
+          $ref: '#/definitions/handlers.woContractorLogTerm'
+        type: array
+      wo_id:
+        type: integer
+    type: object
+  handlers.woContractorLogTerm:
+    properties:
+      accumulate:
+        type: number
+      amount:
+        type: number
+      balance:
+        type: number
+      item_type:
+        description: CONTRACT | ADVANCE | RETENTION
+        type: string
+      percent:
+        type: number
     type: object
   models.AddAttachmentRequest:
     properties:
@@ -1604,6 +1706,9 @@ definitions:
         type: string
       end_date:
         type: string
+      has_penalty:
+        description: omitted on PUT keeps the stored value
+        type: boolean
       lines:
         items:
           $ref: '#/definitions/models.WorkOrderLineInput'
@@ -1662,6 +1767,8 @@ definitions:
         type: boolean
       vat_rate:
         type: number
+      warranty_note:
+        type: string
       warranty_years:
         type: integer
       wht_rate:
@@ -3672,8 +3779,8 @@ paths:
     get:
       description: 'Number of Memo / PO / WO documents waiting for the caller: status
         PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned
-        to the caller (approver_id) or legacy NULL-approver documents the caller can
-        approve by role. Same filter as the approval lists.'
+        to the caller (approver_id; a NULL approver_id counts for nobody). Same filter
+        as the approval lists.'
       produces:
       - application/json
       responses:
@@ -4046,6 +4153,13 @@ paths:
       - Customer
   /departments:
     get:
+      description: All departments ordered by sort_order, dept_code. active_only=true
+        returns only is_active rows (use it for dropdowns).
+      parameters:
+      - description: Only active departments
+        in: query
+        name: active_only
+        type: boolean
       produces:
       - application/json
       responses:
@@ -4057,7 +4171,112 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
       summary: List departments
+      tags:
+      - Departments
+    post:
+      consumes:
+      - application/json
+      description: dept_code is trimmed, upper-cased, max 20, A-Z 0-9 and _ only,
+        and cannot be changed later. dept_name required, max 200. sort_order integer
+        >= 0 (default 0). is_active defaults to true. 409 when the code already exists.
+      parameters:
+      - description: Department
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.departmentCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Create a department
+      tags:
+      - Departments
+  /departments/{id}:
+    delete:
+      description: Refused with 409 while any table with a dept_code column (users,
+        roles, project, purchase_request, petty_cash_requisition, dept_menu_permissions,
+        ...) still references the code; the message lists the tables and row counts
+        and suggests deactivating instead. The check and the delete run in one transaction.
+      parameters:
+      - description: Department id
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a department
+      tags:
+      - Departments
+    put:
+      consumes:
+      - application/json
+      description: 'Updates dept_name (required), sort_order and is_active (kept when
+        omitted). dept_code is immutable: a dept_code in the body is accepted only
+        if it equals the stored code, otherwise 400.'
+      parameters:
+      - description: Department id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Department
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.departmentUpdateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Update a department
       tags:
       - Departments
   /dept-menu-permissions:
@@ -9851,7 +10070,10 @@ paths:
         A line with an empty project_code falls back to the header project_code; if
         both are empty the line is stored with project_code NULL (department-only).
         At least one of header project_code, header dept_code or a line project_code
-        is required (400 otherwise).
+        is required (400 otherwise). With status=PENDING_APPROVAL every line must
+        carry a cost_subgroup_id that is a selectable ITEM (not Head/Major), else
+        400 "บรรทัดที่ N ยังไม่ได้ระบุรหัสต้นทุน" / "บรรทัดที่ N ใช้รหัสต้นทุนที่เลือกไม่ได้
+        (Head/Major)"; a DRAFT may be saved without a cost code.
       parameters:
       - description: Petty cash requisition data
         in: body
@@ -10164,6 +10386,11 @@ paths:
     post:
       consumes:
       - application/json
+      description: 'Requires ≥1 line, requester remarks, and on every line a cost_subgroup_id
+        that is a selectable ITEM (not Head/Major): 400 "บรรทัดที่ N ยังไม่ได้ระบุรหัสต้นทุน"
+        / "บรรทัดที่ N ใช้รหัสต้นทุนที่เลือกไม่ได้ (Head/Major)". Unlike save-time
+        validation, a Head/Major code already stored on the draft is NOT tolerated
+        here.'
       parameters:
       - description: Petty cash requisition ID
         in: path
@@ -10893,11 +11120,16 @@ paths:
       description: |-
         Flat ordered list with row_type MAJOR | HEAD | ITEM. ITEM rows (NOT is_head AND NOT is_major) are the
         subgroups that have a PO line in the project (POs not DRAFT/REJECTED/CANCELLED/deleted; order_type is NOT
-        filtered) OR a project_cost_budget row. budget comes from project_cost_budget (LEFT JOIN, no row => 0);
-        pu_cost = SUM(qty_ordered * unit_price); ac_cost is still a 0 placeholder. HEAD = sum of its group's ITEM
-        rows, MAJOR = sum of all ITEM rows of its job (computed in the backend; a roll-up row appears only when it has
-        at least one ITEM under it). Order per job: MAJOR, then each group's HEAD followed by its ITEMs.
-        totals = sum of ITEM rows only.
+        filtered), a project_cost_budget row, OR an APPROVED petty cash line charged to that cost code. budget comes from
+        project_cost_budget (LEFT JOIN, no row => 0). po_cost = SUM(qty_ordered * unit_price); pc_cost = SUM(amount -
+        line_discount) of APPROVED petty cash lines (header status APPROVED, the LINE's project_code = this project) —
+        EX-VAT/ex-WHT, unlike spent_amount in GET /master/projects which is line_net (VAT-inclusive). pu_cost = po_cost + pc_cost.
+        ac_cost is still a 0 placeholder. HEAD = sum of its group's ITEM rows, MAJOR = sum of all ITEM rows of its job
+        (computed in the backend; a roll-up row appears only when it has at least one ITEM under it). Order per job: MAJOR,
+        then each group's HEAD followed by its ITEMs. APPROVED petty cash lines with no cost code are summed into one last
+        synthetic ITEM row (is_unassigned=true, subgroup_id null, description "ไม่ระบุรหัสต้นทุน", only when the amount is not 0);
+        it has no Head/Major roll-up and no budget. totals (budget, po_cost, pc_cost, pu_cost, ...) = sum of all ITEM rows
+        including the unassigned row, so pc_cost reconciles with the project-level petty cash total (ex-VAT).
       parameters:
       - description: Project code
         in: path
@@ -11009,27 +11241,21 @@ paths:
       - Purchase Order
   /po/cost-budget/{projectCode}/cost-codes/{costSubgroupId}/po-lines:
     get:
-      description: 'Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail.
-        Filtered by ids only (project_code + cost_subgroup_id, never the displayed
-        cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT
-        IN (DRAFT, REJECTED, CANCELLED), line status <> CANCELLED. So SUM(amount)
-        = the row''s pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price
-        (reference only). item_name = material name + spec, falling back to the line
-        description (same as the purchases drill-down). unit = material_code unit.
-        Ordered by po_no, line_no; not paginated (one cost code in one project). 404
-        when the cost code is not an ITEM of this project''s budget page (no budget
-        row and no PO line).'
+      description: |-
+        Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail. Filtered by ids only (project_code + cost_subgroup_id, never the displayed cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT IN (DRAFT, REJECTED, CANCELLED), line status <> CANCELLED. So SUM(amount) = the row's pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price (reference only). item_name = material name + spec, falling back to the line description (same as the purchases drill-down). unit = material_code unit. Ordered by po_no, line_no; not paginated (one cost code in one project). 404 when the cost code is not an ITEM of this project's budget page (no budget row, no PO line and no APPROVED petty cash line).
+        Every row has source: "PO" (the rows above) or "PC" — APPROVED petty cash lines (header status APPROVED, the LINE's project_code = this project, cost_subgroup_id = this cost code) mapped as: po_id = petty cash header id, po_no = petty cash document number (PC-YYYYMM-NNNN), po_status = petty cash status, item_name = line description else material name + spec, quantity = line qty, amount = amount - line_discount (EX-VAT/ex-WHT; spent_amount in GET /master/projects uses line_net, VAT-inclusive). The PC amounts sum to the row's pc_cost on cost-budget-detail; PO amounts stay qty_ordered * unit_price as before. costSubgroupId may be the literal "none": returns only the PC rows of the project with no cost code (the unassigned row), 404 if there are none. Order: PO rows first, then PC, each by document number, line_no.
       parameters:
       - description: Project code
         in: path
         name: projectCode
         required: true
         type: string
-      - description: cost_subgroup.id
+      - description: cost_subgroup.id, or none for petty cash lines without a cost
+          code
         in: path
         name: costSubgroupId
         required: true
-        type: integer
+        type: string
       produces:
       - application/json
       responses:
@@ -11047,7 +11273,8 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Cost Budget — PO lines charged to one cost code of a project
+      summary: Cost Budget — PO and petty cash lines charged to one cost code of a
+        project
       tags:
       - Purchase Order
   /po/export:
@@ -11800,8 +12027,8 @@ paths:
       description: |-
         One row per project, computed in a single set-based query.
         contract_budget = vo_amount for project_kind VO, else budget_amount.
-        pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.
-        ac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.
+        pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, the same basis as the Cost Budget page; NOT line_net, which spent_amount in GET /master/projects still uses). Memo is excluded.
+        ac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash (amount - line_discount, ex-VAT: cash already spent, NOT the payable basis). IC ledgers are not used.
         pu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).
         status (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
         Default list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.
@@ -13915,6 +14142,198 @@ paths:
       summary: Lightweight user options (id + username) for pickers
       tags:
       - Users
+  /wo-contractor-log:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: wo_id, project_code (PJ), terms
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.woContractorLogRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้างบันทึกงานของผู้รับเหมาตามใบสั่งจ้าง (tab ข้อมูลเอกสาร)
+      tags:
+      - WOContractorLog
+  /wo-contractor-log/{id}:
+    get:
+      description: Supplier / WO project / contract description are live-read from
+        work_order (never stored here).
+      parameters:
+      - description: Log ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายละเอียดบันทึกงานของผู้รับเหมาตามใบสั่งจ้าง
+      tags:
+      - WOContractorLog
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Log ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: wo_id, project_code (PJ), terms
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.woContractorLogRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แก้ไขบันทึกงานของผู้รับเหมาตามใบสั่งจ้าง (แทนที่ terms ทั้งหมด)
+      tags:
+      - WOContractorLog
+  /wo-contractor-log/{id}/bills:
+    get:
+      parameters:
+      - description: Log ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายการรับวางบิลของบันทึกงานผู้รับเหมา
+      tags:
+      - WOContractorLog
+    post:
+      consumes:
+      - application/json
+      description: 'lines: up to 7 summary lines (ADV, PROGRESS, ADV_DEDUCT, VAT,
+        RETENTION, WHT, OTHER). subtotal and net_amount are recomputed server-side.'
+      parameters:
+      - description: Log ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: bill
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.woBillRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: สร้างรายการรับวางบิล (tab ประเภทรับวางบิล)
+      tags:
+      - WOContractorLog
+  /wo-contractor-log/bills/{billId}:
+    get:
+      parameters:
+      - description: Bill ID
+        in: path
+        name: billId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: รายละเอียดรายการรับวางบิล
+      tags:
+      - WOContractorLog
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Bill ID
+        in: path
+        name: billId
+        required: true
+        type: integer
+      - description: bill
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.woBillRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: แก้ไขรายการรับวางบิล (แทนที่ lines และ invoices ทั้งหมด)
+      tags:
+      - WOContractorLog
   /work-order:
     get:
       parameters:

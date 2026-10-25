@@ -1,0 +1,155 @@
+2c2
+< \restrict 0DxB7qtObjmtUclHBqeMTtgscRHMO75MXsbqSJjL1vNaf9rr6CLzDbzCiDgiGFb
+---
+> \restrict w8qmC2m2sZSaeacPhe4X4JJFHFI6ttn7Ke9ifRZdLXgGvbjogb6HBngXB65o8tJ
+721c721,722
+<     rated_by bigint
+---
+>     rated_by bigint,
+>     CONSTRAINT chk_ic_po_receive_scores CHECK ((((score_quality IS NULL) OR ((score_quality >= (1)::numeric) AND (score_quality <= (5)::numeric))) AND ((score_quantity IS NULL) OR ((score_quantity >= (1)::numeric) AND (score_quantity <= (5)::numeric))) AND ((score_ontime IS NULL) OR ((score_ontime >= (1)::numeric) AND (score_ontime <= (5)::numeric)))))
+1561,1562d1561
+<     has_tax_invoice boolean DEFAULT false NOT NULL,
+<     has_wht boolean DEFAULT false NOT NULL,
+1565d1563
+<     supplier_tax_id character varying(50),
+1567c1565,1566
+<     tax_form_code character varying(20),
+---
+>     supplier_tax_id character varying(50),
+>     has_tax_invoice boolean DEFAULT false NOT NULL,
+1570c1569
+<     wht_income_type_id integer,
+---
+>     has_wht boolean DEFAULT false NOT NULL,
+1571a1571,1572
+>     tax_form_code character varying(20),
+>     wht_income_type_id integer,
+1967c1968
+<     CONSTRAINT purchase_order_order_type_check CHECK (((order_type)::text = ANY (ARRAY[('stock'::character varying)::text, ('cost'::character varying)::text, ('office_equipment'::character varying)::text, ('asset_equipment'::character varying)::text, ('asset_tool'::character varying)::text, ('asset_office_equipment'::character varying)::text, ('asset_machine'::character varying)::text, ('asset_tools'::character varying)::text]))),
+---
+>     CONSTRAINT purchase_order_order_type_check CHECK (((order_type)::text = ANY (ARRAY[('stock'::character varying)::text, ('cost'::character varying)::text, ('asset_office_equipment'::character varying)::text, ('asset_machine'::character varying)::text, ('asset_tools'::character varying)::text]))),
+2106c2107
+<     CONSTRAINT purchase_request_order_type_check CHECK (((order_type)::text = ANY (ARRAY[('stock'::character varying)::text, ('cost'::character varying)::text, ('office_equipment'::character varying)::text, ('asset_equipment'::character varying)::text, ('asset_tool'::character varying)::text, ('asset_office_equipment'::character varying)::text, ('asset_machine'::character varying)::text, ('asset_tools'::character varying)::text]))),
+---
+>     CONSTRAINT purchase_request_order_type_check CHECK (((order_type)::text = ANY (ARRAY[('stock'::character varying)::text, ('cost'::character varying)::text, ('asset_office_equipment'::character varying)::text, ('asset_machine'::character varying)::text, ('asset_tools'::character varying)::text]))),
+2401,2407d2401
+<     version text NOT NULL,
+<     applied_at timestamp with time zone DEFAULT now() NOT NULL,
+<     baseline boolean DEFAULT false NOT NULL
+< );
+< 
+< 
+< 
+2551c2545
+<     mat_code character varying(30) NOT NULL,
+---
+>     mat_code character varying(30) CONSTRAINT stock_item_item_code_not_null NOT NULL,
+2558c2552
+<     qty numeric(18,4) DEFAULT 0 NOT NULL,
+---
+>     qty numeric(18,4) DEFAULT 0 CONSTRAINT stock_item_min_qty_not_null NOT NULL,
+2786,2787d2779
+<     created_at timestamp without time zone DEFAULT now() NOT NULL,
+<     updated_at timestamp without time zone DEFAULT now() NOT NULL,
+2789c2781,2783
+<     updated_by bigint
+---
+>     updated_by bigint,
+>     created_at timestamp without time zone DEFAULT now() NOT NULL,
+>     updated_at timestamp without time zone DEFAULT now() NOT NULL
+2794,2795c2788
+< ALTER TABLE public.stock_transfer ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+<     SEQUENCE NAME public.stock_transfer_id_seq
+---
+> CREATE SEQUENCE public.stock_transfer_id_seq
+2800,2801c2793,2797
+<     CACHE 1
+< );
+---
+>     CACHE 1;
+> 
+> 
+> 
+> ALTER SEQUENCE public.stock_transfer_id_seq OWNED BY public.stock_transfer.id;
+2819,2820c2815
+< ALTER TABLE public.stock_transfer_line ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+<     SEQUENCE NAME public.stock_transfer_line_id_seq
+---
+> CREATE SEQUENCE public.stock_transfer_line_id_seq
+2825,2826c2820,2824
+<     CACHE 1
+< );
+---
+>     CACHE 1;
+> 
+> 
+> 
+> ALTER SEQUENCE public.stock_transfer_line_id_seq OWNED BY public.stock_transfer_line.id;
+2850,2851c2848
+< ALTER TABLE public.stock_transfer_status_log ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+<     SEQUENCE NAME public.stock_transfer_status_log_id_seq
+---
+> CREATE SEQUENCE public.stock_transfer_status_log_id_seq
+2856,2857c2853,2857
+<     CACHE 1
+< );
+---
+>     CACHE 1;
+> 
+> 
+> 
+> ALTER SEQUENCE public.stock_transfer_status_log_id_seq OWNED BY public.stock_transfer_status_log.id;
+3174,3175c3174,3175
+<     CONSTRAINT wo_contractor_log_bill_bill_type_check CHECK (((bill_type)::text = ANY ((ARRAY['ADV'::character varying, 'PROGRESS'::character varying, 'RETENTION'::character varying])::text[]))),
+<     CONSTRAINT wo_contractor_log_bill_status_check CHECK (((status)::text = ANY ((ARRAY['DRAFT'::character varying, 'SAVED'::character varying])::text[])))
+---
+>     CONSTRAINT wo_contractor_log_bill_bill_type_check CHECK (((bill_type)::text = ANY (ARRAY[('ADV'::character varying)::text, ('PROGRESS'::character varying)::text, ('RETENTION'::character varying)::text]))),
+>     CONSTRAINT wo_contractor_log_bill_status_check CHECK (((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('SAVED'::character varying)::text])))
+3221c3221
+<     CONSTRAINT wo_contractor_log_bill_line_line_code_check CHECK (((line_code)::text = ANY ((ARRAY['ADV'::character varying, 'PROGRESS'::character varying, 'ADV_DEDUCT'::character varying, 'VAT'::character varying, 'RETENTION'::character varying, 'WHT'::character varying, 'OTHER'::character varying])::text[])))
+---
+>     CONSTRAINT wo_contractor_log_bill_line_line_code_check CHECK (((line_code)::text = ANY (ARRAY[('ADV'::character varying)::text, ('PROGRESS'::character varying)::text, ('ADV_DEDUCT'::character varying)::text, ('VAT'::character varying)::text, ('RETENTION'::character varying)::text, ('WHT'::character varying)::text, ('OTHER'::character varying)::text])))
+3258c3258
+<     CONSTRAINT wo_contractor_log_term_item_type_check CHECK (((item_type)::text = ANY ((ARRAY['CONTRACT'::character varying, 'ADVANCE'::character varying, 'RETENTION'::character varying])::text[])))
+---
+>     CONSTRAINT wo_contractor_log_term_item_type_check CHECK (((item_type)::text = ANY (ARRAY[('CONTRACT'::character varying)::text, ('ADVANCE'::character varying)::text, ('RETENTION'::character varying)::text])))
+3385a3386,3389
+> COMMENT ON TABLE public.work_order_cost_code IS 'DEPRECATED as of the WO line-item rework — superseded by work_order_line. Not dropped yet; confirm before removing.';
+> 
+> 
+> 
+3444d3447
+<     CONSTRAINT chk_wol_wht_rate CHECK (((wht_rate IS NULL) OR (wht_rate = ANY (ARRAY[(1)::numeric, (3)::numeric, (5)::numeric])))),
+3659a3663,3674
+> ALTER TABLE ONLY public.stock_transfer ALTER COLUMN id SET DEFAULT nextval('public.stock_transfer_id_seq'::regclass);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.stock_transfer_line ALTER COLUMN id SET DEFAULT nextval('public.stock_transfer_line_id_seq'::regclass);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.stock_transfer_status_log ALTER COLUMN id SET DEFAULT nextval('public.stock_transfer_status_log_id_seq'::regclass);
+> 
+> 
+> 
+4292,4294d4306
+< 
+< 
+< 
+5210c5222
+<     ADD CONSTRAINT cost_group_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.cost_job(id);
+---
+>     ADD CONSTRAINT cost_group_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.cost_job(id) NOT VALID;
+5225c5237
+<     ADD CONSTRAINT cost_job_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES public.cost_subject(id);
+---
+>     ADD CONSTRAINT cost_job_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES public.cost_subject(id) NOT VALID;
+5240c5252
+<     ADD CONSTRAINT cost_subgroup_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.cost_group(id);
+---
+>     ADD CONSTRAINT cost_subgroup_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.cost_group(id) NOT VALID;
+6554c6566
+< \unrestrict 0DxB7qtObjmtUclHBqeMTtgscRHMO75MXsbqSJjL1vNaf9rr6CLzDbzCiDgiGFb
+---
+> \unrestrict w8qmC2m2sZSaeacPhe4X4JJFHFI6ttn7Ke9ifRZdLXgGvbjogb6HBngXB65o8tJ

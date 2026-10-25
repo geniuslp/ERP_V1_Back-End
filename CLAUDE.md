@@ -1506,3 +1506,55 @@ This change ships **together with the pending Work Order code** (the `work_order
 - **For this page only** a warehouse project = `COALESCE(linked_warehouse_code, warehouse_code)`; IC code still decides with `linked_warehouse_code` alone (`linkedWarehouseCode`) — untouched.
 - The cost-transaction query was extracted to the shared `queryProjectCostTransactions` (used by `GET /ic/projects/:projectCode/cost-transactions` and the new endpoint).
 - Data caveat on dev: all 7,134 `stock_item` rows have `warehouse_code='WH01'` (not a real `warehouse` row), so every warehouse project shows an empty stock until `stock_item.warehouse_code` is corrected in pgAdmin to HO/FAC-S/FAC-P/BO. `ic_project_cost_item`, its transactions and `stock_transaction` are empty on dev.
+
+---
+
+## 🧭 Session learnings (2026-10-25) — WO 8.1/8.2, contractor work log (บันทึกงานของผู้รับเหมาตามใบสั่งจ้าง) tab 1 + tab 2 [Backend/SQL]
+
+> Verified: `go build ./...` ผ่าน; SQL ของ create/get ทุกตัวรันใน transaction ที่ rollback บน dev DB; migrations 017–021 รันบน dev (localhost) แล้ว.
+> **ยังไม่ได้เรียก HTTP endpoint จริง** (ต้อง restart backend ก่อน) — dev เครื่องอื่น / UAT ต้องรัน 017–021 เอง.
+
+1. **WO 8.1 / 8.2** (`017_wo_penalty_warranty_note.sql`): `work_order.has_penalty boolean NOT NULL DEFAULT false` (เบี้ยปรับ มี/ไม่มี,
+   อัตรา 1.00%/วัน เป็นข้อความคงที่ ไม่เก็บ) + `warranty_note text` (ประกันผลงาน 1 ปี). `penalty_pct_per_day` / `warranty_years` ยังอยู่ ไม่ได้ลบ.
+   `work_order.go`: Create/Update (`has_penalty` = `COALESCE($,false)` ตอน create / `COALESCE($,has_penalty)` ตอน update, `warranty_note` ตรง ๆ),
+   `workOrderSelectCols` + `scanWorkOrder` (ต่อท้ายสุด), `models.WorkOrder` / `CreateWorkOrderRequest` (`HasPenalty`, `WarrantyNote`).
+   `work_order.go` เป็น CRLF — ตอนแก้ด้วยสคริปต์ให้ normalize `\r\n` ก่อนแล้วค่อยแปลงกลับ.
+2. **เมนู** (`018`, `019`): `MENU_WO_CONTRACTOR_LOG` ใต้ `MENU_PO` ลำดับ 9 ก่อน Budget Cost. ไม่มี grant ใน SQL — ให้สิทธิ์ผ่าน permission matrix
+   (สิทธิ์จริงของ MENU_PO_* อยู่ใน `dept_menu_permissions` + `user_menu_permissions`; `role_menu_permissions` ของเมนู PO ว่าง). `MENU_WO` (id 51) ปิดอยู่.
+3. **Tab 1 ข้อมูลเอกสาร** (`020`, `wo_contractor_log.go`, route group `/wo-contractor-log` ใน `routes.go` หลัง `/work-order`): `POST /`, `GET /:id`, `PUT /:id`.
+   ตาราง `wo_contractor_log` (wo_id, project_code=PJ) + `wo_contractor_log_term` (CONTRACT/ADVANCE/RETENTION: percent/amount/accumulate/balance กรอกเอง, replace-all ตอน PUT).
+   `GET /:id` live-join `work_order` + `project` + `supplier` (ผู้รับจ้าง, โครงการ, ลักษณะสัญญา, `credit_term_days` = เลขตัวแรกของ `supplier.payment_terms` เช่น "30  วัน").
+4. **Tab 2 ประเภทรับวางบิล** (`021`, `wo_contractor_log_bill.go`): `GET /:id/bills`, `POST /:id/bills`, `GET /bills/:billId`, `PUT /bills/:billId` (แทนที่ lines + invoices ทั้งหมด).
+   `bill_type` ADV|PROGRESS|RETENTION, `status` DRAFT|SAVED (ปุ่ม DRAFT/SAVE ในสเก็ตช์). ตาราง `_bill`, `_bill_line` (7 บรรทัด), `_bill_invoice`.
+   **`subtotal` และ `net_amount` คำนวณใหม่ฝั่ง backend เสมอ** (`calcWOBillTotals`): subtotal = ADV + PROGRESS − ADV_DEDUCT + VAT; net = subtotal − RETENTION − WHT − OTHER —
+   ค่าที่ client ส่งมาสำหรับสองตัวนี้ถูกเมิน. ตรวจกับตัวอย่างสเก็ตช์: 5,000,000 −500,000 +315,000 = 4,815,000; −250,000 −135,000 = 4,430,000 ✓.
+   ฐานคำนวณฝั่ง frontend: VAT/WHT = (ADV+PROGRESS − ADV_DEDUCT) × %, ADV_DEDUCT/RETENTION = (ADV+PROGRESS) × % (เดาจากตัวเลขในสเก็ตช์ ไม่ได้ยืนยันกับผู้ใช้).
+5. **Gotchas**: `round2` / `derefStr` มีอยู่แล้วใน package `handlers` (`finance_installments.go`, `user_signature.go`) — ใช้ซ้ำ ห้ามประกาศใหม่ (build จะ fail "redeclared").
+   Static route `/bills/:billId` ลงทะเบียนก่อน `/:id/bills`/`/:id`. ยังไม่มี list endpoint ของ `wo_contractor_log` เอง (หน้ารายการยังไม่ได้ทำ).
+6. **ยังไม่ทำ / เปิดอยู่**: Accumulate/Balance ใน tab 1 ยังกรอกเอง ไม่ได้รวมจาก bill; PRINT ยังไม่มี; AP Voucher No. ยังไม่จำกัดสิทธิ์เฉพาะบัญชี;
+   ไม่ล็อกการแก้ bill เมื่อ SAVED; ความหมายของ RETENTION bill ยังไม่ได้ออกแบบ (ใช้ฟอร์มเดียวกับ PROGRESS โดยกรอกยอดเอง).
+7. **`migrations/` ไม่ได้สร้าง DB dev ได้ครบ (ตรวจ 2026-10-25)**: dev มี 117 ตาราง แต่ `migrations/` + `scratch_sql/` มี `CREATE TABLE` แค่ 53 —
+   อีก 65 ตาราง (เช่น `work_order*`, `menus`, `stock_item`, `requisition*`, `ic_project_*`, `*_number_counter`, `role/user/dept_menu_permissions`) ถูกสร้างด้วยมือ/จาก dump
+   และไม่มีไฟล์ migration; ไม่มีตารางติดตามเวอร์ชัน (`schema_migrations`) และ `make migrate` รันแค่ `001_master_ddl.sql`. ห้ามถือว่าการรัน `migrations/*.sql` ตามลำดับจะได้ schema เท่า dev.
+   Snapshot schema (ไม่มีข้อมูล) ของ dev: `schema_snapshots/dev_schema_2026-10-25.sql` (`pg_dump --schema-only --no-owner --no-privileges`, PG 18 ที่ `C:\Program Files\PostgreSQL\18\bin`;
+   เครื่องนี้ไม่มี `psql` ใน PATH). Snapshot **ไม่รวม data** — ข้อมูลอ้างอิงที่ต้องย้ายแยก เช่น `menus`, `*_menu_permissions`, `approval_config`/`approval_doc_types`, `job_types`.
+8. **Migration runner + ประวัติ (2026-10-25)**: `cmd/migrate/main.go` รันไฟล์ใน `migrations/` ตามชื่อ และบันทึกลงตาราง `schema_migrations(version, applied_at, baseline)` — ไฟล์เดิมไม่รันซ้ำ.
+   Dry run เป็นค่าเริ่มต้น (แสดง DB ปลายทางแบบไม่มี credential + ไฟล์ที่ค้างอยู่); เขียนจริงต้องใส่ `-yes`; DB ที่มีตารางแล้วแต่ยังไม่มีประวัติต้องใช้ `-baseline N` (บันทึกว่าไฟล์ ≤ N มีอยู่แล้วโดยไม่รัน)
+   — กันการรัน `000_base_schema.sql` ซ้ำ. dev (localhost) ทำ `-baseline 21 -yes` แล้ว: บันทึก 000–021 (22 ไฟล์, `baseline=true`). ไฟล์ใหม่ต้องตั้งชื่อ `NNN_name.sql` ต่อจาก 021 และเขียนให้รันซ้ำได้ (`IF NOT EXISTS`).
+   `make migrate` = dry run, `make migrate ARGS=-yes` = apply. **UAT/prod ยังไม่มีตาราง `schema_migrations`** — ก่อนใช้ต้องรู้ว่าไฟล์ไหนอยู่ใน DB นั้นแล้ว แล้วเลือก `-baseline N` ให้ตรง (อย่าเดา).
+9. **Rehearsal diff dev ↔ UAT (2026-10-25)** — วิธีเช็คว่า schema เท่ากันจริง: สร้าง DB ชั่วคราว 2 ตัวบน dev machine (`rehearsal_uat` = โหลด `uat_schema_2026-10-25.sql` แล้วรัน `go run ./cmd/migrate -baseline 16 -yes`;
+   `rehearsal_dev22` = โหลด `dev_schema_2026-10-25.sql` + 022), `pg_dump --schema-only --no-owner --no-privileges` ด้วย pg_dump ตัวเดียวกัน, ตัดบรรทัดคอมเมนต์/`\restrict`, แล้ว `diff` ข้อความ.
+   **การเทียบด้วย regex (ข้อ 7 / `diff_dev_vs_uat_2026-10-25.txt`) พลาด CHECK constraint** — diff ข้อความเต็มเจอเพิ่ม 3 จุดจริงที่ UAT นำ dev: `purchase_order_order_type_check` / `purchase_request_order_type_check`
+   (UAT รับ `office_equipment`, `asset_equipment`, `asset_tool` เพิ่ม) และ `chk_wol_wht_rate` → `023_align_dev_checks_with_uat.sql`. **ยังเปิดอยู่**: `chk_ic_po_receive_scores` (score 1–5) มีใน dev แต่ UAT ไม่มี — ยังไม่ตัดสินว่าเอาไว้ที่ไหน.
+   ความต่างที่ไม่ต้องแก้ (noise): ลำดับคอลัมน์ใน `purchase_order`/`work_order*`, FK `cost_*` เป็น `NOT VALID` บน dev, ชื่อ NOT NULL constraint, รูปแบบข้อความ CHECK (PG16 vs 18 deparse), `stock_transfer*.id` identity (UAT) vs sequence default (dev), `COMMENT ON work_order_cost_code`, ตาราง `schema_migrations`.
+   `-baseline N -yes` **รันไฟล์ที่เลขมากกว่า N ต่อให้ในคำสั่งเดียวกัน** (ไม่ต้องรันแยก 2 รอบ).
+10. **dev อัปเดตแล้ว (2026-10-25)**: รัน `022` + `023` บน dev (localhost) แล้ว — `schema_migrations` มี 24 ไฟล์ (000–016 baseline, 017–023 applied). Snapshot ใหม่: `schema_snapshots/dev_schema_2026-10-25_post023.sql`.
+    ซ้อมซ้ำ: `rehearsal_uat2` (โหลด UAT dump + `-baseline 16 -yes` → รัน 017–023) เทียบกับ dev จริงด้วย text diff + ตัวช่วย normalize ชนิด cast/วงเล็บ/ลำดับ: **CHECK `order_type` ×2 และ `chk_wol_wht_rate` ตรงกันแล้ว**;
+    ที่ยังต่างจริงเหลือ **`chk_ic_po_receive_scores`** (dev มี / UAT ไม่มี — รอตัดสินใจ); ที่เหลือเป็น noise (ลำดับคอลัมน์ `purchase_order`/`work_order*`, `stock_transfer*.id` identity vs sequence, FK `cost_*` `NOT VALID` บน dev, ตัวคั่น `\restrict`).
+    DB ซ้อมบนเครื่อง dev: `rehearsal_uat`, `rehearsal_dev22`, `rehearsal_uat2` (ลบได้). ยังไม่ได้ซ้อมกับ **ข้อมูลจริง** ของ UAT (018/019 แตะข้อมูลเมนู) — ต้องมี `pg_dump -Fc` ของ UAT.
+11. **Scope ที่ผู้ใช้กำหนด (2026-10-25)**: UAT กับ dev ต้องเหมือนกันเฉพาะ (ก) **schema/constraint/index/อื่น ๆ ทุกอย่าง** และ (ข) **ข้อมูลตาราง `menus`** — ข้อมูลอื่น (ผู้ใช้, โปรเจกต์, เอกสาร, สิทธิ์) ไม่ต้องเหมือน.
+    ข้อมูล dev ↔ UAT **ไม่ตรงกันที่ระดับ id** (เช่น `menus.id` เดียวกันเป็นคนละเมนู, `cost_group`/`material_code` อ้าง id คนละชุด) → เทียบ/ซิงก์ **ด้วยรหัสธุรกิจเสมอ** (`menu_code`, `role_code`, `username`, `mat_code`) ไม่ใช้ id.
+    ปิดช่องว่างทั้งหมดด้วย `024_schema_consistency_dev_uat.sql` (เพิ่ม `chk_ic_po_receive_scores` ให้ UAT — API เช็ค 1–5 อยู่แล้ว UAT ไม่มีแถวที่ผิด; VALIDATE FK `cost_*` บน dev; แปลง `stock_transfer*.id` เป็น identity บน dev; COMMENT บน `work_order_cost_code`)
+    และ `025_sync_menus_dev_uat.sql` (MENU_FINANCE sort 7, MENU_WO ปิดใช้งาน + ชื่อ "(WO)", เพิ่ม `MENU_WH_REQUISITION_APPROVAL` ใต้ `MENU_STOCK`; ร่วมกับ 018/019 ที่เพิ่ม `MENU_WO_CONTRACTOR_LOG` และสลับลำดับ Budget Cost). ทั้งสองไฟล์ idempotent รันได้ทั้ง dev และ UAT (no-op ในที่ที่ตรงแล้ว); **ไม่สร้าง permission rows** ของเมนูใหม่ — ให้สิทธิ์ใน permission matrix.
+    ซ้อมแล้วบนสำเนา UAT **ที่มีข้อมูลจริง** (`cmp_uat_full` = ERP_UAT_25_10 data + schema → `-baseline 16 -yes` รัน 017–025 ผ่านหมด): เทียบกับ dev หลังรัน — `menus` 61 = 61 แถว 0 ความต่าง (เทียบด้วย menu_code: ชื่อ/path/icon/parent/sort/active),
+    schema ต่างเหลือเฉพาะ **ลำดับคอลัมน์** ใน `petty_cash_requisition_line` และ `stock_transfer` (ไม่มีผลต่อการทำงาน; แก้ต้อง rebuild ตาราง จึงไม่ทำ). dev รัน 024–025 แล้ว (`schema_migrations` = 26 ไฟล์).

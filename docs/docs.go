@@ -797,7 +797,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Number of Memo / PO / WO documents waiting for the caller: status PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id) or legacy NULL-approver documents the caller can approve by role. Same filter as the approval lists.",
+                "description": "Number of Memo / PO / WO documents waiting for the caller: status PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id; a NULL approver_id counts for nobody). Same filter as the approval lists.",
                 "produces": [
                     "application/json"
                 ],
@@ -1351,6 +1351,12 @@ const docTemplate = `{
         },
         "/departments": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "All departments ordered by sort_order, dept_code. active_only=true returns only is_active rows (use it for dropdowns).",
                 "produces": [
                     "application/json"
                 ],
@@ -1358,6 +1364,14 @@ const docTemplate = `{
                     "Departments"
                 ],
                 "summary": "List departments",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Only active departments",
+                        "name": "active_only",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -1367,6 +1381,157 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "dept_code is trimmed, upper-cased, max 20, A-Z 0-9 and _ only, and cannot be changed later. dept_name required, max 200. sort_order integer \u003e= 0 (default 0). is_active defaults to true. 409 when the code already exists.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Departments"
+                ],
+                "summary": "Create a department",
+                "parameters": [
+                    {
+                        "description": "Department",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.departmentCreateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/departments/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates dept_name (required), sort_order and is_active (kept when omitted). dept_code is immutable: a dept_code in the body is accepted only if it equals the stored code, otherwise 400.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Departments"
+                ],
+                "summary": "Update a department",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Department id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Department",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.departmentUpdateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Refused with 409 while any table with a dept_code column (users, roles, project, purchase_request, petty_cash_requisition, dept_menu_permissions, ...) still references the code; the message lists the tables and row counts and suggests deactivating instead. The check and the delete run in one transaction.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Departments"
+                ],
+                "summary": "Delete a department",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Department id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -9779,7 +9944,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code; if both are empty the line is stored with project_code NULL (department-only). At least one of header project_code, header dept_code or a line project_code is required (400 otherwise).",
+                "description": "status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code; if both are empty the line is stored with project_code NULL (department-only). At least one of header project_code, header dept_code or a line project_code is required (400 otherwise). With status=PENDING_APPROVAL every line must carry a cost_subgroup_id that is a selectable ITEM (not Head/Major), else 400 \"บรรทัดที่ N ยังไม่ได้ระบุรหัสต้นทุน\" / \"บรรทัดที่ N ใช้รหัสต้นทุนที่เลือกไม่ได้ (Head/Major)\"; a DRAFT may be saved without a cost code.",
                 "consumes": [
                     "application/json"
                 ],
@@ -10324,6 +10489,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Requires ≥1 line, requester remarks, and on every line a cost_subgroup_id that is a selectable ITEM (not Head/Major): 400 \"บรรทัดที่ N ยังไม่ได้ระบุรหัสต้นทุน\" / \"บรรทัดที่ N ใช้รหัสต้นทุนที่เลือกไม่ได้ (Head/Major)\". Unlike save-time validation, a Head/Major code already stored on the draft is NOT tolerated here.",
                 "consumes": [
                     "application/json"
                 ],
@@ -10552,14 +10718,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail. Filtered by ids only (project_code + cost_subgroup_id, never the displayed cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT IN (DRAFT, REJECTED, CANCELLED), line status \u003c\u003e CANCELLED. So SUM(amount) = the row's pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price (reference only). item_name = material name + spec, falling back to the line description (same as the purchases drill-down). unit = material_code unit. Ordered by po_no, line_no; not paginated (one cost code in one project). 404 when the cost code is not an ITEM of this project's budget page (no budget row and no PO line).",
+                "description": "Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail. Filtered by ids only (project_code + cost_subgroup_id, never the displayed cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT IN (DRAFT, REJECTED, CANCELLED), line status \u003c\u003e CANCELLED. So SUM(amount) = the row's pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price (reference only). item_name = material name + spec, falling back to the line description (same as the purchases drill-down). unit = material_code unit. Ordered by po_no, line_no; not paginated (one cost code in one project). 404 when the cost code is not an ITEM of this project's budget page (no budget row, no PO line and no APPROVED petty cash line).\nEvery row has source: \"PO\" (the rows above) or \"PC\" — APPROVED petty cash lines (header status APPROVED, the LINE's project_code = this project, cost_subgroup_id = this cost code) mapped as: po_id = petty cash header id, po_no = petty cash document number (PC-YYYYMM-NNNN), po_status = petty cash status, item_name = line description else material name + spec, quantity = line qty, amount = amount - line_discount (EX-VAT/ex-WHT; spent_amount in GET /master/projects uses line_net, VAT-inclusive). The PC amounts sum to the row's pc_cost on cost-budget-detail; PO amounts stay qty_ordered * unit_price as before. costSubgroupId may be the literal \"none\": returns only the PC rows of the project with no cost code (the unassigned row), 404 if there are none. Order: PO rows first, then PC, each by document number, line_no.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Purchase Order"
                 ],
-                "summary": "Cost Budget — PO lines charged to one cost code of a project",
+                "summary": "Cost Budget — PO and petty cash lines charged to one cost code of a project",
                 "parameters": [
                     {
                         "type": "string",
@@ -10569,8 +10735,8 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "integer",
-                        "description": "cost_subgroup.id",
+                        "type": "string",
+                        "description": "cost_subgroup.id, or none for petty cash lines without a cost code",
                         "name": "costSubgroupId",
                         "in": "path",
                         "required": true
@@ -11857,7 +12023,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Flat ordered list with row_type MAJOR | HEAD | ITEM. ITEM rows (NOT is_head AND NOT is_major) are the\nsubgroups that have a PO line in the project (POs not DRAFT/REJECTED/CANCELLED/deleted; order_type is NOT\nfiltered) OR a project_cost_budget row. budget comes from project_cost_budget (LEFT JOIN, no row =\u003e 0);\npu_cost = SUM(qty_ordered * unit_price); ac_cost is still a 0 placeholder. HEAD = sum of its group's ITEM\nrows, MAJOR = sum of all ITEM rows of its job (computed in the backend; a roll-up row appears only when it has\nat least one ITEM under it). Order per job: MAJOR, then each group's HEAD followed by its ITEMs.\ntotals = sum of ITEM rows only.",
+                "description": "Flat ordered list with row_type MAJOR | HEAD | ITEM. ITEM rows (NOT is_head AND NOT is_major) are the\nsubgroups that have a PO line in the project (POs not DRAFT/REJECTED/CANCELLED/deleted; order_type is NOT\nfiltered), a project_cost_budget row, OR an APPROVED petty cash line charged to that cost code. budget comes from\nproject_cost_budget (LEFT JOIN, no row =\u003e 0). po_cost = SUM(qty_ordered * unit_price); pc_cost = SUM(amount -\nline_discount) of APPROVED petty cash lines (header status APPROVED, the LINE's project_code = this project) —\nEX-VAT/ex-WHT, unlike spent_amount in GET /master/projects which is line_net (VAT-inclusive). pu_cost = po_cost + pc_cost.\nac_cost is still a 0 placeholder. HEAD = sum of its group's ITEM rows, MAJOR = sum of all ITEM rows of its job\n(computed in the backend; a roll-up row appears only when it has at least one ITEM under it). Order per job: MAJOR,\nthen each group's HEAD followed by its ITEMs. APPROVED petty cash lines with no cost code are summed into one last\nsynthetic ITEM row (is_unassigned=true, subgroup_id null, description \"ไม่ระบุรหัสต้นทุน\", only when the amount is not 0);\nit has no Head/Major roll-up and no budget. totals (budget, po_cost, pc_cost, pu_cost, ...) = sum of all ITEM rows\nincluding the unassigned row, so pc_cost reconciles with the project-level petty cash total (ex-VAT).",
                 "produces": [
                     "application/json"
                 ],
@@ -12533,7 +12699,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "One row per project, computed in a single set-based query.\ncontract_budget = vo_amount for project_kind VO, else budget_amount.\npu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.\nac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.\npu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).\nstatus (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget \u003c= 0), OVER_BUDGET (\u003e 100%), NEAR_LIMIT (\u003e= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).\nDefault list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.",
+                "description": "One row per project, computed in a single set-based query.\ncontract_budget = vo_amount for project_kind VO, else budget_amount.\npu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, the same basis as the Cost Budget page; NOT line_net, which spent_amount in GET /master/projects still uses). Memo is excluded.\nac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash (amount - line_discount, ex-VAT: cash already spent, NOT the payable basis). IC ledgers are not used.\npu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).\nstatus (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget \u003c= 0), OVER_BUDGET (\u003e 100%), NEAR_LIMIT (\u003e= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).\nDefault list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.",
                 "produces": [
                     "application/json"
                 ],
@@ -15741,6 +15907,310 @@ const docTemplate = `{
                 }
             }
         },
+        "/wo-contractor-log": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "สร้างบันทึกงานของผู้รับเหมาตามใบสั่งจ้าง (tab ข้อมูลเอกสาร)",
+                "parameters": [
+                    {
+                        "description": "wo_id, project_code (PJ), terms",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.woContractorLogRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/wo-contractor-log/bills/{billId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "รายละเอียดรายการรับวางบิล",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Bill ID",
+                        "name": "billId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "แก้ไขรายการรับวางบิล (แทนที่ lines และ invoices ทั้งหมด)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Bill ID",
+                        "name": "billId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "bill",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.woBillRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/wo-contractor-log/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Supplier / WO project / contract description are live-read from work_order (never stored here).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "รายละเอียดบันทึกงานของผู้รับเหมาตามใบสั่งจ้าง",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Log ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "แก้ไขบันทึกงานของผู้รับเหมาตามใบสั่งจ้าง (แทนที่ terms ทั้งหมด)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Log ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "wo_id, project_code (PJ), terms",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.woContractorLogRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/wo-contractor-log/{id}/bills": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "รายการรับวางบิลของบันทึกงานผู้รับเหมา",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Log ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "lines: up to 7 summary lines (ADV, PROGRESS, ADV_DEDUCT, VAT, RETENTION, WHT, OTHER). subtotal and net_amount are recomputed server-side.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "สร้างรายการรับวางบิล (tab ประเภทรับวางบิล)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Log ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "bill",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.woBillRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/work-order": {
             "get": {
                 "security": [
@@ -16631,6 +17101,41 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.departmentCreateRequest": {
+            "type": "object",
+            "properties": {
+                "dept_code": {
+                    "type": "string"
+                },
+                "dept_name": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "sort_order": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.departmentUpdateRequest": {
+            "type": "object",
+            "properties": {
+                "dept_code": {
+                    "description": "immutable: only accepted when it equals the stored code",
+                    "type": "string"
+                },
+                "dept_name": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "sort_order": {
+                    "type": "integer"
+                }
+            }
+        },
         "handlers.icRateReceiveDocumentRequest": {
             "type": "object",
             "required": [
@@ -16756,6 +17261,125 @@ const docTemplate = `{
             "properties": {
                 "deposit_paid": {
                     "type": "boolean"
+                }
+            }
+        },
+        "handlers.woBillInvoice": {
+            "type": "object",
+            "properties": {
+                "bill_date": {
+                    "type": "string"
+                },
+                "delivery_date": {
+                    "type": "string"
+                },
+                "invoice_date": {
+                    "type": "string"
+                },
+                "invoice_no": {
+                    "type": "string"
+                },
+                "pay_date": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.woBillLine": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number"
+                },
+                "line_code": {
+                    "description": "ADV | PROGRESS | ADV_DEDUCT | VAT | RETENTION | WHT | OTHER",
+                    "type": "string"
+                },
+                "percent": {
+                    "type": "number"
+                }
+            }
+        },
+        "handlers.woBillRequest": {
+            "type": "object",
+            "properties": {
+                "ap_voucher_no": {
+                    "type": "string"
+                },
+                "bill_type": {
+                    "description": "ADV | PROGRESS | RETENTION",
+                    "type": "string"
+                },
+                "credit_term_days": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "installment_no": {
+                    "type": "integer"
+                },
+                "invoices": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.woBillInvoice"
+                    }
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.woBillLine"
+                    }
+                },
+                "pay_to": {
+                    "type": "string"
+                },
+                "progress_installment_no": {
+                    "type": "integer"
+                },
+                "status": {
+                    "description": "DRAFT (default) | SAVED",
+                    "type": "string"
+                },
+                "wht_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.woContractorLogRequest": {
+            "type": "object",
+            "properties": {
+                "project_code": {
+                    "type": "string"
+                },
+                "terms": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.woContractorLogTerm"
+                    }
+                },
+                "wo_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handlers.woContractorLogTerm": {
+            "type": "object",
+            "properties": {
+                "accumulate": {
+                    "type": "number"
+                },
+                "amount": {
+                    "type": "number"
+                },
+                "balance": {
+                    "type": "number"
+                },
+                "item_type": {
+                    "description": "CONTRACT | ADVANCE | RETENTION",
+                    "type": "string"
+                },
+                "percent": {
+                    "type": "number"
                 }
             }
         },
@@ -18581,6 +19205,10 @@ const docTemplate = `{
                 "end_date": {
                     "type": "string"
                 },
+                "has_penalty": {
+                    "description": "omitted on PUT keeps the stored value",
+                    "type": "boolean"
+                },
                 "lines": {
                     "type": "array",
                     "minItems": 1,
@@ -18660,6 +19288,9 @@ const docTemplate = `{
                 },
                 "vat_rate": {
                     "type": "number"
+                },
+                "warranty_note": {
+                    "type": "string"
                 },
                 "warranty_years": {
                     "type": "integer"

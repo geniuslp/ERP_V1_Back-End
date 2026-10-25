@@ -1,0 +1,360 @@
+2c2
+< \restrict IbEx1f6nOV23tljf7gyaJe9o14kRPzNdGfw2kL2udM80eyNBwcIcT61m7nqCHQp
+---
+> \restrict ZNqubUEozYEtmvSZIEdwxQ45QLweSbDqoZyMJdLFeD9HwckQQe3gIGlXuxGEwKr
+17a18,20
+> 
+> 
+> 
+721c724,725
+<     rated_by bigint
+---
+>     rated_by bigint,
+>     CONSTRAINT chk_ic_po_receive_scores CHECK ((((score_quality IS NULL) OR ((score_quality >= (1)::numeric) AND (score_quality <= (5)::numeric))) AND ((score_quantity IS NULL) OR ((score_quantity >= (1)::numeric) AND (score_quantity <= (5)::numeric))) AND ((score_ontime IS NULL) OR ((score_ontime >= (1)::numeric) AND (score_ontime <= (5)::numeric)))))
+1561,1562d1564
+<     has_tax_invoice boolean DEFAULT false NOT NULL,
+<     has_wht boolean DEFAULT false NOT NULL,
+1565d1566
+<     supplier_tax_id character varying(50),
+1567c1568,1569
+<     tax_form_code character varying(20),
+---
+>     supplier_tax_id character varying(50),
+>     has_tax_invoice boolean DEFAULT false NOT NULL,
+1570c1572
+<     wht_income_type_id integer,
+---
+>     has_wht boolean DEFAULT false NOT NULL,
+1571a1574,1575
+>     tax_form_code character varying(20),
+>     wht_income_type_id integer,
+1967c1971
+<     CONSTRAINT purchase_order_order_type_check CHECK (((order_type)::text = ANY (ARRAY[('stock'::character varying)::text, ('cost'::character varying)::text, ('office_equipment'::character varying)::text, ('asset_equipment'::character varying)::text, ('asset_tool'::character varying)::text, ('asset_office_equipment'::character varying)::text, ('asset_machine'::character varying)::text, ('asset_tools'::character varying)::text]))),
+---
+>     CONSTRAINT purchase_order_order_type_check CHECK (((order_type)::text = ANY (ARRAY['stock'::text, 'cost'::text, 'office_equipment'::text, 'asset_equipment'::text, 'asset_tool'::text, 'asset_office_equipment'::text, 'asset_machine'::text, 'asset_tools'::text]))),
+2106c2110
+<     CONSTRAINT purchase_request_order_type_check CHECK (((order_type)::text = ANY (ARRAY[('stock'::character varying)::text, ('cost'::character varying)::text, ('office_equipment'::character varying)::text, ('asset_equipment'::character varying)::text, ('asset_tool'::character varying)::text, ('asset_office_equipment'::character varying)::text, ('asset_machine'::character varying)::text, ('asset_tools'::character varying)::text]))),
+---
+>     CONSTRAINT purchase_request_order_type_check CHECK (((order_type)::text = ANY (ARRAY['stock'::text, 'cost'::text, 'office_equipment'::text, 'asset_equipment'::text, 'asset_tool'::text, 'asset_office_equipment'::text, 'asset_machine'::text, 'asset_tools'::text]))),
+2400a2405,2412
+> CREATE TABLE public.schema_migrations (
+>     version text NOT NULL,
+>     applied_at timestamp with time zone DEFAULT now() NOT NULL,
+>     baseline boolean DEFAULT false NOT NULL
+> );
+> 
+> 
+> 
+2544c2556
+<     mat_code character varying(30) NOT NULL,
+---
+>     mat_code character varying(30) CONSTRAINT stock_item_item_code_not_null NOT NULL,
+2551c2563
+<     qty numeric(18,4) DEFAULT 0 NOT NULL,
+---
+>     qty numeric(18,4) DEFAULT 0 CONSTRAINT stock_item_min_qty_not_null NOT NULL,
+2779,2780d2790
+<     created_at timestamp without time zone DEFAULT now() NOT NULL,
+<     updated_at timestamp without time zone DEFAULT now() NOT NULL,
+2782c2792,2794
+<     updated_by bigint
+---
+>     updated_by bigint,
+>     created_at timestamp without time zone DEFAULT now() NOT NULL,
+>     updated_at timestamp without time zone DEFAULT now() NOT NULL
+2787,2788c2799
+< ALTER TABLE public.stock_transfer ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+<     SEQUENCE NAME public.stock_transfer_id_seq
+---
+> CREATE SEQUENCE public.stock_transfer_id_seq
+2793,2794c2804,2808
+<     CACHE 1
+< );
+---
+>     CACHE 1;
+> 
+> 
+> 
+> ALTER SEQUENCE public.stock_transfer_id_seq OWNED BY public.stock_transfer.id;
+2812,2813c2826
+< ALTER TABLE public.stock_transfer_line ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+<     SEQUENCE NAME public.stock_transfer_line_id_seq
+---
+> CREATE SEQUENCE public.stock_transfer_line_id_seq
+2818,2819c2831,2835
+<     CACHE 1
+< );
+---
+>     CACHE 1;
+> 
+> 
+> 
+> ALTER SEQUENCE public.stock_transfer_line_id_seq OWNED BY public.stock_transfer_line.id;
+2843,2844c2859
+< ALTER TABLE public.stock_transfer_status_log ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+<     SEQUENCE NAME public.stock_transfer_status_log_id_seq
+---
+> CREATE SEQUENCE public.stock_transfer_status_log_id_seq
+2849,2850c2864,2868
+<     CACHE 1
+< );
+---
+>     CACHE 1;
+> 
+> 
+> 
+> ALTER SEQUENCE public.stock_transfer_status_log_id_seq OWNED BY public.stock_transfer_status_log.id;
+3136a3155,3284
+> CREATE TABLE public.wo_contractor_log (
+>     id bigint NOT NULL,
+>     wo_id bigint NOT NULL,
+>     project_code character varying(20),
+>     created_at timestamp without time zone DEFAULT now() NOT NULL,
+>     updated_at timestamp without time zone DEFAULT now() NOT NULL,
+>     created_by bigint,
+>     updated_by bigint
+> );
+> 
+> 
+> 
+> CREATE TABLE public.wo_contractor_log_bill (
+>     id bigint NOT NULL,
+>     log_id bigint NOT NULL,
+>     bill_type character varying(20) NOT NULL,
+>     installment_no integer,
+>     ap_voucher_no character varying(50),
+>     pay_to character varying(200),
+>     credit_term_days integer,
+>     description text,
+>     progress_installment_no integer,
+>     wht_type character varying(50),
+>     subtotal numeric(18,2) DEFAULT 0 NOT NULL,
+>     net_amount numeric(18,2) DEFAULT 0 NOT NULL,
+>     status character varying(20) DEFAULT 'DRAFT'::character varying NOT NULL,
+>     created_at timestamp without time zone DEFAULT now() NOT NULL,
+>     updated_at timestamp without time zone DEFAULT now() NOT NULL,
+>     created_by bigint,
+>     updated_by bigint,
+>     CONSTRAINT wo_contractor_log_bill_bill_type_check CHECK (((bill_type)::text = ANY (ARRAY[('ADV'::character varying)::text, ('PROGRESS'::character varying)::text, ('RETENTION'::character varying)::text]))),
+>     CONSTRAINT wo_contractor_log_bill_status_check CHECK (((status)::text = ANY (ARRAY[('DRAFT'::character varying)::text, ('SAVED'::character varying)::text])))
+> );
+> 
+> 
+> 
+> ALTER TABLE public.wo_contractor_log_bill ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+>     SEQUENCE NAME public.wo_contractor_log_bill_id_seq
+>     START WITH 1
+>     INCREMENT BY 1
+>     NO MINVALUE
+>     NO MAXVALUE
+>     CACHE 1
+> );
+> 
+> 
+> 
+> CREATE TABLE public.wo_contractor_log_bill_invoice (
+>     id bigint NOT NULL,
+>     bill_id bigint NOT NULL,
+>     line_no integer NOT NULL,
+>     invoice_no character varying(50),
+>     invoice_date date,
+>     delivery_date date,
+>     bill_date date,
+>     pay_date date
+> );
+> 
+> 
+> 
+> ALTER TABLE public.wo_contractor_log_bill_invoice ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+>     SEQUENCE NAME public.wo_contractor_log_bill_invoice_id_seq
+>     START WITH 1
+>     INCREMENT BY 1
+>     NO MINVALUE
+>     NO MAXVALUE
+>     CACHE 1
+> );
+> 
+> 
+> 
+> CREATE TABLE public.wo_contractor_log_bill_line (
+>     id bigint NOT NULL,
+>     bill_id bigint NOT NULL,
+>     line_code character varying(20) NOT NULL,
+>     percent numeric(7,2),
+>     amount numeric(18,2) DEFAULT 0 NOT NULL,
+>     CONSTRAINT wo_contractor_log_bill_line_line_code_check CHECK (((line_code)::text = ANY (ARRAY[('ADV'::character varying)::text, ('PROGRESS'::character varying)::text, ('ADV_DEDUCT'::character varying)::text, ('VAT'::character varying)::text, ('RETENTION'::character varying)::text, ('WHT'::character varying)::text, ('OTHER'::character varying)::text])))
+> );
+> 
+> 
+> 
+> ALTER TABLE public.wo_contractor_log_bill_line ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+>     SEQUENCE NAME public.wo_contractor_log_bill_line_id_seq
+>     START WITH 1
+>     INCREMENT BY 1
+>     NO MINVALUE
+>     NO MAXVALUE
+>     CACHE 1
+> );
+> 
+> 
+> 
+> ALTER TABLE public.wo_contractor_log ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+>     SEQUENCE NAME public.wo_contractor_log_id_seq
+>     START WITH 1
+>     INCREMENT BY 1
+>     NO MINVALUE
+>     NO MAXVALUE
+>     CACHE 1
+> );
+> 
+> 
+> 
+> CREATE TABLE public.wo_contractor_log_term (
+>     id bigint NOT NULL,
+>     log_id bigint NOT NULL,
+>     item_type character varying(20) NOT NULL,
+>     percent numeric(7,2),
+>     amount numeric(18,2),
+>     accumulate numeric(18,2),
+>     balance numeric(18,2),
+>     created_at timestamp without time zone DEFAULT now() NOT NULL,
+>     updated_at timestamp without time zone DEFAULT now() NOT NULL,
+>     CONSTRAINT wo_contractor_log_term_item_type_check CHECK (((item_type)::text = ANY (ARRAY[('CONTRACT'::character varying)::text, ('ADVANCE'::character varying)::text, ('RETENTION'::character varying)::text])))
+> );
+> 
+> 
+> 
+> ALTER TABLE public.wo_contractor_log_term ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+>     SEQUENCE NAME public.wo_contractor_log_term_id_seq
+>     START WITH 1
+>     INCREMENT BY 1
+>     NO MINVALUE
+>     NO MAXVALUE
+>     CACHE 1
+> );
+> 
+> 
+> 
+3203a3352,3353
+>     has_penalty boolean DEFAULT false NOT NULL,
+>     warranty_note text,
+3246a3397,3400
+> COMMENT ON TABLE public.work_order_cost_code IS 'DEPRECATED as of the WO line-item rework — superseded by work_order_line. Not dropped yet; confirm before removing.';
+> 
+> 
+> 
+3520a3675,3686
+> ALTER TABLE ONLY public.stock_transfer ALTER COLUMN id SET DEFAULT nextval('public.stock_transfer_id_seq'::regclass);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.stock_transfer_line ALTER COLUMN id SET DEFAULT nextval('public.stock_transfer_line_id_seq'::regclass);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.stock_transfer_status_log ALTER COLUMN id SET DEFAULT nextval('public.stock_transfer_status_log_id_seq'::regclass);
+> 
+> 
+> 
+4152a4319,4323
+> ALTER TABLE ONLY public.schema_migrations
+>     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+> 
+> 
+> 
+4357a4529,4563
+> ALTER TABLE ONLY public.wo_contractor_log_bill_invoice
+>     ADD CONSTRAINT wo_contractor_log_bill_invoice_pkey PRIMARY KEY (id);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_bill_line
+>     ADD CONSTRAINT wo_contractor_log_bill_line_bill_id_line_code_key UNIQUE (bill_id, line_code);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_bill_line
+>     ADD CONSTRAINT wo_contractor_log_bill_line_pkey PRIMARY KEY (id);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_bill
+>     ADD CONSTRAINT wo_contractor_log_bill_pkey PRIMARY KEY (id);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log
+>     ADD CONSTRAINT wo_contractor_log_pkey PRIMARY KEY (id);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_term
+>     ADD CONSTRAINT wo_contractor_log_term_log_id_item_type_key UNIQUE (log_id, item_type);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_term
+>     ADD CONSTRAINT wo_contractor_log_term_pkey PRIMARY KEY (id);
+> 
+> 
+> 
+4823a5030,5041
+> CREATE INDEX idx_wo_contractor_log_bill_invoice_bill ON public.wo_contractor_log_bill_invoice USING btree (bill_id);
+> 
+> 
+> 
+> CREATE INDEX idx_wo_contractor_log_bill_log ON public.wo_contractor_log_bill USING btree (log_id);
+> 
+> 
+> 
+> CREATE INDEX idx_wo_contractor_log_wo ON public.wo_contractor_log USING btree (wo_id);
+> 
+> 
+> 
+5021c5239
+<     ADD CONSTRAINT cost_group_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.cost_job(id);
+---
+>     ADD CONSTRAINT cost_group_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.cost_job(id) NOT VALID;
+5036c5254
+<     ADD CONSTRAINT cost_job_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES public.cost_subject(id);
+---
+>     ADD CONSTRAINT cost_job_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES public.cost_subject(id) NOT VALID;
+5051c5269
+<     ADD CONSTRAINT cost_subgroup_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.cost_group(id);
+---
+>     ADD CONSTRAINT cost_subgroup_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.cost_group(id) NOT VALID;
+6284a6503,6532
+> ALTER TABLE ONLY public.wo_contractor_log_bill_invoice
+>     ADD CONSTRAINT wo_contractor_log_bill_invoice_bill_id_fkey FOREIGN KEY (bill_id) REFERENCES public.wo_contractor_log_bill(id) ON DELETE CASCADE;
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_bill_line
+>     ADD CONSTRAINT wo_contractor_log_bill_line_bill_id_fkey FOREIGN KEY (bill_id) REFERENCES public.wo_contractor_log_bill(id) ON DELETE CASCADE;
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_bill
+>     ADD CONSTRAINT wo_contractor_log_bill_log_id_fkey FOREIGN KEY (log_id) REFERENCES public.wo_contractor_log(id) ON DELETE CASCADE;
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log
+>     ADD CONSTRAINT wo_contractor_log_project_code_fkey FOREIGN KEY (project_code) REFERENCES public.project(project_code);
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log_term
+>     ADD CONSTRAINT wo_contractor_log_term_log_id_fkey FOREIGN KEY (log_id) REFERENCES public.wo_contractor_log(id) ON DELETE CASCADE;
+> 
+> 
+> 
+> ALTER TABLE ONLY public.wo_contractor_log
+>     ADD CONSTRAINT wo_contractor_log_wo_id_fkey FOREIGN KEY (wo_id) REFERENCES public.work_order(id);
+> 
+> 
+> 
+6335c6583
+< \unrestrict IbEx1f6nOV23tljf7gyaJe9o14kRPzNdGfw2kL2udM80eyNBwcIcT61m7nqCHQp
+---
+> \unrestrict ZNqubUEozYEtmvSZIEdwxQ45QLweSbDqoZyMJdLFeD9HwckQQe3gIGlXuxGEwKr

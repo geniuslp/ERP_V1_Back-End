@@ -171,6 +171,9 @@ type poListRow struct {
 	UpdatedByName  string     `json:"updated_by_name"`
 	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
 	ApprovedByName *string    `json:"approved_by_name,omitempty"`
+	// ApproverName: the document's assigned approver (purchase_order.approver_id); when that is NULL (legacy rows),
+	// the user who actually approved it.
+	ApproverName *string `json:"approver_name,omitempty"`
 	JobNames       []string   `json:"job_names,omitempty"`
 	// RevisionRound is how many times this PO has been edited-and-resent for re-approval
 	// (COUNT of po_edit_log rows). 0 = original, never edited. po_no itself never changes;
@@ -199,14 +202,15 @@ type poListRow struct {
 
 // poListSelectSQL is the shared SELECT ... FROM ... JOINs for GET /po and GET /po/export.
 // Every nullable FK is a LEFT JOIN. Callers append WHERE / ORDER BY / LIMIT.
-const poListSelectSQL = `
+var poListSelectSQL = `
 		SELECT po.id, po.po_no, po.po_date, po.supplier_id, s.supplier_name,
 		       po.status, po.status_receive, po.order_type, po.job_code, po.currency, po.total_amount, po.vat_amount, po.net_amount,
 		       po.expected_date::text, po.created_at, po.updated_at, po.project_code, pj.project_name,
 		       COALESCE(cu.full_name, '') AS created_by_name,
 		       COALESCE(uu.full_name, '') AS updated_by_name,
-		       al.action_at AS approved_at,
+		       ev.ev_at AS approved_at,
 		       au.full_name AS approved_by_name,
+		       COALESCE(apr.full_name, au.full_name) AS approver_name,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id) AS revision_round,
 		       ` + poPRNosSQL + ` AS pr_nos,
 		       ` + poPRIDsSQL + ` AS pr_ids,
@@ -218,13 +222,9 @@ const poListSelectSQL = `
 		LEFT JOIN project pj ON pj.project_code = po.project_code
 		LEFT JOIN users cu ON cu.id = po.created_by
 		LEFT JOIN users uu ON uu.id = po.updated_by
-		LEFT JOIN LATERAL (
-		    SELECT action_at, action_by
-		    FROM approval_log
-		    WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
-		    ORDER BY action_at DESC LIMIT 1
-		) al ON true
-		LEFT JOIN users au ON au.id = al.action_by
+		LEFT JOIN users apr ON apr.id = po.approver_id
+		` + approvedEventLateralSQL("PO", "po", "po_status_log", "po_id") + `
+		LEFT JOIN users au ON au.id = ev.ev_by
 		` + poPaidJoinSQL + `
 		`
 
@@ -302,7 +302,7 @@ func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
 		if err := rows.Scan(&r.POID, &r.PONo, &r.PODate, &r.SupplierID, &r.SupplierName,
 			&r.Status, &r.StatusReceive, &r.OrderType, &r.JobCode, &r.Currency, &r.TotalAmount, &r.VATAmount, &r.NetAmount,
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
-			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName,
+			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName, &r.ApproverName,
 			&r.RevisionRound, &r.PRNos, &r.PRIDs, &terms, &r.DepositPaid, &r.Remarks, &r.DiscountAmount,
 			&r.PaidAmount, &r.PaymentStatus, &r.PRRefs); err != nil {
 			return nil, err
@@ -1176,6 +1176,11 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 	if status != "DRAFT" && status != "PENDING_APPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
+	if status == "PENDING_APPROVAL" {
+		if err := requireApprovalReady(context.Background(), h.db, "PO", req.ApproverID); err != nil {
+			return err
+		}
+	}
 	if req.Currency == "" {
 		req.Currency = "THB"
 	}
@@ -1474,23 +1479,16 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 
 	// Submitting straight to PENDING_APPROVAL opens the step-1 approval request.
 	if status == "PENDING_APPROVAL" {
-		var hasConfig bool
+		var id int64
 		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PO' AND step_no=1 AND is_active=true)`,
-		).Scan(&hasConfig); err != nil {
-			return 0, "", nil, 0, 0, 0, err
+			INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
+			VALUES ('PO',$1,$2,1,$3,$4,'PENDING',$5)
+			RETURNING id`, poID, poNo, userID, req.ApproverID, totalAmount,
+		).Scan(&id); err != nil {
+			log.Printf("po create approval_request po=%d: %v", poID, err)
+			return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถสร้างคำขออนุมัติได้ กรุณาลองใหม่อีกครั้ง")
 		}
-		if hasConfig {
-			var id int64
-			if err := tx.QueryRow(ctx, `
-				INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
-				VALUES ('PO',$1,$2,1,$3,$4,'PENDING',$5)
-				RETURNING id`, poID, poNo, userID, req.ApproverID, totalAmount,
-			).Scan(&id); err != nil {
-				return 0, "", nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "approval request error: "+err.Error())
-			}
-			approvalID = &id
-		}
+		approvalID = &id
 	}
 
 	// Copy PR attachments onto the new PO — same physical file on disk, a second
@@ -1784,6 +1782,11 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	if newStatus != "DRAFT" && newStatus != "PENDING_APPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
+	if newStatus == "PENDING_APPROVAL" && currentStatus != "PENDING_APPROVAL" {
+		if err := requireApprovalReady(ctx, h.db, "PO", req.ApproverID); err != nil {
+			return err
+		}
+	}
 
 	// Captured before the "" -> currentOrderType fallback below, so the mismatch check right
 	// after resolvePOAutoFields can tell "client explicitly said X" apart from "client left
@@ -2029,27 +2032,20 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	// alongside the one already PENDING from the original submit.
 	var approvalID *int64
 	if newStatus == "PENDING_APPROVAL" && currentStatus != "PENDING_APPROVAL" {
-		var hasConfig bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='PO' AND step_no=1 AND is_active=true)`,
-		).Scan(&hasConfig); err != nil {
+		var poNo string
+		if err := tx.QueryRow(ctx, `SELECT po_no FROM purchase_order WHERE id=$1`, poID).Scan(&poNo); err != nil {
 			return err
 		}
-		if hasConfig {
-			var poNo string
-			if err := tx.QueryRow(ctx, `SELECT po_no FROM purchase_order WHERE id=$1`, poID).Scan(&poNo); err != nil {
-				return err
-			}
-			var id int64
-			if err := tx.QueryRow(ctx, `
-				INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
-				VALUES ('PO',$1,$2,1,$3,$4,'PENDING',$5)
-				RETURNING id`, poID, poNo, claims.UserID, req.ApproverID, totalAmount,
-			).Scan(&id); err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, "approval request error: "+err.Error())
-			}
-			approvalID = &id
+		var id int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
+			VALUES ('PO',$1,$2,1,$3,$4,'PENDING',$5)
+			RETURNING id`, poID, poNo, claims.UserID, req.ApproverID, totalAmount,
+		).Scan(&id); err != nil {
+			log.Printf("po update approval_request po=%d: %v", poID, err)
+			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถสร้างคำขออนุมัติได้ กรุณาลองใหม่อีกครั้ง")
 		}
+		approvalID = &id
 	}
 
 	auditData, _ := json.Marshal(fiber.Map{

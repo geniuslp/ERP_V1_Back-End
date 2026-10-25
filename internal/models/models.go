@@ -1614,6 +1614,14 @@ type WorkOrder struct {
 	AdvanceDeductPct        float64   `json:"advance_deduct_pct"`
 	AdvanceDeductAmount     float64   `json:"advance_deduct_amount"`
 	ApproverID              *int64    `json:"approver_id"`
+	// List/detail display fields: last editor (work_order.updated_by — set only by a real edit of the content),
+	// the assigned approver (approver_id; the user who actually approved when approver_id is NULL), and the latest
+	// approval event.
+	UpdatedBy        *int64     `json:"updated_by"`
+	UpdatedByName    *string    `json:"updated_by_name"`
+	ApproverName     *string    `json:"approver_name"`
+	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
+	ApprovedByName   *string    `json:"approved_by_name,omitempty"`
 	RevisionRound           int       `json:"revision_round"` // COUNT(work_order_edit_log); wo_no never changes
 	// RevisionRoundPrint is the same count under the key the print components read (camelCase, like PO's
 	// print-data). Only set by GET /work-order/:id, which is the print data source; nil (omitted) elsewhere.
@@ -1624,6 +1632,8 @@ type WorkOrder struct {
 	EndDate                 *string   `json:"end_date"`
 	PenaltyPctPerDay        float64   `json:"penalty_pct_per_day"`
 	WarrantyYears           int       `json:"warranty_years"`
+	HasPenalty              bool      `json:"has_penalty"`   // 8.1 เบี้ยปรับ มี/ไม่มี (fixed 1.00% of contract value per day)
+	WarrantyNote            *string   `json:"warranty_note"` // 8.2 ประกันผลงาน (free text)
 	RefNo                   *string   `json:"ref_no"`
 	OtherTerms              *string   `json:"other_terms"`
 	Status                  string    `json:"status"` // DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|CANCELLED
@@ -1694,6 +1704,8 @@ type CreateWorkOrderRequest struct {
 	EndDate             *string  `json:"end_date"`
 	PenaltyPctPerDay    *float64 `json:"penalty_pct_per_day"`
 	WarrantyYears       *int     `json:"warranty_years"`
+	HasPenalty          *bool    `json:"has_penalty"`   // omitted on PUT keeps the stored value
+	WarrantyNote        *string  `json:"warranty_note"`
 	RefNo               *string  `json:"ref_no"`
 	OtherTerms          *string  `json:"other_terms"`
 	SectionHeadID       *int64   `json:"section_head_id"`

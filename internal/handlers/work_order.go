@@ -260,6 +260,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			use_discount, discount_type, use_vat, use_wht,
 			total_amount, discount_amount, vat_amount, wht_amount, net_amount,
 			project_name_text, subcontractor_signed_name, advance_deduct_amount, approver_id,
+			has_penalty, warranty_note,
 			created_by, updated_by
 		) VALUES (
 			$1,$2,$3,$4,$5,
@@ -273,6 +274,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			$34,$35,$36,$37,
 			$38,$39,$40,$41,$42,
 			$43,$44,COALESCE($45,0),$46,
+			COALESCE($47,false),$48,
 			$30,$30
 		) RETURNING id`,
 		woNo, woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
@@ -286,6 +288,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
 		req.ProjectNameText, req.SubcontractorSignedName, advanceDeductAmount, req.ApproverID,
+		req.HasPenalty, req.WarrantyNote,
 	).Scan(&woID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "insert error: "+err.Error())
@@ -428,14 +431,21 @@ const workOrderSelectCols = `
 	wo.use_discount, wo.discount_type, wo.use_vat, wo.use_wht,
 	wo.total_amount, wo.discount_amount, wo.vat_amount, wo.wht_amount, wo.net_amount,
 	wo.supplier_id, wo.project_name_text, wo.advance_deduct_amount, wo.approver_id,
-	(SELECT COUNT(*) FROM work_order_edit_log wel WHERE wel.wo_id = wo.id) AS revision_round`
+	(SELECT COUNT(*) FROM work_order_edit_log wel WHERE wel.wo_id = wo.id) AS revision_round,
+	wo.updated_by, uu.full_name AS updated_by_name,
+	COALESCE(apru.full_name, evu.full_name) AS approver_name, ev.ev_at, evu.full_name AS approved_by_name,
+	wo.has_penalty, wo.warranty_note`
 
-const workOrderJoins = `
+var workOrderJoins = `
 	FROM work_order wo
 	LEFT JOIN project p ON p.project_code = wo.project_code
 	LEFT JOIN users eu ON eu.id = wo.entered_by
 	LEFT JOIN users shu ON shu.id = wo.section_head_id
-	LEFT JOIN users au ON au.id = wo.authorized_by`
+	LEFT JOIN users au ON au.id = wo.authorized_by
+	LEFT JOIN users uu ON uu.id = wo.updated_by
+	LEFT JOIN users apru ON apru.id = wo.approver_id
+	` + approvedEventLateralSQL("WO", "wo", "work_order_status_log", "wo_id") + `
+	LEFT JOIN users evu ON evu.id = ev.ev_by`
 
 func scanWorkOrder(row interface{ Scan(dest ...any) error }) (*models.WorkOrder, error) {
 	var w models.WorkOrder
@@ -454,6 +464,8 @@ func scanWorkOrder(row interface{ Scan(dest ...any) error }) (*models.WorkOrder,
 		&w.UseDiscount, &w.DiscountType, &w.UseVAT, &w.UseWHT,
 		&w.TotalAmount, &w.DiscountAmount, &w.VatAmount, &w.WhtAmount, &w.NetAmount,
 		&w.SupplierID, &w.ProjectNameText, &w.AdvanceDeductAmount, &w.ApproverID, &w.RevisionRound,
+		&w.UpdatedBy, &w.UpdatedByName, &w.ApproverName, &w.ApprovedAt, &w.ApprovedByName,
+		&w.HasPenalty, &w.WarrantyNote,
 	)
 	if err != nil {
 		return nil, err
@@ -994,6 +1006,11 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 	if submitting && effectiveApprover == nil {
 		return fiber.NewError(fiber.StatusBadRequest, msgWOApproverRequired)
 	}
+	if submitting {
+		if err := requireApprovalReady(ctx, h.db, "WO", effectiveApprover); err != nil {
+			return err
+		}
+	}
 	if approverChanged || submitting {
 		if err := requireWOApprover(ctx, h.db, effectiveApprover); err != nil {
 			return err
@@ -1077,7 +1094,9 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 			project_name_text    = $44,
 			subcontractor_signed_name = $45,
 			advance_deduct_amount = COALESCE($46, advance_deduct_amount),
-			approver_id = COALESCE($47, approver_id)
+			approver_id = COALESCE($47, approver_id),
+			has_penalty = COALESCE($48, has_penalty),
+			warranty_note = $49
 		WHERE id = $43`,
 		woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
 		req.SupplierID, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
@@ -1090,6 +1109,7 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
 		newStatus, claims.UserID, id,
 		req.ProjectNameText, req.SubcontractorSignedName, req.AdvanceDeductAmount, req.ApproverID,
+		req.HasPenalty, req.WarrantyNote,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "update error: "+err.Error())
 	}
@@ -1226,6 +1246,9 @@ func (h *WorkOrderHandler) Submit(c *fiber.Ctx) error {
 	if err := requireWOApprover(ctx, h.db, approverID); err != nil {
 		return err
 	}
+	if err := requireApprovalReady(ctx, h.db, "WO", approverID); err != nil {
+		return err
+	}
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
@@ -1234,8 +1257,8 @@ func (h *WorkOrderHandler) Submit(c *fiber.Ctx) error {
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `
-		UPDATE work_order SET status='PENDING_APPROVAL', updated_at=NOW(), updated_by=$1
-		WHERE id=$2`, claims.UserID, id,
+		UPDATE work_order SET status='PENDING_APPROVAL', updated_at=NOW()
+		WHERE id=$1`, id,
 	); err != nil {
 		return err
 	}
@@ -1581,21 +1604,17 @@ func (h *WorkOrderHandler) UpdatePaymentConditions(c *fiber.Ctx) error {
 // than a separate call to POST /:id/submit, so both entry points must open the same request or
 // the WO would sit in PENDING_APPROVAL with no approval_request row for anyone to act on).
 func openWorkOrderApproval(ctx context.Context, tx pgx.Tx, woID int64, woNo string, requestedBy, approverID int64) error {
-	var hasConfig bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type='WO' AND step_no=1 AND is_active=true)`,
-	).Scan(&hasConfig); err != nil {
-		return err
-	}
-	if !hasConfig {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status, amount)
 		SELECT 'WO',$1,$2,1,$3,$4,'PENDING',contract_amount FROM work_order WHERE id=$1`,
 		woID, woNo, requestedBy, approverID,
-	); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "approval request error: "+err.Error())
+	)
+	if err != nil {
+		log.Printf("wo approval_request wo=%d: %v", woID, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถสร้างคำขออนุมัติได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if tag.RowsAffected() == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "ไม่พบหนังสือสั่งจ้าง")
 	}
 	return nil
 }

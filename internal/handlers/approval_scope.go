@@ -13,10 +13,10 @@ import (
 )
 
 // Approver scoping for Memo / PO / WO: an approver sees and may act on ONLY the documents assigned to them
-// (<table>.approver_id = their user id). Legacy documents with approver_id IS NULL were routed by role before the
-// per-document approver existed, so they stay visible only to users holding a role in an active approval_config
-// row of that doc type. approval_delegation (extra approvers) does NOT widen the scope: an extra approver is
-// chosen as a document's approver_id through the eligible-approver picker like anyone else.
+// (<table>.approver_id = their user id). A document with approver_id IS NULL is actionable by nobody and is in no
+// queue or badge count (it has to be given an approver first). approval_delegation (extra approvers) does NOT widen
+// the scope: an extra approver is chosen as a document's approver_id through the eligible-approver picker like
+// anyone else.
 
 const msgNotAssignedApprover = "เอกสารนี้ไม่ได้ถูกกำหนดให้คุณเป็นผู้อนุมัติ"
 
@@ -39,28 +39,21 @@ var approvalScopeDocs = map[string]approvalScopeDoc{
 	"WO":   {"work_order", "work_order_status_log", "wo_id", "'PENDING_APPROVAL','PENDING_REAPPROVAL'"},
 }
 
-// approvalAssignedSQL: the document is assigned to $user, or is a legacy NULL-approver document and $user holds an
-// approving role of $docType in approval_config. alias is the document table alias; userIdx/typeIdx are 1-based
-// placeholder numbers (the doc type is passed as a parameter, never inlined).
-func approvalAssignedSQL(alias string, userIdx, typeIdx int) string {
-	return fmt.Sprintf(`(%[1]s.approver_id = $%[2]d
-		OR (%[1]s.approver_id IS NULL AND EXISTS (
-			SELECT 1 FROM approval_config ac
-			JOIN user_roles ur ON ur.role_id = ac.approver_role_id
-			JOIN roles r ON r.id = ac.approver_role_id AND r.is_active = true
-			WHERE ac.doc_type = $%[3]d AND ac.is_active = true AND ur.user_id = $%[2]d)))`,
-		alias, userIdx, typeIdx)
+// approvalAssignedSQL: the document is assigned to $user. alias is the document table alias; userIdx is the 1-based
+// placeholder number of the user id. approver_id IS NULL never matches.
+func approvalAssignedSQL(alias string, userIdx int) string {
+	return fmt.Sprintf(`%[1]s.approver_id = $%[2]d`, alias, userIdx)
 }
 
 // approvalVisibleSQL = assigned, OR (for documents that are no longer pending) this user recorded the
 // APPROVED/REJECTED decision — the "already decided" history. Pending documents are never exposed through the
 // decided clause, so a previous decider cannot see a document now waiting on someone else.
-func approvalVisibleSQL(docType, alias string, userIdx, typeIdx int) string {
+func approvalVisibleSQL(docType, alias string, userIdx int) string {
 	d := approvalScopeDocs[docType]
 	return fmt.Sprintf(`(%s
 		OR (%s.status NOT IN (%s) AND EXISTS (
 			SELECT 1 FROM %s l WHERE l.%s = %s.id AND l.changed_by = $%d AND l.to_status IN ('APPROVED','REJECTED'))))`,
-		approvalAssignedSQL(alias, userIdx, typeIdx), alias, d.pending, d.logTbl, d.logFK, alias, userIdx)
+		approvalAssignedSQL(alias, userIdx), alias, d.pending, d.logTbl, d.logFK, alias, userIdx)
 }
 
 type approvalQuerier interface {
@@ -74,14 +67,14 @@ func docApprovalAccess(ctx context.Context, q approvalQuerier, docType string, d
 	if !ok {
 		return false, false, fmt.Errorf("approval scope: unsupported doc type %q", docType)
 	}
-	cond := approvalAssignedSQL("d", 2, 3)
+	cond := approvalAssignedSQL("d", 2)
 	if !forAction {
-		cond = approvalVisibleSQL(docType, "d", 2, 3)
+		cond = approvalVisibleSQL(docType, "d", 2)
 	}
 	err = q.QueryRow(ctx, fmt.Sprintf(`
 		SELECT EXISTS(SELECT 1 FROM %[1]s WHERE id = $1),
 		       EXISTS(SELECT 1 FROM %[1]s d WHERE d.id = $1 AND %[2]s)`, d.table, cond),
-		docID, userID, docType).Scan(&exists, &allowed)
+		docID, userID).Scan(&exists, &allowed)
 	return exists, allowed, err
 }
 
@@ -134,13 +127,13 @@ func approvalListCond(claims *auth.Claims, docType, alias string, args []any) (s
 	if canViewAllApprovals(claims) {
 		return "", args
 	}
-	args = append(args, claims.UserID, docType)
-	return approvalVisibleSQL(docType, alias, len(args)-1, len(args)), args
+	args = append(args, claims.UserID)
+	return approvalVisibleSQL(docType, alias, len(args)), args
 }
 
 // MyPendingCounts godoc
 // @Summary      Pending-approval counts for the current user (sidebar badges)
-// @Description  Number of Memo / PO / WO documents waiting for the caller: status PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id) or legacy NULL-approver documents the caller can approve by role. Same filter as the approval lists.
+// @Description  Number of Memo / PO / WO documents waiting for the caller: status PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id; a NULL approver_id counts for nobody). Same filter as the approval lists.
 // @Tags         Approvals
 // @Security     BearerAuth
 // @Produce      json
@@ -163,8 +156,8 @@ func (h *ApprovalHandler) MyPendingCounts(c *fiber.Ctx) error {
 				d.table, d.pending, approvalNotDeleted(docType))).Scan(&n)
 		} else {
 			err = h.db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s d WHERE d.status IN (%s)%s AND %s`,
-				d.table, d.pending, approvalNotDeleted(docType), approvalAssignedSQL("d", 1, 2)),
-				claims.UserID, docType).Scan(&n)
+				d.table, d.pending, approvalNotDeleted(docType), approvalAssignedSQL("d", 1)),
+				claims.UserID).Scan(&n)
 		}
 		if err != nil {
 			log.Printf("my-pending-counts %s: %v", docType, err)
@@ -183,4 +176,45 @@ func approvalNotDeleted(docType string) string {
 		return " AND d.deleted_at IS NULL"
 	}
 	return ""
+}
+
+const (
+	msgApproverRequiredToSubmit  = "กรุณาเลือกผู้อนุมัติก่อนส่งขออนุมัติ"
+	msgApprovalFlowNotConfigured = "ยังไม่ได้ตั้งค่าขั้นตอนการอนุมัติของเอกสารประเภทนี้ กรุณาติดต่อผู้ดูแลระบบ"
+)
+
+// requireApprovalReady is the gate every path that moves a document to PENDING_APPROVAL runs BEFORE changing the
+// status: an approver must be chosen, and the doc type must have an active step-1 approval_config so the
+// approval_request row can be written in the same transaction (a document must never sit in PENDING_APPROVAL
+// without a request someone can act on). Plain Thai 400s, never a DB error.
+func requireApprovalReady(ctx context.Context, q approvalQuerier, docType string, approverID *int64) error {
+	if approverID == nil || *approverID <= 0 {
+		return fiber.NewError(fiber.StatusBadRequest, msgApproverRequiredToSubmit)
+	}
+	var ok bool
+	if err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM approval_config WHERE doc_type=$1 AND step_no=1 AND is_active=true)`, docType,
+	).Scan(&ok); err != nil {
+		log.Printf("approval ready %s: %v", docType, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบขั้นตอนการอนุมัติได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if !ok {
+		return fiber.NewError(fiber.StatusBadRequest, msgApprovalFlowNotConfigured)
+	}
+	return nil
+}
+
+// approvedEventLateralSQL is a "LEFT JOIN LATERAL ... AS ev" giving the latest approval of a document as
+// (ev_at, ev_by): from approval_log (action APPROVE) or, because the config-driven approve path
+// (PUT /approval/<type>/:id/approve) writes only the document's status-log table, from that table's
+// to_status='APPROVED' row. All arguments are code constants, never request input.
+func approvedEventLateralSQL(docType, alias, logTbl, logFK string) string {
+	return fmt.Sprintf(`LEFT JOIN LATERAL (
+		SELECT x.ev_at, x.ev_by FROM (
+			SELECT action_at AS ev_at, action_by AS ev_by FROM approval_log
+			WHERE doc_type = '%[1]s' AND doc_id = %[2]s.id AND action = 'APPROVE'
+			UNION ALL
+			SELECT changed_at, changed_by FROM %[3]s WHERE %[4]s = %[2]s.id AND to_status = 'APPROVED'
+		) x ORDER BY x.ev_at DESC LIMIT 1
+	) ev ON true`, docType, alias, logTbl, logFK)
 }

@@ -102,6 +102,11 @@
 | [work_order_payment_installment](#work_order_payment_installment) | WO | งวดชำระเงินของ WO (แทน advance_pct/advance_amount) |
 | [work_order_retention](#work_order_retention) | WO | เงินประกันผลงานของ WO (แทน retention_pct) |
 | [work_order_penalty](#work_order_penalty) | WO | ค่าปรับของ WO (แทน penalty_pct_per_day) |
+| [wo_contractor_log](#wo_contractor_log) | WO | บันทึกงานของผู้รับเหมาตามใบสั่งจ้าง (tab ข้อมูลเอกสาร) |
+| [wo_contractor_log_term](#wo_contractor_log_term) | WO | แถว Contract/Advance/Retention ของ wo_contractor_log |
+| [wo_contractor_log_bill](#wo_contractor_log_bill) | WO | รายการรับวางบิล (tab ประเภทรับวางบิล) |
+| [wo_contractor_log_bill_line](#wo_contractor_log_bill_line) | WO | 7 บรรทัดสรุปรายการเบิกของ bill |
+| [wo_contractor_log_bill_invoice](#wo_contractor_log_bill_invoice) | WO | ใบกำกับภาษี/invoice ของ bill |
 
 ---
 
@@ -1552,6 +1557,8 @@ duration_days            integer       nullable
 end_date                 date          nullable
 penalty_pct_per_day      numeric(5,2)  NOT NULL  DEFAULT 0
 warranty_years           integer       NOT NULL  DEFAULT 1
+has_penalty              boolean       NOT NULL  DEFAULT false  -- 🆕 2026-10-25: 8.1 เบี้ยปรับ มี/ไม่มี (อัตราคงที่ 1.00% ของมูลค่างาน/วัน แสดงเป็นข้อความ ไม่ได้เก็บ)
+warranty_note            text          nullable                 -- 🆕 2026-10-25: 8.2 ประกันผลงาน 1 ปี (free text); แทน warranty_years ในฟอร์ม (คอลัมน์เดิมยังอยู่)
 ref_no                   varchar(50)   nullable
 other_terms              text          nullable
 cost_code                varchar(50)   nullable   -- 🔴 DEPRECATED, ดูหมายเหตุ
@@ -1687,6 +1694,74 @@ updated_by           bigint        nullable
 
 ---
 
+### wo_contractor_log
+> 🆕 2026-10-25 (migration `020_wo_contractor_log.sql`) — หน้า "บันทึกงานของผู้รับเหมาตามใบสั่งจ้าง" tab ข้อมูลเอกสาร.
+> ผู้รับจ้าง / โครงการของ WO / ลักษณะสัญญา **ไม่เก็บซ้ำ** อ่านสดจาก `work_order` (+ `supplier`) ทุกครั้ง
+```
+id            bigint       NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+wo_id         bigint       NOT NULL  — FK → work_order.id
+project_code  varchar(20)  nullable  — FK → project.project_code  (ช่อง "PJ" แยกจากโครงการของ WO)
+created_at / updated_at timestamp NOT NULL DEFAULT now(); created_by / updated_by bigint nullable
+```
+
+### wo_contractor_log_term
+```
+id          bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+log_id      bigint        NOT NULL  — FK → wo_contractor_log.id  ON DELETE CASCADE
+item_type   varchar(20)   NOT NULL  — CHECK IN ('CONTRACT','ADVANCE','RETENTION');  UNIQUE (log_id, item_type)
+percent     numeric(7,2)  nullable
+amount      numeric(18,2) nullable
+accumulate  numeric(18,2) nullable   — กรอกเอง (ยังไม่ได้คำนวณจากบิล)
+balance     numeric(18,2) nullable   — กรอกเอง
+created_at / updated_at timestamp NOT NULL DEFAULT now()
+```
+
+### wo_contractor_log_bill
+> 🆕 2026-10-25 (migration `021_wo_contractor_log_bill.sql`) — tab ประเภทรับวางบิล. `subtotal` (รวมเป็นเงิน (1)) และ
+> `net_amount` (จ่ายสุทธิ) **คำนวณใหม่ฝั่ง backend ทุกครั้งที่บันทึก** จากตาราง `_line`:
+> subtotal = ADV + PROGRESS − ADV_DEDUCT + VAT ; net = subtotal − RETENTION − WHT − OTHER
+```
+id                      bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+log_id                  bigint        NOT NULL  — FK → wo_contractor_log.id  ON DELETE CASCADE
+bill_type               varchar(20)   NOT NULL  — CHECK IN ('ADV','PROGRESS','RETENTION')
+installment_no          integer       nullable  — "งวดที่"
+ap_voucher_no           varchar(50)   nullable  — ฝ่ายบัญชีกรอก (ยังไม่ได้จำกัดสิทธิ์)
+pay_to                  varchar(200)  nullable  — default = ชื่อผู้รับจ้างของ WO, แก้ได้
+credit_term_days        integer       nullable  — default จาก supplier.payment_terms (เลขตัวแรกในข้อความ เช่น "30  วัน")
+description             text          nullable
+progress_installment_no integer       nullable  — งวดงานของ WO (work_order_payment_installment.installment_no) ที่เลือกใน "เงินงวดนี้"
+wht_type                varchar(50)   nullable  — ค่าจ้างรับเหมา / ค่าบริการ / ค่าเช่า / ค่าขนส่ง (ข้อความอิสระ)
+subtotal                numeric(18,2) NOT NULL  DEFAULT 0
+net_amount              numeric(18,2) NOT NULL  DEFAULT 0
+status                  varchar(20)   NOT NULL  DEFAULT 'DRAFT'  — CHECK IN ('DRAFT','SAVED')
+created_at / updated_at timestamp NOT NULL DEFAULT now(); created_by / updated_by bigint nullable
+```
+
+### wo_contractor_log_bill_line
+```
+id         bigint        NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+bill_id    bigint        NOT NULL  — FK → wo_contractor_log_bill.id  ON DELETE CASCADE
+line_code  varchar(20)   NOT NULL  — CHECK IN ('ADV','PROGRESS','ADV_DEDUCT','VAT','RETENTION','WHT','OTHER');  UNIQUE (bill_id, line_code)
+percent    numeric(7,2)  nullable
+amount     numeric(18,2) NOT NULL  DEFAULT 0
+```
+บรรทัดตามสเก็ตช์: 1 ADV=เงินเบิกล่วงหน้า, 2 PROGRESS=เงินงวดนี้, 3 ADV_DEDUCT=หักเงินจ่ายล่วงหน้า, 4 VAT, 5 RETENTION=หักเงินประกันผลงาน,
+6 WHT=หัก ณ ที่จ่าย, 7 OTHER=หักอื่นๆ
+
+### wo_contractor_log_bill_invoice
+```
+id             bigint       NOT NULL  PK  GENERATED ALWAYS AS IDENTITY
+bill_id        bigint       NOT NULL  — FK → wo_contractor_log_bill.id  ON DELETE CASCADE
+line_no        integer      NOT NULL
+invoice_no     varchar(50)  nullable
+invoice_date   date         nullable
+delivery_date  date         nullable   -- ป้าย "วันที่ส่งมอบงาน" (ลายมือในสเก็ตช์อ่านยาก — ยืนยันชื่อคอลัมน์อีกครั้ง)
+bill_date      date         nullable   -- วันที่วางบิล
+pay_date       date         nullable   -- วันที่จ่าย
+```
+
+---
+
 ### work_order menus
 ```
 MENU_WO           — หนังสือสั่งจ้าง (WO)     sort_order=4  (หลัง PO=3, ก่อน STOCK=5)
@@ -1695,6 +1770,11 @@ MENU_WO_CREATE    — สร้างหนังสือสั่งจ้า�
 MENU_WO_APPROVAL  — อนุมัติหนังสือสั่งจ้าง      sort_order=3 (child)
 ```
 ชื่อเมนู parent ปัจจุบัน: **"หนังสือสั่งจ้าง (WO)"** (เปลี่ยนจาก "(Work Order)" ตามที่ขอทีหลัง)
+
+> 🆕 2026-10-25 — สถานะจริงใน DB (dev): `MENU_WO` (id 51) **is_active=false** และไม่มีลูกเหลือ; เมนูย่อย WO (`MENU_WO_CREATE`/`MENU_WO_LIST`/`MENU_WO_APPROVAL`)
+> อยู่ใต้ `MENU_PO` ("PO/WO Procurement ระบบจัดซื้อจัดจ้าง", id 5) แล้ว. เพิ่ม `MENU_WO_CONTRACTOR_LOG` (id 71,
+> "บันทึกงานของผู้รับเหมาตามใบสั่งจ้าง", path `/work-order/contractor-log`) ใต้ `MENU_PO`, sort_order=9 (ก่อน `MENU_PO_COST_BUDGET`=10)
+> — migrations `018_menu_contractor_work_log.sql` + `019_menu_contractor_log_reorder.sql`. สิทธิ์ของเมนูใหม่ต้องให้ผ่าน permission matrix เอง (ไม่มี grant ใน SQL).
 
 ---
 

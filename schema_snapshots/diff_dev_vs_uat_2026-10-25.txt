@@ -1,0 +1,90 @@
+tables dev/uat: 117 112
+
+## TABLES only in DEV (UAT must create): 5
+   wo_contractor_log
+   wo_contractor_log_bill
+   wo_contractor_log_bill_invoice
+   wo_contractor_log_bill_line
+   wo_contractor_log_term
+
+## TABLES only in UAT (not in dev): 0
+
+## COLUMN differences (tables in both)
+  ~ borrow.project_code
+        dev: character varying(20)
+        uat: character varying(50)
+  ~ ic_po_receive_document.rated_at
+        dev: timestamp without time zone
+        uat: timestamp with time zone
+  ~ ic_po_receive_document.score_ontime
+        dev: smallint
+        uat: numeric
+  ~ ic_po_receive_document.score_quality
+        dev: smallint
+        uat: numeric
+  ~ ic_po_receive_document.score_quantity
+        dev: smallint
+        uat: numeric
+  ~ memo.delivery_location
+        dev: character varying(255)
+        uat: text
+  ~ project.warehouse_code
+        dev: character varying(20)
+        uat: character varying(50)
+  ~ requisition.container_no
+        dev: character varying(30)
+        uat: character varying(100)
+  ~ stock_item.mat_code
+        dev: character varying(30) CONSTRAINT stock_item_item_code_not_null NOT NULL
+        uat: character varying(30) NOT NULL
+  ~ stock_item.qty
+        dev: numeric(18,4) DEFAULT 0 CONSTRAINT stock_item_min_qty_not_null NOT NULL
+        uat: numeric(18,4) DEFAULT 0 NOT NULL
+  ~ stock_transfer_line.mat_code
+        dev: character varying(20) NOT NULL
+        uat: character varying(30) NOT NULL
+  ~ stock_transfer_line.unit
+        dev: character varying(20)
+        uat: character varying(50)
+  + work_order.has_penalty  (dev only)  boolean DEFAULT false NOT NULL
+  + work_order.warranty_note  (dev only)  text
+  total column diffs: 14
+
+## CONSTRAINTS
+  + dev only ('wo_contractor_log', 'wo_contractor_log_pkey') :: PRIMARY KEY (id)
+  + dev only ('wo_contractor_log', 'wo_contractor_log_project_code_fkey') :: FOREIGN KEY (project_code) REFERENCES public.project(project_code)
+  + dev only ('wo_contractor_log', 'wo_contractor_log_wo_id_fkey') :: FOREIGN KEY (wo_id) REFERENCES public.work_order(id)
+  + dev only ('wo_contractor_log_bill', 'wo_contractor_log_bill_log_id_fkey') :: FOREIGN KEY (log_id) REFERENCES public.wo_contractor_log(id) ON DELETE CASCADE
+  + dev only ('wo_contractor_log_bill', 'wo_contractor_log_bill_pkey') :: PRIMARY KEY (id)
+  + dev only ('wo_contractor_log_bill_invoice', 'wo_contractor_log_bill_invoice_bill_id_fkey') :: FOREIGN KEY (bill_id) REFERENCES public.wo_contractor_log_bill(id) ON DELETE CASCADE
+  + dev only ('wo_contractor_log_bill_invoice', 'wo_contractor_log_bill_invoice_pkey') :: PRIMARY KEY (id)
+  + dev only ('wo_contractor_log_bill_line', 'wo_contractor_log_bill_line_bill_id_fkey') :: FOREIGN KEY (bill_id) REFERENCES public.wo_contractor_log_bill(id) ON DELETE CASCADE
+  + dev only ('wo_contractor_log_bill_line', 'wo_contractor_log_bill_line_bill_id_line_code_key') :: UNIQUE (bill_id, line_code)
+  + dev only ('wo_contractor_log_bill_line', 'wo_contractor_log_bill_line_pkey') :: PRIMARY KEY (id)
+  + dev only ('wo_contractor_log_term', 'wo_contractor_log_term_log_id_fkey') :: FOREIGN KEY (log_id) REFERENCES public.wo_contractor_log(id) ON DELETE CASCADE
+  + dev only ('wo_contractor_log_term', 'wo_contractor_log_term_log_id_item_type_key') :: UNIQUE (log_id, item_type)
+  + dev only ('wo_contractor_log_term', 'wo_contractor_log_term_pkey') :: PRIMARY KEY (id)
+  ~ differs ('cost_group', 'cost_group_job_id_fkey') 
+      dev: FOREIGN KEY (job_id) REFERENCES public.cost_job(id) NOT VALID 
+      uat: FOREIGN KEY (job_id) REFERENCES public.cost_job(id)
+  ~ differs ('cost_job', 'cost_job_subject_id_fkey') 
+      dev: FOREIGN KEY (subject_id) REFERENCES public.cost_subject(id) NOT VALID 
+      uat: FOREIGN KEY (subject_id) REFERENCES public.cost_subject(id)
+  ~ differs ('cost_subgroup', 'cost_subgroup_group_id_fkey') 
+      dev: FOREIGN KEY (group_id) REFERENCES public.cost_group(id) NOT VALID 
+      uat: FOREIGN KEY (group_id) REFERENCES public.cost_group(id)
+
+## INDEXES
+  + dev only idx_wo_contractor_log_bill_invoice_bill ('wo_contractor_log_bill_invoice', 'USING btree (bill_id)')
+  + dev only idx_wo_contractor_log_bill_log ('wo_contractor_log_bill', 'USING btree (log_id)')
+  + dev only idx_wo_contractor_log_wo ('wo_contractor_log', 'USING btree (wo_id)')
+  - uat only idx_stock_transfer_line_transfer ('stock_transfer_line', 'USING btree (transfer_id)')
+  - uat only idx_work_order_line_wo_id ('work_order_line', 'USING btree (wo_id)')
+
+## VIEWS dev-only: []  uat-only: []
+
+## FUNCS dev-only: []  uat-only: []
+
+## TRIG dev-only: []  uat-only: []
+
+## SEQS dev-only: ['stock_transfer_id_seq', 'stock_transfer_line_id_seq', 'stock_transfer_status_log_id_seq']  uat-only: []

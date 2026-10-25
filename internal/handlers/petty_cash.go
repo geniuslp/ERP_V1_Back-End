@@ -769,21 +769,62 @@ func (h *PettyCashHandler) LineOptions(c *fiber.Ctx) error {
 	}})
 }
 
-// requireSubmittable enforces the rules for entering PENDING_APPROVAL: ≥1 line and a requester
-// remark (หมายเหตุผู้เบิก).
-func requireSubmittable(lineCount int, remarks string) error {
-	if lineCount == 0 {
+// pcSubmitLine is the part of a line that the submit rules look at. lineNo is the number shown to the user.
+type pcSubmitLine struct {
+	lineNo         int
+	costSubgroupID *int64
+}
+
+// requireSubmittable enforces the rules for entering PENDING_APPROVAL: ≥1 line, a requester remark
+// (หมายเหตุผู้เบิก), and on every line a cost code that is a selectable ITEM (not Head, not Major).
+// Unlike requireNonHeadCostCodes it does not grandfather a code already stored on the document: a
+// DRAFT may keep a missing/Head/Major code, but it cannot go to approval with one. Drafts are not
+// checked at all. Call before any write.
+func requireSubmittable(ctx context.Context, q pgQuerier, remarks string, lines []pcSubmitLine) error {
+	if len(lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, pcLinesRequiredMsg)
 	}
 	if strings.TrimSpace(remarks) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, pcRemarksRequiredMsg)
+	}
+	var ids []int64
+	for _, l := range lines {
+		if l.costSubgroupID != nil && *l.costSubgroupID > 0 {
+			ids = append(ids, *l.costSubgroupID)
+		}
+	}
+	rollup := map[int64]bool{} // Head or Major subgroups among the ids
+	if len(ids) > 0 {
+		rows, err := q.Query(ctx, `SELECT id FROM cost_subgroup WHERE id = ANY($1) AND (is_head OR is_major)`, ids)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			rollup[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	for _, l := range lines {
+		if l.costSubgroupID == nil || *l.costSubgroupID <= 0 {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("บรรทัดที่ %d ยังไม่ได้ระบุรหัสต้นทุน", l.lineNo))
+		}
+		if rollup[*l.costSubgroupID] {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("บรรทัดที่ %d ใช้รหัสต้นทุนที่เลือกไม่ได้ (Head/Major)", l.lineNo))
+		}
 	}
 	return nil
 }
 
 // Create godoc
 // @Summary      Create a petty cash requisition
-// @Description  status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code; if both are empty the line is stored with project_code NULL (department-only). At least one of header project_code, header dept_code or a line project_code is required (400 otherwise).
+// @Description  status starts as DRAFT unless status=PENDING_APPROVAL is passed (requires approver_id, ≥1 line and remarks). A DRAFT may have zero lines. pc_no is generated server-side (PC-YYYYMM-NNNN); any client pc_no is ignored. A line with an empty project_code falls back to the header project_code; if both are empty the line is stored with project_code NULL (department-only). At least one of header project_code, header dept_code or a line project_code is required (400 otherwise). With status=PENDING_APPROVAL every line must carry a cost_subgroup_id that is a selectable ITEM (not Head/Major), else 400 "บรรทัดที่ N ยังไม่ได้ระบุรหัสต้นทุน" / "บรรทัดที่ N ใช้รหัสต้นทุนที่เลือกไม่ได้ (Head/Major)"; a DRAFT may be saved without a cost code.
 // @Tags         Petty Cash
 // @Security     BearerAuth
 // @Accept       json
@@ -805,7 +846,9 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	{
+	// A pending create goes through the strict requireSubmittable below (line-numbered messages);
+	// drafts only get the lenient check.
+	if req.Status != "PENDING_APPROVAL" {
 		ids := make([]*int64, len(lines))
 		for i, l := range lines {
 			ids[i] = l.costSubgroupID
@@ -826,7 +869,14 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 		if req.ApproverID == nil {
 			return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกผู้อนุมัติ")
 		}
-		if err := requireSubmittable(len(req.Lines), req.Remarks); err != nil {
+		if err := requireApprovalReady(ctx, h.db, "PETTY_CASH", req.ApproverID); err != nil {
+			return err
+		}
+		submitLines := make([]pcSubmitLine, len(lines))
+		for i, l := range lines {
+			submitLines[i] = pcSubmitLine{lineNo: i + 1, costSubgroupID: l.costSubgroupID}
+		}
+		if err := requireSubmittable(ctx, h.db, req.Remarks, submitLines); err != nil {
 			return err
 		}
 	}
@@ -1105,6 +1155,7 @@ func (h *PettyCashHandler) Delete(c *fiber.Ctx) error {
 
 // Submit godoc
 // @Summary      Submit for approval (DRAFT/REJECTED → PENDING_APPROVAL)
+// @Description  Requires ≥1 line, requester remarks, and on every line a cost_subgroup_id that is a selectable ITEM (not Head/Major): 400 "บรรทัดที่ N ยังไม่ได้ระบุรหัสต้นทุน" / "บรรทัดที่ N ใช้รหัสต้นทุนที่เลือกไม่ได้ (Head/Major)". Unlike save-time validation, a Head/Major code already stored on the draft is NOT tolerated here.
 // @Tags         Petty Cash
 // @Security     BearerAuth
 // @Accept       json
@@ -1131,12 +1182,10 @@ func (h *PettyCashHandler) Submit(c *fiber.Ctx) error {
 	var pcNo string
 	var approverID *int64
 	var remarks *string
-	var lineCount int
 	if err := h.db.QueryRow(ctx, `
-		SELECT pc.status, pc.pc_no, pc.approver_id, pc.remarks,
-		       (SELECT COUNT(*) FROM petty_cash_requisition_line WHERE pc_id = pc.id)
+		SELECT pc.status, pc.pc_no, pc.approver_id, pc.remarks
 		FROM petty_cash_requisition pc WHERE pc.id=$1`, id,
-	).Scan(&currentStatus, &pcNo, &approverID, &remarks, &lineCount); err != nil {
+	).Scan(&currentStatus, &pcNo, &approverID, &remarks); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "petty cash requisition not found")
 	}
 	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
@@ -1147,7 +1196,25 @@ func (h *PettyCashHandler) Submit(c *fiber.Ctx) error {
 	if remarks != nil {
 		remarkText = *remarks
 	}
-	if err := requireSubmittable(lineCount, remarkText); err != nil {
+	lineRows, err := h.db.Query(ctx,
+		`SELECT line_no, cost_subgroup_id FROM petty_cash_requisition_line WHERE pc_id=$1 ORDER BY line_no, id`, id)
+	if err != nil {
+		return err
+	}
+	var submitLines []pcSubmitLine
+	for lineRows.Next() {
+		var l pcSubmitLine
+		if err := lineRows.Scan(&l.lineNo, &l.costSubgroupID); err != nil {
+			lineRows.Close()
+			return err
+		}
+		submitLines = append(submitLines, l)
+	}
+	lineRows.Close()
+	if err := lineRows.Err(); err != nil {
+		return err
+	}
+	if err := requireSubmittable(ctx, h.db, remarkText, submitLines); err != nil {
 		return err
 	}
 

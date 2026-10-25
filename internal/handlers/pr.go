@@ -284,6 +284,15 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "pr_type must be 'PO_WO', 'PO_ONLY', or 'WO_ONLY'")
 	}
 
+	// A PR created from a memo inherits the memo's job when the client sent none.
+	if req.MemoID != nil && strings.TrimSpace(req.JobCode) == "" {
+		mj, err := memoJobCode(context.Background(), h.db, *req.MemoID)
+		if err != nil {
+			return err
+		}
+		req.JobCode = mj
+	}
+
 	if IsAssetOrOfficeType(req.OrderType) {
 		// Asset/office types: project/warehouse optional, job_code defaults to the General/OH
 		// job and need not be one of the project's job_codes[].
@@ -1258,6 +1267,13 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	jobCode := req.JobCode
 	if jobCode == "" {
 		jobCode = currentJobCode
+	}
+	if strings.TrimSpace(jobCode) == "" && currentMemoID != nil {
+		mj, err := memoJobCode(ctx, h.db, *currentMemoID)
+		if err != nil {
+			return err
+		}
+		jobCode = mj
 	}
 	if IsAssetOrOfficeType(orderType) {
 		if strings.TrimSpace(jobCode) == "" {

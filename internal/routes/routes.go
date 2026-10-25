@@ -435,6 +435,16 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	workOrder.Get("/:woId/payment-conditions", workOrderH.GetPaymentConditions)
 	workOrder.Post("/:woId/payment-conditions", workOrderH.UpdatePaymentConditions)
 
+	woContractorLogH := handlers.NewWOContractorLogHandler(db)
+	woContractorLog := api.Group("/wo-contractor-log", jwt)
+	woContractorLog.Post("/", woContractorLogH.Create)
+	woContractorLog.Get("/bills/:billId", woContractorLogH.GetBill)
+	woContractorLog.Put("/bills/:billId", woContractorLogH.UpdateBill)
+	woContractorLog.Get("/:id/bills", woContractorLogH.ListBills)
+	woContractorLog.Post("/:id/bills", woContractorLogH.CreateBill)
+	woContractorLog.Get("/:id", woContractorLogH.Get)
+	woContractorLog.Put("/:id", woContractorLogH.Update)
+
 	financeH := handlers.NewFinanceHandler(db)
 	finance := api.Group("/finance", jwt)
 	finance.Get("/payments", financeH.ListPayableDocs)
@@ -496,8 +506,16 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	approvalDelegation.Delete("/:id", approvalDelegationH.Delete)
 
 	// Departments
+	// Department master. Reading needs only a login (dropdowns everywhere use it); changes are gated by the menu
+	// permission MENU_ADMIN_DEPARTMENTS (user > role > dept precedence). No static sub-routes exist, and all
+	// /:id routes come after the collection routes.
 	deptH := handlers.NewDepartmentHandler(db)
-	api.Get("/departments", deptH.List)
+	const deptMenu = "MENU_ADMIN_DEPARTMENTS"
+	departments := api.Group("/departments", jwt)
+	departments.Get("/", deptH.List)
+	departments.Post("/", middleware.RequireMenuPermission(db, deptMenu, "write"), deptH.Create)
+	departments.Put("/:id", middleware.RequireMenuPermission(db, deptMenu, "update"), deptH.Update)
+	departments.Delete("/:id", middleware.RequireMenuPermission(db, deptMenu, "delete"), deptH.Delete)
 
 	// Dept-Menu Permissions
 	deptPermH := handlers.NewDeptMenuPermissionHandler(db)

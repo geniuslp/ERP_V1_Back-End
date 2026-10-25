@@ -15,10 +15,12 @@ import (
 // Bases (see ProjectOverviewHandler.List):
 //   - Contract Budget = project_kind='VO' ? vo_amount : budget_amount.
 //   - Pu.Cost (committed) = PO lines (amount - line_discount, ex-VAT/ex-WHT) + WO total_amount (ex-VAT, after
-//     line discounts) + approved petty cash line_net. Memo excluded.
+//     line discounts) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, same basis as the Cost Budget
+//     page; spent_amount in GET /master/projects still uses line_net, VAT-inclusive). Memo excluded.
 //   - Ac.Cost (actual)    = PO received value (qty_received x unit_price less the received share of line_discount,
-//     ex-VAT, returns already netted in qty_received) + WO payments (payment_log, net of reversals) + approved
-//     petty cash line_net. The IC ledgers are not used.
+//     ex-VAT, returns already netted in qty_received) + WO payments (payment_log, net of reversals; PAYABLE basis,
+//     incl. VAT and net of WHT) + approved petty cash (amount - line_discount, ex-VAT: cash already spent). The IC
+//     ledgers are not used.
 
 // Statuses of a PO / WO that count as committed. PO also lists the legacy receiving statuses that older rows may
 // still hold in purchase_order.status.
@@ -70,7 +72,7 @@ WITH po AS (
 	WHERE pl.doc_type = 'WO' AND w.project_code IS NOT NULL
 	GROUP BY w.project_code
 ), pc AS (
-	SELECT l.project_code, SUM(COALESCE(l.line_net, l.amount)) AS amt
+	SELECT l.project_code, SUM(` + pcExVatSQL + `) AS amt
 	FROM petty_cash_requisition_line l
 	JOIN petty_cash_requisition h ON h.id = l.pc_id
 	WHERE h.status = 'APPROVED' AND l.project_code IS NOT NULL
@@ -148,8 +150,8 @@ type overviewRow struct {
 // @Summary      Project Overview — Contract Budget / Pu.Cost / Pu.Balance / Ac.Cost / Ac.Balance / Status
 // @Description  One row per project, computed in a single set-based query.
 // @Description  contract_budget = vo_amount for project_kind VO, else budget_amount.
-// @Description  pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash line_net. Memo is excluded.
-// @Description  ac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash line_net (payable basis too). IC ledgers are not used.
+// @Description  pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, the same basis as the Cost Budget page; NOT line_net, which spent_amount in GET /master/projects still uses). Memo is excluded.
+// @Description  ac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash (amount - line_discount, ex-VAT: cash already spent, NOT the payable basis). IC ledgers are not used.
 // @Description  pu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).
 // @Description  status (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
 // @Description  Default list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.

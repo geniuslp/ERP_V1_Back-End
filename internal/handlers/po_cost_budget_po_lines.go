@@ -21,17 +21,19 @@ type costBudgetPOLine struct {
 	Unit        *string `json:"unit"`
 	Remarks     *string `json:"remarks"`
 	POStatus    string  `json:"po_status"`
-	Amount      float64 `json:"amount"` // qty_ordered * unit_price — the Pu.Cost basis, for reference only
+	Amount      float64 `json:"amount"` // PO: qty_ordered * unit_price (reference); PC: amount - line_discount (ex-VAT)
+	Source      string  `json:"source"` // "PO" or "PC" (petty cash)
 }
 
 // CostBudgetPOLines godoc
-// @Summary      Cost Budget — PO lines charged to one cost code of a project
-// @Description  Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail. Filtered by ids only (project_code + cost_subgroup_id, never the displayed cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT IN (DRAFT, REJECTED, CANCELLED), line status <> CANCELLED. So SUM(amount) = the row's pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price (reference only). item_name = material name + spec, falling back to the line description (same as the purchases drill-down). unit = material_code unit. Ordered by po_no, line_no; not paginated (one cost code in one project). 404 when the cost code is not an ITEM of this project's budget page (no budget row and no PO line).
+// @Summary      Cost Budget — PO and petty cash lines charged to one cost code of a project
+// @Description  Rows behind the Pu.Cost figure of one ITEM row of GET /po/{projectCode}/cost-budget-detail. Filtered by ids only (project_code + cost_subgroup_id, never the displayed cost code) with EXACTLY the Pu rule: po.deleted_at IS NULL, po.status NOT IN (DRAFT, REJECTED, CANCELLED), line status <> CANCELLED. So SUM(amount) = the row's pu_cost. quantity = qty_ordered; amount = qty_ordered * unit_price (reference only). item_name = material name + spec, falling back to the line description (same as the purchases drill-down). unit = material_code unit. Ordered by po_no, line_no; not paginated (one cost code in one project). 404 when the cost code is not an ITEM of this project's budget page (no budget row, no PO line and no APPROVED petty cash line).
+// @Description  Every row has source: "PO" (the rows above) or "PC" — APPROVED petty cash lines (header status APPROVED, the LINE's project_code = this project, cost_subgroup_id = this cost code) mapped as: po_id = petty cash header id, po_no = petty cash document number (PC-YYYYMM-NNNN), po_status = petty cash status, item_name = line description else material name + spec, quantity = line qty, amount = amount - line_discount (EX-VAT/ex-WHT; spent_amount in GET /master/projects uses line_net, VAT-inclusive). The PC amounts sum to the row's pc_cost on cost-budget-detail; PO amounts stay qty_ordered * unit_price as before. costSubgroupId may be the literal "none": returns only the PC rows of the project with no cost code (the unassigned row), 404 if there are none. Order: PO rows first, then PC, each by document number, line_no.
 // @Tags         Purchase Order
 // @Security     BearerAuth
 // @Produce      json
 // @Param        projectCode      path  string  true  "Project code"
-// @Param        costSubgroupId   path  int     true  "cost_subgroup.id"
+// @Param        costSubgroupId   path  string  true  "cost_subgroup.id, or none for petty cash lines without a cost code"
 // @Success      200  {object}  fiber.Map
 // @Failure      400  {object}  fiber.Map
 // @Failure      404  {object}  fiber.Map
@@ -41,59 +43,105 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	if projectCode == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "กรุณาระบุรหัสโครงการ")
 	}
-	subgroupID, err := strconv.ParseInt(c.Params("costSubgroupId"), 10, 64)
-	if err != nil || subgroupID <= 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "รหัสต้นทุนไม่ถูกต้อง")
+	// nil = the "none" row: petty cash lines of the project that carry no cost code.
+	var subgroupID *int64
+	if raw := strings.TrimSpace(c.Params("costSubgroupId")); !strings.EqualFold(raw, "none") {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			return fiber.NewError(fiber.StatusBadRequest, "รหัสต้นทุนไม่ถูกต้อง")
+		}
+		subgroupID = &id
 	}
 	ctx := context.Background()
 	const loadErr = "ไม่สามารถโหลดรายการ PO ได้ กรุณาลองใหม่อีกครั้ง"
 
 	// The cost code must be an ITEM row of this project's page: a non-Head, non-Major subgroup that has a
-	// project_cost_budget row or a counted PO line (the "keys" set of CostBudgetDetail).
+	// project_cost_budget row, a counted PO line or an APPROVED petty cash line (the "keys" set of
+	// CostBudgetDetail). "none" belongs when the project has an APPROVED petty cash line with no cost code.
 	var belongs bool
-	if err := h.db.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM cost_subgroup cs
-			WHERE cs.id = $2 AND NOT cs.is_head AND NOT cs.is_major
-			  AND (EXISTS (SELECT 1 FROM project_cost_budget b
-			               JOIN project p ON p.id = b.project_id
-			               WHERE p.project_code = $1 AND b.cost_subgroup_id = cs.id)
-			    OR EXISTS (SELECT 1 FROM purchase_order_line pol
-			               JOIN purchase_order po ON po.id = pol.po_id
-			               WHERE po.project_code = $1 AND pol.cost_subgroup_id = cs.id
-			                 AND po.deleted_at IS NULL
-			                 AND po.status NOT IN ('DRAFT','REJECTED','CANCELLED')
-			                 AND pol.status <> 'CANCELLED')))`,
-		projectCode, subgroupID).Scan(&belongs); err != nil {
-		log.Printf("cost-budget po-lines belongs project=%s sub=%d: %v", projectCode, subgroupID, err)
+	var err error
+	if subgroupID == nil {
+		err = h.db.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM petty_cash_requisition_line l
+				JOIN petty_cash_requisition h ON h.id = l.pc_id
+				WHERE h.status = 'APPROVED' AND l.project_code = $1 AND l.cost_subgroup_id IS NULL)`,
+			projectCode).Scan(&belongs)
+	} else {
+		err = h.db.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM cost_subgroup cs
+				WHERE cs.id = $2 AND NOT cs.is_head AND NOT cs.is_major
+				  AND (EXISTS (SELECT 1 FROM project_cost_budget b
+				               JOIN project p ON p.id = b.project_id
+				               WHERE p.project_code = $1 AND b.cost_subgroup_id = cs.id)
+				    OR EXISTS (SELECT 1 FROM purchase_order_line pol
+				               JOIN purchase_order po ON po.id = pol.po_id
+				               WHERE po.project_code = $1 AND pol.cost_subgroup_id = cs.id
+				                 AND po.deleted_at IS NULL
+				                 AND po.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+				                 AND pol.status <> 'CANCELLED')
+				    OR EXISTS (SELECT 1 FROM petty_cash_requisition_line l
+				               JOIN petty_cash_requisition h ON h.id = l.pc_id
+				               WHERE h.status = 'APPROVED' AND l.project_code = $1
+				                 AND l.cost_subgroup_id = cs.id)))`,
+			projectCode, *subgroupID).Scan(&belongs)
+	}
+	if err != nil {
+		log.Printf("cost-budget po-lines belongs project=%s sub=%v: %v", projectCode, subgroupID, err)
 		return fiber.NewError(fiber.StatusInternalServerError, loadErr)
 	}
 	if !belongs {
 		return fiber.NewError(fiber.StatusNotFound, "ไม่พบรหัสต้นทุนในโครงการนี้")
 	}
 
+	// PO rows (none when $2 is NULL: PO lines without a cost code are not on the page) UNION ALL petty cash
+	// rows, one query. src_ord keeps PO first.
 	rows, err := h.db.Query(ctx, `
-		SELECT po.id, po.po_no, po.project_code, pj.project_name, pol.line_no, pol.mat_code,
-		       COALESCE(
-		           NULLIF(TRIM(CONCAT_WS(' ', mn.mat_name, ss.spec_description)), ''),
-		           NULLIF(TRIM(pol.description), '')
-		       ) AS item_name,
-		       pol.qty_ordered::float8, un.unit_name, NULLIF(TRIM(pol.remarks), ''), po.status,
-		       (pol.qty_ordered * pol.unit_price)::float8
-		FROM purchase_order_line pol
-		JOIN purchase_order po ON po.id = pol.po_id
-		LEFT JOIN project pj ON pj.project_code = po.project_code
-		LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
-		LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
-		LEFT JOIN spec_size ss ON ss.id = mc.spec_id
-		LEFT JOIN unit un ON un.id = mc.unit_id
-		WHERE po.project_code = $1 AND pol.cost_subgroup_id = $2
-		  AND po.deleted_at IS NULL
-		  AND po.status NOT IN ('DRAFT','REJECTED','CANCELLED')
-		  AND pol.status <> 'CANCELLED'
-		ORDER BY po.po_no, pol.line_no`, projectCode, subgroupID)
+		SELECT x.po_id, x.po_no, x.project_code, x.project_name, x.line_no, x.mat_code, x.item_name,
+		       x.quantity, x.unit, x.remarks, x.po_status, x.amount, x.source
+		FROM (
+			SELECT 0 AS src_ord, 'PO' AS source, po.id AS po_id, po.po_no, po.project_code, pj.project_name, pol.line_no, pol.mat_code,
+			       COALESCE(
+			           NULLIF(TRIM(CONCAT_WS(' ', mn.mat_name, ss.spec_description)), ''),
+			           NULLIF(TRIM(pol.description), '')
+			       ) AS item_name,
+			       pol.qty_ordered::float8 AS quantity, un.unit_name AS unit, NULLIF(TRIM(pol.remarks), '') AS remarks,
+			       po.status AS po_status,
+			       (pol.qty_ordered * pol.unit_price)::float8 AS amount
+			FROM purchase_order_line pol
+			JOIN purchase_order po ON po.id = pol.po_id
+			LEFT JOIN project pj ON pj.project_code = po.project_code
+			LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
+			LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
+			LEFT JOIN spec_size ss ON ss.id = mc.spec_id
+			LEFT JOIN unit un ON un.id = mc.unit_id
+			WHERE po.project_code = $1 AND pol.cost_subgroup_id = $2::bigint
+			  AND po.deleted_at IS NULL
+			  AND po.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+			  AND pol.status <> 'CANCELLED'
+			UNION ALL
+			SELECT 1, 'PC', h.id, h.pc_no, l.project_code, pj.project_name, l.line_no, l.mat_code,
+			       COALESCE(
+			           NULLIF(TRIM(l.description), ''),
+			           NULLIF(TRIM(CONCAT_WS(' ', mn.mat_name, ss.spec_description)), '')
+			       ),
+			       l.qty::float8, un.unit_name, NULLIF(TRIM(l.remarks), ''),
+			       h.status,
+			       `+pcExVatSQL+`::float8
+			FROM petty_cash_requisition_line l
+			JOIN petty_cash_requisition h ON h.id = l.pc_id
+			LEFT JOIN project pj ON pj.project_code = l.project_code
+			LEFT JOIN material_code mc ON mc.mat_code = l.mat_code
+			LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
+			LEFT JOIN spec_size ss ON ss.id = mc.spec_id
+			LEFT JOIN unit un ON un.id = mc.unit_id
+			WHERE h.status = 'APPROVED' AND l.project_code = $1
+			  AND ((l.cost_subgroup_id IS NULL AND $2::bigint IS NULL) OR l.cost_subgroup_id = $2::bigint)
+		) x
+		ORDER BY x.src_ord, x.po_no, x.line_no`, projectCode, subgroupID)
 	if err != nil {
-		log.Printf("cost-budget po-lines query project=%s sub=%d: %v", projectCode, subgroupID, err)
+		log.Printf("cost-budget po-lines query project=%s sub=%v: %v", projectCode, subgroupID, err)
 		return fiber.NewError(fiber.StatusInternalServerError, loadErr)
 	}
 	defer rows.Close()
@@ -102,7 +150,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	for rows.Next() {
 		var l costBudgetPOLine
 		if err := rows.Scan(&l.POID, &l.PONo, &l.ProjectCode, &l.ProjectName, &l.LineNo, &l.MatCode, &l.ItemName,
-			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount); err != nil {
+			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount, &l.Source); err != nil {
 			log.Printf("cost-budget po-lines scan: %v", err)
 			return fiber.NewError(fiber.StatusInternalServerError, loadErr)
 		}

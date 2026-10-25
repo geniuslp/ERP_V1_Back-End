@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
@@ -49,9 +51,27 @@ var validJobCodes = func() map[string]bool {
 // and Project (job_codes[]) handlers so the allowed-values list is never duplicated.
 func ValidateJobCode(code string) error {
 	if !validJobCodes[code] {
-		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid job_code: %q", code))
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("ประเภทงาน %q ไม่ถูกต้อง", code))
 	}
 	return nil
+}
+
+// memoJobCode returns the memo's job_code ("" when the memo has none). A missing memo or a failed
+// lookup gives a plain Thai error, never the raw DB text.
+func memoJobCode(ctx context.Context, db *pgxpool.Pool, memoID int64) (string, error) {
+	var jc *string
+	err := db.QueryRow(ctx, `SELECT job_code FROM public.memo WHERE id=$1`, memoID).Scan(&jc)
+	if err == pgx.ErrNoRows {
+		return "", fiber.NewError(fiber.StatusBadRequest, "ไม่พบ Memo ที่เลือก")
+	}
+	if err != nil {
+		log.Printf("memoJobCode memo=%d: %v", memoID, err)
+		return "", fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูล Memo ได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if jc == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(*jc), nil
 }
 
 // validateJobCodes rejects any job_codes entry outside the fixed JobTypes set — mirrors the
@@ -86,7 +106,8 @@ func validateJobCodeForProject(ctx context.Context, db *pgxpool.Pool, jobCode st
 		return nil
 	}
 	if err != nil {
-		return err
+		log.Printf("validateJobCodeForProject project=%s: %v", *projectCode, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบประเภทงานของโครงการได้ กรุณาลองใหม่อีกครั้ง")
 	}
 
 	for _, jc := range allowed {

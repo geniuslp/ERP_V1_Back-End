@@ -31,9 +31,9 @@ docker-logs:
 	docker compose logs -f api
 
 # ── Database ──────────────────────────────────────────────────────────────────
+# Dry run by default; `make migrate ARGS=-yes` applies pending files (see cmd/migrate/main.go).
 migrate:
-	psql $${DATABASE_URL} -f migrations/001_master_ddl.sql
-	@echo "✅  Migration applied"
+	go run ./cmd/migrate $(ARGS)
 
 # ── Deps ──────────────────────────────────────────────────────────────────────
 tidy:

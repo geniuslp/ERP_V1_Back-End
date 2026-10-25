@@ -504,6 +504,11 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	if status != "DRAFT" && status != "PENDING_APPROVAL" {
 		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
+	if status == "PENDING_APPROVAL" {
+		if err := requireApprovalReady(ctx, h.db, "MEMO", req.ApproverID); err != nil {
+			return err
+		}
+	}
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
@@ -563,24 +568,13 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	}
 
 	if status == "PENDING_APPROVAL" {
-		var hasConfig bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM public.approval_config
-				WHERE doc_type='MEMO' AND step_no=1 AND is_active=true
-			)`,
-		).Scan(&hasConfig); err != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO public.approval_request
+			    (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
+			VALUES ('MEMO',$1,$2,1,$3,$4,'PENDING')`,
+			memoID, memoNo, claims.UserID, req.ApproverID,
+		); err != nil {
 			return err
-		}
-		if hasConfig {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO public.approval_request
-				    (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
-				VALUES ('MEMO',$1,$2,1,$3,$4,'PENDING')`,
-				memoID, memoNo, claims.UserID, req.ApproverID,
-			); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -804,7 +798,7 @@ func (h *MemoHandler) Submit(c *fiber.Ctx) error {
 
 	var currentStatus string
 	var requestedBy int64
-	var approverID int64
+	var approverID *int64
 	if err := h.db.QueryRow(ctx,
 		`SELECT status, requested_by, approver_id FROM public.memo WHERE id=$1`, id,
 	).Scan(&currentStatus, &requestedBy, &approverID); err != nil {
@@ -813,6 +807,9 @@ func (h *MemoHandler) Submit(c *fiber.Ctx) error {
 	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
 		return fiber.NewError(fiber.StatusBadRequest,
 			fmt.Sprintf("cannot submit memo with status '%s' — must be DRAFT or REJECTED", currentStatus))
+	}
+	if err := requireApprovalReady(ctx, h.db, "MEMO", approverID); err != nil {
+		return err
 	}
 
 	tx, err := h.db.Begin(ctx)
@@ -837,28 +834,17 @@ func (h *MemoHandler) Submit(c *fiber.Ctx) error {
 		return err
 	}
 
-	var hasConfig bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM public.approval_config
-			WHERE doc_type='MEMO' AND step_no=1 AND is_active=true
-		)`,
-	).Scan(&hasConfig); err != nil {
+	var memoNo string
+	if err := tx.QueryRow(ctx, `SELECT memo_no FROM public.memo WHERE id=$1`, id).Scan(&memoNo); err != nil {
 		return err
 	}
-
-	if hasConfig {
-		var memoNo string
-		h.db.QueryRow(ctx, `SELECT memo_no FROM public.memo WHERE id=$1`, id).Scan(&memoNo)
-
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO public.approval_request
-			    (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
-			VALUES ('MEMO',$1,$2,1,$3,$4,'PENDING')`,
-			id, memoNo, claims.UserID, approverID,
-		); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO public.approval_request
+		    (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
+		VALUES ('MEMO',$1,$2,1,$3,$4,'PENDING')`,
+		id, memoNo, claims.UserID, *approverID,
+	); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
