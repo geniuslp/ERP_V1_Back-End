@@ -861,6 +861,7 @@ line_net         numeric(18,4) NOT NULL  DEFAULT 0
 wht_rate         numeric(5,2)  nullable
 remarks          text          nullable
 project_code     varchar(20)   NOT NULL  — FK → project.project_code
+unit             varchar(50)   nullable  — 🆕 2026-10-26 (migration 027): หน่วย พิมพ์เอง/เติมจาก master ตอนเลือกวัสดุ; แถวเก่า NULL → อ่านกลับเป็นหน่วยของวัสดุ (COALESCE)
 ```
 
 ### petty_cash_status_log
@@ -1770,6 +1771,9 @@ MENU_WO_CREATE    — สร้างหนังสือสั่งจ้า�
 MENU_WO_APPROVAL  — อนุมัติหนังสือสั่งจ้าง      sort_order=3 (child)
 ```
 ชื่อเมนู parent ปัจจุบัน: **"หนังสือสั่งจ้าง (WO)"** (เปลี่ยนจาก "(Work Order)" ตามที่ขอทีหลัง)
+
+> 🆕 2026-10-26 — `MENU_WO_CONTRACTOR_LOG` (เพิ่มโดย 018) **ถูกลบแล้วด้วย `026_remove_menu_contractor_log.sql`**: บันทึกงานผู้รับเหมาเปิดจากหน้าการเงิน > ติดตามการจ่ายเงิน > WO แทนการมีเมนูของตัวเอง
+> (ข้อความ 2026-10-25 ด้านบนที่ว่าเพิ่มเมนูนี้ถือว่าล้าสมัย). `MENU_PO_COST_BUDGET` กลับเป็น sort_order 9.
 
 > 🆕 2026-10-25 — สถานะจริงใน DB (dev): `MENU_WO` (id 51) **is_active=false** และไม่มีลูกเหลือ; เมนูย่อย WO (`MENU_WO_CREATE`/`MENU_WO_LIST`/`MENU_WO_APPROVAL`)
 > อยู่ใต้ `MENU_PO` ("PO/WO Procurement ระบบจัดซื้อจัดจ้าง", id 5) แล้ว. เพิ่ม `MENU_WO_CONTRACTOR_LOG` (id 71,

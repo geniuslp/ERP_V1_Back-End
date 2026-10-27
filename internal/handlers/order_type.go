@@ -27,11 +27,11 @@ var AllowedOrderTypes = []string{
 }
 
 // dbJobCodes mirrors the live CHECK on purchase_request.job_code / purchase_order.job_code
-// exactly: MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G. Deliberately separate from JobTypes
+// exactly: MS, EE, SN, FF, GS, AC, FS, FP, FB, DE, RE, G. Deliberately separate from JobTypes
 // (job_type.go), whose list has "OH" where the DB has "G" — left untouched so stock/cost
 // behavior doesn't change.
 var dbJobCodes = map[string]bool{
-	"MP": true, "ME": true, "MS": true, "MF": true, "MG": true, "MH": true,
+	"MS": true, "EE": true, "SN": true, "FF": true, "GS": true, "AC": true,
 	"FS": true, "FP": true, "FB": true, "DE": true, "RE": true, "G": true,
 }
 
@@ -44,7 +44,7 @@ const DefaultAssetJobCode = "G"
 // the client never sees a raw *_job_code_check violation. Asset/office branches only.
 func ValidateAssetJobCode(code string) error {
 	if !dbJobCodes[code] {
-		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("job_code %q ไม่ถูกต้อง ต้องเป็นหนึ่งใน: MP, ME, MS, MF, MG, MH, FS, FP, FB, DE, RE, G", code))
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("job_code %q ไม่ถูกต้อง ต้องเป็นหนึ่งใน: MS, EE, SN, FF, GS, AC, FS, FP, FB, DE, RE, G", code))
 	}
 	return nil
 }

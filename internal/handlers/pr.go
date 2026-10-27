@@ -226,8 +226,8 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 	if req.Status == "" {
 		req.Status = "DRAFT"
 	}
-	if req.Status != "DRAFT" && req.Status != "COMPLETED" {
-		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or COMPLETED")
+	if req.Status != "DRAFT" && !isPRSubmitStatus(req.Status) {
+		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
 
 	{
@@ -328,10 +328,10 @@ func (h *PRHandler) Create(c *fiber.Ctx) error {
 
 	// pr_no is generated inside createPRTx (pr_number_counter), so no
 	// retry-on-collision loop is needed here anymore — the sequence guarantees uniqueness.
-	if req.Status == "COMPLETED" && req.OrderType == "cost" && req.ProjectCode == nil {
+	if isPRSubmitStatus(req.Status) && req.OrderType == "cost" && req.ProjectCode == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
-	if req.Status == "COMPLETED" {
+	if isPRSubmitStatus(req.Status) {
 		ids := make([]*int64, len(req.Lines))
 		for i, l := range req.Lines {
 			ids[i] = l.CostSubgroupID
@@ -440,12 +440,12 @@ func (h *PRHandler) createPRTx(ctx context.Context, req models.CreatePRRequest, 
 		}
 	}
 
-	// 4. Client asked for COMPLETED: same side effects as POST /pr/{id}/submit, same tx.
-	if req.Status == "COMPLETED" {
+	// 4. Client asked to submit: same as POST /pr/{id}/submit (send for approval), same tx.
+	if isPRSubmitStatus(req.Status) {
 		if err := validateNoMixedDeductStock(ctx, tx, prID); err != nil {
 			return 0, "", err
 		}
-		if err := h.completePRTx(ctx, tx, prID, prNo, req.OrderType, req.ProjectCode, "DRAFT", actorID, "created as COMPLETED"); err != nil {
+		if err := h.requestApprovalTx(ctx, tx, prID, prNo, req.ApproverID, "DRAFT", actorID, "created and sent for approval"); err != nil {
 			return 0, "", err
 		}
 	}
@@ -457,14 +457,15 @@ func (h *PRHandler) createPRTx(ctx context.Context, req models.CreatePRRequest, 
 }
 
 // SubmitPR godoc
-// @Summary      Submit PR (no approval required — goes straight to COMPLETED)
-// @Description  Every line must have a cost_subgroup_id, otherwise 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not affected. The same rule applies to POST /pr and PUT /pr/{id} when status=COMPLETED.
+// @Summary      Submit PR for approval (DRAFT/REJECTED -> PENDING_APPROVAL)
+// @Description  Body {"approver_id": n} is required: the approver is picked from GET /master/eligible-approvers?doc_type=PR (400 otherwise). The PR becomes PENDING_APPROVAL and an approval_request is opened; stock is NOT reserved yet — that happens when the approver approves (PUT /approval/PR/{id}/approve -> COMPLETED, see PostApprove). Every line must have a cost_subgroup_id, otherwise 400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not affected. The same rule applies to POST /pr and PUT /pr/{id} when status is a submit status.
 // @Tags         Purchase Request
 // @Security     BearerAuth
 // @Produce      json
-// @Param        id  path  int  true  "PR ID"
+// @Param        id    path  int     true  "PR ID"
+// @Param        body  body  object  true  "{approver_id}"
 // @Success      200  {object}  fiber.Map
-// @Failure      400  {object}  fiber.Map  "missing cost code on one or more lines, or other validation error"
+// @Failure      400  {object}  fiber.Map  "missing cost code on one or more lines, no/ineligible approver, or other validation error"
 // @Failure      409  {object}  fiber.Map  "active PO linked to this PR"
 // @Router       /pr/{id}/submit [post]
 func (h *PRHandler) Submit(c *fiber.Ctx) error {
@@ -484,9 +485,13 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	).Scan(&currentStatus, &prNo, &orderType, &projectCode); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
-	if currentStatus != "DRAFT" {
+	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("cannot submit PR in status: %s", currentStatus))
 	}
+	var body struct {
+		ApproverID *int64 `json:"approver_id"`
+	}
+	_ = c.BodyParser(&body)
 	if orderType == "cost" && projectCode == nil {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
@@ -526,14 +531,14 @@ func (h *PRHandler) Submit(c *fiber.Ctx) error {
 	if err := validateNoMixedDeductStock(ctx, tx, id); err != nil {
 		return err
 	}
-	if err := h.completePRTx(ctx, tx, id, prNo, orderType, projectCode, currentStatus, claims.UserID, "submitted"); err != nil {
+	if err := h.requestApprovalTx(ctx, tx, id, prNo, body.ApproverID, currentStatus, claims.UserID, "submitted for approval"); err != nil {
 		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	return c.JSON(fiber.Map{"success": true, "message": "PR status changed to COMPLETED"})
+	return c.JSON(fiber.Map{"success": true, "message": "PR sent for approval"})
 }
 
 // pgQuerier is satisfied by both *pgxpool.Pool and pgx.Tx.
@@ -544,8 +549,13 @@ type pgQuerier interface {
 // prEditableStatuses: a PR may be edited from any of these statuses as long as no active PO is
 // linked to it (see requireNoActivePOLink). CANCELLED stays non-editable.
 var prEditableStatuses = map[string]bool{
-	"DRAFT": true, "COMPLETED": true, "STOCK_CHECK": true, "PARTIALLY_FILLED": true, "FULFILLED": true,
+	"DRAFT": true, "PENDING_APPROVAL": true, "REJECTED": true,
+	"COMPLETED": true, "STOCK_CHECK": true, "PARTIALLY_FILLED": true, "FULFILLED": true,
 }
+
+// isPRSubmitStatus: what a client sends as `status` to mean "send for approval". COMPLETED is kept for callers
+// written before PR approval existed; it no longer completes the PR directly.
+func isPRSubmitStatus(s string) bool { return s == "PENDING_APPROVAL" || s == "COMPLETED" }
 
 func isPREditableStatus(status string) bool { return prEditableStatuses[status] }
 
@@ -641,6 +651,12 @@ func reopenPRTx(ctx context.Context, tx pgx.Tx, prID int64, prNo, fromStatus str
 	if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status='DRAFT', updated_at=NOW() WHERE id=$1`, prID); err != nil {
 		return err
 	}
+	// taking the PR back (reopen / edit) withdraws a request that is still waiting for the approver
+	if _, err := tx.Exec(ctx,
+		`UPDATE approval_request SET status='CANCELLED', updated_at=NOW() WHERE doc_type='PR' AND doc_id=$1 AND status='PENDING'`, prID,
+	); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
 		VALUES ($1,$2,'DRAFT',$3,$4)`, prID, fromStatus, userID, remarks,
@@ -694,26 +710,76 @@ func validateNoMixedDeductStock(ctx context.Context, q pgQuerier, prID int64) er
 	return nil
 }
 
-// completePRTx is the shared "PR becomes COMPLETED" step used by Submit and by Create (when the
-// client asks for COMPLETED directly): stock deduction/reservation, status flip, pr_status_log
-// and erp_audit_log — all inside the caller's tx.
-func (h *PRHandler) completePRTx(ctx context.Context, tx pgx.Tx, prID int64, prNo, orderType string, projectCode *string, fromStatus string, userID int64, remarks string) error {
-	if err := h.deductStockOnSubmit(ctx, tx, prID, orderType, projectCode, userID); err != nil {
+// requestApprovalTx is the shared "send the PR for approval" step used by Submit, Create and Update (when the client
+// asks to submit): validates the chosen approver, flips the status to PENDING_APPROVAL, opens the approval_request and
+// writes pr_status_log + erp_audit_log — all inside the caller's tx. No stock is touched here; the reservation
+// (deductStockOnSubmit) runs when the approver approves, in PostApprove.
+func (h *PRHandler) requestApprovalTx(ctx context.Context, tx pgx.Tx, prID int64, prNo string, approverID *int64, fromStatus string, userID int64, remarks string) error {
+	if err := requireApprovalReady(ctx, tx, "PR", approverID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE purchase_request SET status='COMPLETED', updated_at=NOW() WHERE id=$1`, prID); err != nil {
+	ok, err := isEligibleApproverPick(ctx, tx, "PR", *approverID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fiber.NewError(fiber.StatusBadRequest, "ผู้อนุมัติที่เลือกไม่มีสิทธิ์อนุมัติใบขอซื้อ กรุณาเลือกใหม่")
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE purchase_request SET status='PENDING_APPROVAL', approver_id=$2, updated_at=NOW() WHERE id=$1`, prID, *approverID,
+	); err != nil {
+		return err
+	}
+	// a re-submission replaces any request left over from an earlier round
+	if _, err := tx.Exec(ctx,
+		`UPDATE approval_request SET status='CANCELLED', updated_at=NOW() WHERE doc_type='PR' AND doc_id=$1 AND status='PENDING'`, prID,
+	); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
-		VALUES ($1,$2,'COMPLETED',$3,$4)`, prID, fromStatus, userID, remarks,
+		INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
+		VALUES ('PR',$1,$2,1,$3,$4,'PENDING')`, prID, prNo, userID, *approverID,
 	); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถสร้างคำขออนุมัติได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pr_status_log (pr_id, from_status, to_status, changed_by, remarks)
+		VALUES ($1,$2,'PENDING_APPROVAL',$3,$4)`, prID, fromStatus, userID, remarks,
+	); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
+		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
+		prID, userID, fmt.Sprintf(`{"pr_no":"%s","status":"PENDING_APPROVAL","approver_id":%d}`, prNo, *approverID),
+	)
+	return err
+}
+
+// PostApprove runs inside the generic approve transaction (PUT /approval/PR/{id}/approve), right after the status
+// became COMPLETED: it does what Submit used to do at completion — the stock auto-split/reservation. A failure
+// rolls the approval back, so a PR is never COMPLETED without its reservation.
+func (h *PRHandler) PostApprove(ctx context.Context, tx pgx.Tx, prID, userID int64) error {
+	var prNo, orderType string
+	var projectCode *string
+	if err := tx.QueryRow(ctx,
+		`SELECT pr_no, order_type, project_code FROM purchase_request WHERE id=$1 FOR UPDATE`, prID,
+	).Scan(&prNo, &orderType, &projectCode); err != nil {
+		return err
+	}
+	if err := lockPRLines(ctx, tx, prID); err != nil {
+		return err
+	}
+	if err := validateNoMixedDeductStock(ctx, tx, prID); err != nil {
+		return err
+	}
+	if err := h.deductStockOnSubmit(ctx, tx, prID, orderType, projectCode, userID); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `
 		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
 		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
-		prID, userID, fmt.Sprintf(`{"pr_no":"%s","status":"COMPLETED"}`, prNo),
+		prID, userID, fmt.Sprintf(`{"pr_no":"%s","status":"COMPLETED","action":"approved"}`, prNo),
 	)
 	return err
 }
@@ -1142,8 +1208,8 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 	if req.Status == "" {
 		req.Status = "DRAFT"
 	}
-	if req.Status != "DRAFT" && req.Status != "COMPLETED" {
-		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or COMPLETED")
+	if req.Status != "DRAFT" && !isPRSubmitStatus(req.Status) {
+		return fiber.NewError(fiber.StatusBadRequest, "status must be DRAFT or PENDING_APPROVAL")
 	}
 	if len(req.Lines) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "at least one line required")
@@ -1286,10 +1352,10 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 
-	if req.Status == "COMPLETED" && orderType == "cost" && (req.ProjectCode == nil || strings.TrimSpace(*req.ProjectCode) == "") {
+	if isPRSubmitStatus(req.Status) && orderType == "cost" && (req.ProjectCode == nil || strings.TrimSpace(*req.ProjectCode) == "") {
 		return fiber.NewError(fiber.StatusBadRequest, "ต้องระบุโครงการก่อนส่งใบขอซื้อประเภทซื้อเข้าโครงการ")
 	}
-	if req.Status == "COMPLETED" {
+	if isPRSubmitStatus(req.Status) {
 		ids := make([]*int64, len(req.Lines))
 		for i, l := range req.Lines {
 			ids[i] = l.CostSubgroupID
@@ -1475,13 +1541,13 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "audit log error: "+err.Error())
 	}
 
-	// Client asked for COMPLETED: same completion path as Submit/Create, same tx — any failure
+	// Client asked to submit: same path as Submit/Create (send for approval), same tx — any failure
 	// rolls back the whole edit (deferred Rollback) and surfaces as an error, never a 200 with a DRAFT PR.
-	if req.Status == "COMPLETED" {
+	if isPRSubmitStatus(req.Status) {
 		if err := validateNoMixedDeductStock(ctx, tx, prID); err != nil {
 			return err
 		}
-		if err := h.completePRTx(ctx, tx, prID, prNo, orderType, req.ProjectCode, "DRAFT", claims.UserID, "confirmed via edit"); err != nil {
+		if err := h.requestApprovalTx(ctx, tx, prID, prNo, req.ApproverID, "DRAFT", claims.UserID, "sent for approval via edit"); err != nil {
 			return err
 		}
 	}

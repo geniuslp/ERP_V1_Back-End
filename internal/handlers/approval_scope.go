@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Approver scoping for Memo / PO / WO: an approver sees and may act on ONLY the documents assigned to them
+// Approver scoping for Memo / PO / WO / PR: an approver sees and may act on ONLY the documents assigned to them
 // (<table>.approver_id = their user id). A document with approver_id IS NULL is actionable by nobody and is in no
 // queue or badge count (it has to be given an approver first). approval_delegation (extra approvers) does NOT widen
 // the scope: an extra approver is chosen as a document's approver_id through the eligible-approver picker like
@@ -37,6 +37,7 @@ var approvalScopeDocs = map[string]approvalScopeDoc{
 	"MEMO": {"memo", "memo_status_log", "memo_id", "'PENDING_APPROVAL'"},
 	"PO":   {"purchase_order", "po_status_log", "po_id", "'PENDING_APPROVAL','PENDING_REAPPROVAL'"},
 	"WO":   {"work_order", "work_order_status_log", "wo_id", "'PENDING_APPROVAL','PENDING_REAPPROVAL'"},
+	"PR":   {"purchase_request", "pr_status_log", "pr_id", "'PENDING_APPROVAL'"},
 }
 
 // approvalAssignedSQL: the document is assigned to $user. alias is the document table alias; userIdx is the 1-based
@@ -133,7 +134,7 @@ func approvalListCond(claims *auth.Claims, docType, alias string, args []any) (s
 
 // MyPendingCounts godoc
 // @Summary      Pending-approval counts for the current user (sidebar badges)
-// @Description  Number of Memo / PO / WO documents waiting for the caller: status PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id; a NULL approver_id counts for nobody). Same filter as the approval lists.
+// @Description  Number of Memo / PO / WO / PR documents waiting for the caller: status PENDING_APPROVAL (Memo, PR) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id; a NULL approver_id counts for nobody). Same filter as the approval lists.
 // @Tags         Approvals
 // @Security     BearerAuth
 // @Produce      json
@@ -147,7 +148,7 @@ func (h *ApprovalHandler) MyPendingCounts(c *fiber.Ctx) error {
 	ctx := context.Background()
 	out := fiber.Map{}
 	total := 0
-	for _, docType := range []string{"MEMO", "PO", "WO"} {
+	for _, docType := range []string{"MEMO", "PO", "WO", "PR"} {
 		d := approvalScopeDocs[docType]
 		var n int
 		var err error
@@ -163,16 +164,16 @@ func (h *ApprovalHandler) MyPendingCounts(c *fiber.Ctx) error {
 			log.Printf("my-pending-counts %s: %v", docType, err)
 			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดจำนวนเอกสารรออนุมัติได้ กรุณาลองใหม่อีกครั้ง")
 		}
-		out[map[string]string{"MEMO": "memo", "PO": "po", "WO": "wo"}[docType]] = n
+		out[map[string]string{"MEMO": "memo", "PO": "po", "WO": "wo", "PR": "pr"}[docType]] = n
 		total += n
 	}
 	out["total"] = total
 	return c.JSON(fiber.Map{"success": true, "data": out})
 }
 
-// approvalNotDeleted: purchase_order is soft-deleted; memo and work_order have no deleted_at column.
+// approvalNotDeleted: purchase_order and purchase_request are soft-deleted; memo and work_order have no deleted_at column.
 func approvalNotDeleted(docType string) string {
-	if docType == "PO" {
+	if docType == "PO" || docType == "PR" {
 		return " AND d.deleted_at IS NULL"
 	}
 	return ""

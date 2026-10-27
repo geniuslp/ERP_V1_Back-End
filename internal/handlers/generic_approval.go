@@ -8,6 +8,7 @@ import (
 	"erp-api/internal/middleware"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -17,11 +18,23 @@ import (
 // Go code — provided its status-log table (if any) follows the same shape as po_status_log /
 // memo_status_log: (id, <fk>, from_status, to_status, changed_by, changed_at, remarks).
 type GenericApprovalHandler struct {
-	db *pgxpool.Pool
+	db          *pgxpool.Pool
+	postApprove map[string]postApproveFunc
 }
 
 func NewGenericApprovalHandler(db *pgxpool.Pool) *GenericApprovalHandler {
 	return &GenericApprovalHandler{db: db}
+}
+
+// postApproveFunc: doc-type specific work that must happen in the SAME transaction as an approval (e.g. PR reserves
+// stock when it becomes COMPLETED). Registered once at start-up through SetPostApprove; an error rolls the approval back.
+type postApproveFunc func(ctx context.Context, tx pgx.Tx, docID, userID int64) error
+
+func (h *GenericApprovalHandler) SetPostApprove(docType string, fn postApproveFunc) {
+	if h.postApprove == nil {
+		h.postApprove = map[string]postApproveFunc{}
+	}
+	h.postApprove[docType] = fn
 }
 
 type docTypeConfig struct {
@@ -166,6 +179,14 @@ func (h *GenericApprovalHandler) decide(c *fiber.Ctx, action string) error {
 		)
 		if _, err := tx.Exec(ctx, logSQL, docID, currentDocStatus, newValue, claims.UserID, req.Comments); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "failed to write status log: "+err.Error())
+		}
+	}
+
+	if action == "APPROVE" {
+		if fn := h.postApprove[docType]; fn != nil {
+			if err := fn(ctx, tx, int64(docID), claims.UserID); err != nil {
+				return err
+			}
 		}
 	}
 

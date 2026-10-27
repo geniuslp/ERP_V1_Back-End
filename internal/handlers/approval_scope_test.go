@@ -57,11 +57,11 @@ func TestApproverScopeAndSubmitGates(t *testing.T) {
 		return ins(`INSERT INTO memo (memo_no, requested_by, approver_id, status) VALUES ($1,$2,$3,$4) RETURNING id`, no, me, approver, status)
 	}
 	mkPO := func(no string, approver *int64, status string) int64 {
-		return ins(`INSERT INTO purchase_order (po_no, job_code, created_by, approver_id, status) VALUES ($1,'MP',$2,$3,$4) RETURNING id`, no, me, approver, status)
+		return ins(`INSERT INTO purchase_order (po_no, job_code, created_by, approver_id, status) VALUES ($1,'MS',$2,$3,$4) RETURNING id`, no, me, approver, status)
 	}
 	mkWO := func(no string, approver *int64, status string) int64 {
 		return ins(`INSERT INTO work_order (wo_no, work_system, employer_name, supplier_name, created_by, approver_id, status)
-			VALUES ($1, ARRAY['MP'], 'ZZ', 'ZZ', $2, $3, $4) RETURNING id`, no, me, approver, status)
+			VALUES ($1, ARRAY['MS'], 'ZZ', 'ZZ', $2, $3, $4) RETURNING id`, no, me, approver, status)
 	}
 	meP := me
 

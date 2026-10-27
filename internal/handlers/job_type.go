@@ -13,22 +13,22 @@ import (
 
 // JobTypeInfo is one entry in the fixed, hardcoded Job Type list shared by PR (job_code),
 // PO (job_code), and Project (job_codes[]). This is NOT a master/lookup table — the list is
-// fixed at 12 values and stored directly as a varchar column, keyed by short code (e.g. "MP"),
+// fixed at 12 values and stored directly as a varchar column, keyed by short code (e.g. "MS"),
 // never by the numeric 001-012 reference prefix and never by the label.
 type JobTypeInfo struct {
 	RefNo string // "001".."012" — reference/display order only, never stored
-	Code  string // stored value, e.g. "MP"
+	Code  string // stored value, e.g. "MS"
 	Label string
 }
 
 // JobTypes is the full fixed list. Keep in sync with erp-frontend/src/constants/jobTypes.ts.
 var JobTypes = []JobTypeInfo{
-	{"001", "MP", "Metal Structure"},
-	{"002", "ME", "Electrical system work"},
-	{"003", "MS", "Sanitary System"},
-	{"004", "MF", "Fire Protection"},
-	{"005", "MG", "GAS System"},
-	{"006", "MH", "HVAC / BAS / Clean Room-Cold Room"},
+	{"001", "MS", "Metal Structure"},
+	{"002", "EE", "Electrical System"},
+	{"003", "SN", "Sanitary System"},
+	{"004", "FF", "Fire Protection"},
+	{"005", "GS", "Gas System"},
+	{"006", "AC", "HVAC / BAS / Clean-R."},
 	{"007", "FS", "Stock FAC-S"},
 	{"008", "FP", "Stock FAC-P"},
 	{"009", "FB", "Stock FAC-BO"},
@@ -36,6 +36,13 @@ var JobTypes = []JobTypeInfo{
 	{"011", "RE", "Return Project"},
 	{"012", "OH", "General Code"},
 }
+
+// tradeJobCodes are the six engineering-system jobs (the old "M*" codes). Used wherever the old
+// code checked HasPrefix(code, "M") - the new codes no longer share a prefix.
+var tradeJobCodes = map[string]bool{"MS": true, "EE": true, "SN": true, "FF": true, "GS": true, "AC": true}
+
+// IsTradeJobCode reports whether code is one of the six engineering-system job types.
+func IsTradeJobCode(code string) bool { return tradeJobCodes[code] }
 
 // validJobCodes is the lookup used by ValidateJobCode/validateJobCodes. Built once from
 // JobTypes so the 12-value list only ever needs to be edited in one place.

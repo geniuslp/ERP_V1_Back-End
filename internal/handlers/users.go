@@ -381,7 +381,7 @@ func (h *UsersHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary      Update user
-// @Description  Update user profile information. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th is optional: omitted = keep stored value, empty string = clear (NULL), max 200 characters. department (free-text position) and dept_code are separate fields.
+// @Description  Update user profile information. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th is optional: omitted = keep stored value, empty string = clear (NULL), max 200 characters. department (free-text position) and dept_code are separate fields. username is optional: omitted or empty = keep; otherwise trimmed, max 100, 409 if another user already has it (an existing refresh token carries the old username and stops working, so that user logs in again).
 // @Tags         Users
 // @Security     BearerAuth
 // @Accept       json
@@ -429,6 +429,25 @@ func (h *UsersHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
+	// username: only changed when a non-empty value is sent (the edit form always sends it).
+	var newUsername *string
+	if req.Username != nil {
+		if u := strings.TrimSpace(*req.Username); u != "" {
+			if utf8.RuneCountInString(u) > 100 {
+				return fiber.NewError(fiber.StatusBadRequest, "ชื่อผู้ใช้ยาวเกินกำหนด (สูงสุด 100 ตัวอักษร)")
+			}
+			var taken bool
+			if err := h.db.QueryRow(context.Background(),
+				`SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND id <> $2)`, u, id).Scan(&taken); err != nil {
+				return err
+			}
+			if taken {
+				return fiber.NewError(fiber.StatusConflict, "ชื่อผู้ใช้นี้ถูกใช้แล้ว")
+			}
+			newUsername = &u
+		}
+	}
+
 	if req.DeptCode != nil {
 		var count int
 		if err := h.db.QueryRow(context.Background(),
@@ -460,9 +479,10 @@ func (h *UsersHandler) Update(c *fiber.Ctx) error {
 		UPDATE users
 		SET full_name=$1, email=$2, location_code=$3, department=$5, dept_code=COALESCE($6, dept_code),
 		    full_name_th = CASE WHEN $8::boolean THEN $9::varchar ELSE full_name_th END,
-		    employee_code = CASE WHEN $10::boolean THEN $4::varchar ELSE employee_code END, updated_at=NOW()
+		    employee_code = CASE WHEN $10::boolean THEN $4::varchar ELSE employee_code END,
+		    username = COALESCE($11::varchar, username), updated_at=NOW()
 		WHERE id=$7`,
-		req.FullName, req.Email, req.LocationCode, employeeCodeVal, req.Department, req.DeptCode, id, thProvided, fullNameTHVal, ecProvided)
+		req.FullName, req.Email, req.LocationCode, employeeCodeVal, req.Department, req.DeptCode, id, thProvided, fullNameTHVal, ecProvided, newUsername)
 	if err != nil {
 		return fiber.NewError(fiber.StatusConflict, "failed to update user")
 	}

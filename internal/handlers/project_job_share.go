@@ -15,11 +15,15 @@ import (
 )
 
 // JobNeedsShare is the single source of truth for "does this project job code carry a
-// share_percent of the project budget". Codes starting with "F" (FS, FP, FB and any future
-// F-code), "G" and "OH" do not. Validation and the needs_share flag both call this — never
-// re-implement the rule elsewhere.
+// share_percent of the project budget". The stock jobs (FS, FP, FB), "G" and "OH" do not. It is an
+// explicit list because "FF" (Fire Protection) also starts with F but does carry a share. Validation
+// and the needs_share flag both call this - never re-implement the rule elsewhere.
 func JobNeedsShare(code string) bool {
-	return !(strings.HasPrefix(code, "F") || code == "G" || code == "OH")
+	switch code {
+	case "FS", "FP", "FB", "G", "OH":
+		return false
+	}
+	return true
 }
 
 // ProjectJobShare is one row of project_job_share as returned by GET /master/projects/:id.

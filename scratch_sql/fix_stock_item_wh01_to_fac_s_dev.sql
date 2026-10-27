@@ -1,0 +1,15 @@
+-- DEV-ONLY data fix (2026-10-25), deliberately NOT in migrations/ so the migration runner never applies it
+-- to UAT / prod automatically.
+--
+-- stock_item has one row per material code (UNIQUE (mat_code); 7,134 rows = the material master) and
+-- warehouse_code had no real value: every row said 'WH01', which is not a warehouse (HO, BO, FAC-P, FAC-S).
+-- The stock page (/master/stock) shows a warehouse project's items by stock_item.warehouse_code, so every
+-- warehouse project looked empty.
+--
+-- Per the owner: the 917 rows that hold stock (qty > 0) are the Salaya warehouse (FAC-S, project 2026-WH-002).
+-- The other rows are material-code placeholders with qty 0 and are left untouched.
+-- updated_at / updated_by are not changed on purpose (the stock page sorts by newest updated_at).
+--
+-- Undo (only valid while no real FAC-S rows exist):
+--   UPDATE stock_item SET warehouse_code = 'WH01' WHERE warehouse_code = 'FAC-S' AND qty > 0;
+UPDATE public.stock_item SET warehouse_code = 'FAC-S' WHERE warehouse_code = 'WH01' AND qty > 0;

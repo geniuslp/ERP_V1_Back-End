@@ -53,7 +53,7 @@ func TestPRCreateFromMemoJobCode(t *testing.T) {
 		}
 		return id
 	}
-	me, bad := "ME", "ZZ"
+	me, bad := "EE", "ZZ"
 	memoME, memoBad, memoNone := mkMemo("ZZ-MEMO-1", &me), mkMemo("ZZ-MEMO-2", &bad), mkMemo("ZZ-MEMO-3", nil)
 
 	h := NewPRHandler(pool)
@@ -105,11 +105,11 @@ func TestPRCreateFromMemoJobCode(t *testing.T) {
 	}
 
 	// memo has ME, request sends none -> stored ME
-	if code, body := create(memoME, ""); code != 201 || stored(body) != "ME" {
+	if code, body := create(memoME, ""); code != 201 || stored(body) != "EE" {
 		t.Errorf("default from memo: %d %s", code, body)
 	}
 	// explicit job_code wins over the memo's
-	if code, body := create(memoME, "MP"); code != 201 || stored(body) != "MP" {
+	if code, body := create(memoME, "MS"); code != 201 || stored(body) != "MS" {
 		t.Errorf("explicit job_code: %d %s", code, body)
 	}
 	// memo job not allowed -> plain 400, nothing stored

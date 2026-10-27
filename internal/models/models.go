@@ -41,6 +41,7 @@ type CreateUserRequest struct {
 }
 
 type UpdateUserRequest struct {
+	Username     *string `json:"username,omitempty"` // nil/empty = keep; else trimmed, max 100, must be unique
 	FullName     string  `json:"full_name" validate:"required,max=200"`
 	FullNameTH   *string `json:"full_name_th,omitempty" validate:"omitempty,max=200"` // nil = absent (keep stored value); "" = clear
 	Email        *string `json:"email,omitempty"`
@@ -217,7 +218,7 @@ type CreateProjectReq struct {
 	ProjectOwnerName      *string  `json:"project_owner_name,omitempty"`
 	CustomerID            *int64   `json:"customer_id,omitempty"`                       // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
-	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MS/EE/SN/FF/GS/AC/G — validated server-side
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
 	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
@@ -240,7 +241,7 @@ type UpdateProjectReq struct {
 	ProjectOwnerName      *string  `json:"project_owner_name,omitempty"`
 	CustomerID            *int64   `json:"customer_id,omitempty"`                       // FK -> customer.cus_id — new dropdown-selected "เจ้าของโครงการ"
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
-	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MS/EE/SN/FF/GS/AC/G — validated server-side
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
 	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
@@ -985,7 +986,8 @@ type CreatePRRequest struct {
 	OrderType     string                 `json:"order_type,omitempty"`         // "stock" | "cost" — defaults to "stock"
 	PRType        string                 `json:"pr_type,omitempty"`            // "PO_WO" | "PO_ONLY" | "WO_ONLY" — defaults to "PO_WO"
 	JobCode       string                 `json:"job_code" validate:"required"` // required — one of the 12 fixed job type codes, see handlers.JobTypes
-	Status        string                 `json:"status"`
+	Status        string                 `json:"status"` // DRAFT | PENDING_APPROVAL (send for approval; COMPLETED is accepted as the same thing for older callers)
+	ApproverID    *int64                 `json:"approver_id,omitempty"` // required when status is a submit status: picked from GET /master/eligible-approvers?doc_type=PR
 	Remarks       *string                `json:"remarks,omitempty"`
 	CreatedBy     int64                  `json:"created_by" validate:"required"`
 	Lines         []CreatePRLine         `json:"lines" validate:"required,min=1"`
@@ -1020,7 +1022,8 @@ type UpdatePRRequest struct {
 	OrderType     string         `json:"order_type,omitempty"` // "stock" | "cost"
 	PRType        string         `json:"pr_type,omitempty"`    // "PO_WO" | "PO_ONLY" | "WO_ONLY"
 	JobCode       string         `json:"job_code,omitempty"`   // required overall — omit to keep the PR's current value, see PRHandler.Update
-	Status        string         `json:"status,omitempty"`     // "DRAFT" (default) | "COMPLETED" — COMPLETED runs the same completion logic as POST /pr/{id}/submit
+	Status        string         `json:"status,omitempty"`     // "DRAFT" (default) | "PENDING_APPROVAL" — sends the PR for approval like POST /pr/{id}/submit ("COMPLETED" is accepted as the same thing for older callers)
+	ApproverID    *int64         `json:"approver_id,omitempty"` // required when the status is a submit status
 	Remarks       *string        `json:"remarks,omitempty"`
 	Lines         []UpdatePRLine `json:"lines" validate:"required,min=1"`
 }
@@ -1602,7 +1605,7 @@ type WorkOrder struct {
 	SupplierAddress         *string   `json:"supplier_address"`
 	SupplierPhone           *string   `json:"supplier_phone"`
 	ContractType            string    `json:"contract_type"` // LABOR_MATERIAL | LABOR_ONLY | RENTAL | SERVICE
-	WorkSystem              []string  `json:"work_system"`   // text[], at least 1; new/edited docs: M-prefixed job codes (MP..MH); old docs may hold P | E | S
+	WorkSystem              []string  `json:"work_system"`   // text[], at least 1; new/edited docs: job codes MS/EE/SN/FF/GS/AC; old docs may hold P | E | S
 	ContractDescription     *string   `json:"contract_description"`
 	ContractAmount          float64   `json:"contract_amount"`
 	VatRate                 float64   `json:"vat_rate"`
@@ -1686,7 +1689,7 @@ type CreateWorkOrderRequest struct {
 	SupplierAddress     *string  `json:"supplier_address"`
 	SupplierPhone       *string  `json:"supplier_phone"`
 	ContractType        string   `json:"contract_type" validate:"required"` // allowed values: woContractTypes in handlers/work_order.go
-	WorkSystem          []string `json:"work_system"`                       // at least 1 M-prefixed job code; validated in validateWorkOrderRequest
+	WorkSystem          []string `json:"work_system"`                       // at least 1 of MS/EE/SN/FF/GS/AC; validated in validateWorkOrderRequest
 	ContractDescription *string  `json:"contract_description"` // free text
 	ContractAmount      float64  `json:"contract_amount" validate:"required,gt=0"`
 	VatRate             *float64 `json:"vat_rate"`
@@ -2218,6 +2221,7 @@ type CreatePettyCashLineItem struct {
 	MatCode        string   `json:"mat_code"` // optional — the name goes in description when absent
 	CostSubgroupID *int64   `json:"cost_subgroup_id"`
 	Description    string   `json:"description"`
+	Unit           string   `json:"unit"` // หน่วย, REQUIRED on every line (free text, max 50)
 	// Amount (before VAT) is the new-style input; legacy callers may omit it and send qty*unit_price.
 	// Qty/UnitPrice/Discount/DiscType/WhtRate are only read for that legacy fallback — new-style
 	// lines are stored as qty=1, unit_price=amount, no discount; wht_rate comes from the income type.

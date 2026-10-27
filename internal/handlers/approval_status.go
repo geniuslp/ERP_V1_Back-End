@@ -85,8 +85,8 @@ func isEligibleApprover(ctx context.Context, db *pgxpool.Pool, docType string, s
 // docTypeTable maps a doc_type to the table that owns its lifecycle status column.
 // approval_doc_types does not currently store this mapping (it only has doc_type/doc_label),
 // so this stays hardcoded and only needs entries for doc types actually wired into the
-// approval_request/approval_config flow today (MEMO, BORROW, PO). PR is NOT here —
-// PR approval was removed; it 400s via the approval_doc_types/docTypeTable check below.
+// approval_request/approval_config flow today (MEMO, BORROW, PO, WO, PR, PETTY_CASH). PR approval
+// was removed once and re-added on 2026-10-26 (see pr.go requestApprovalTx / PostApprove).
 // If more doc types are added to this generic flow, add them here too (or better, add
 // a table_name column to approval_doc_types).
 var docTypeTable = map[string]string{
@@ -94,6 +94,7 @@ var docTypeTable = map[string]string{
 	"BORROW":     "borrow",
 	"PO":         "purchase_order",
 	"WO":         "work_order",
+	"PR":         "purchase_request",
 	"PETTY_CASH": "petty_cash_requisition",
 }
 

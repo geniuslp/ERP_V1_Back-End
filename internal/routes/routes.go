@@ -260,7 +260,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// Approvals & Audit
 	approvals := api.Group("/approvals")
 	approvals.Get("/pending", approvalH.Pending)
-	approvals.Get("/my-pending-counts", approvalH.MyPendingCounts) // Memo/PO/WO approver-scoped badge counts
+	approvals.Get("/my-pending-counts", jwt, approvalH.MyPendingCounts) // Memo/PO/WO approver-scoped badge counts
 	approvals.Get("/logs", approvalH.Logs)
 	approvals.Get("/audit", approvalH.AuditLogs)
 
@@ -273,6 +273,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	// PO and MEMO; supersedes po_approval.go/memo.go's Approve for those two doc types, but
 	// the old handlers are left registered and unused-by-frontend for now (rollback safety).
 	genericApprovalH := handlers.NewGenericApprovalHandler(db)
+	genericApprovalH.SetPostApprove("PR", prH.PostApprove) // PR reserves stock when it is approved
 	genericApproval := api.Group("/approval", jwt)
 	// PETTY_CASH is handled by its own Approve/Reject (writes approval_log + approver remark, Thai errors);
 	// registered BEFORE the generic /:docType routes so Fiber matches these first.
@@ -438,6 +439,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	woContractorLogH := handlers.NewWOContractorLogHandler(db)
 	woContractorLog := api.Group("/wo-contractor-log", jwt)
 	woContractorLog.Post("/", woContractorLogH.Create)
+	woContractorLog.Get("/by-wo/:woId", woContractorLogH.FindByWO)
 	woContractorLog.Get("/bills/:billId", woContractorLogH.GetBill)
 	woContractorLog.Put("/bills/:billId", woContractorLogH.UpdateBill)
 	woContractorLog.Get("/:id/bills", woContractorLogH.ListBills)

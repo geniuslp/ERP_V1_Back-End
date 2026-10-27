@@ -117,7 +117,7 @@ func TestCostBudgetPettyCash(t *testing.T) {
 	mustExec(`INSERT INTO project (project_code, project_name) VALUES ('ZZ-PC-A','ZZ project A'), ('ZZ-PC-B','ZZ project B (petty cash only)')`)
 	var poID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO purchase_order (po_no, created_by, job_code, project_code, status)
-		VALUES ('ZZ-PO-1', 1, 'MP', 'ZZ-PC-A', 'APPROVED') RETURNING id`).Scan(&poID); err != nil {
+		VALUES ('ZZ-PO-1', 1, 'MS', 'ZZ-PC-A', 'APPROVED') RETURNING id`).Scan(&poID); err != nil {
 		t.Fatalf("po: %v", err)
 	}
 	mustExec(`INSERT INTO purchase_order_line (po_id, line_no, mat_code, qty_ordered, unit_price, cost_subgroup_id)

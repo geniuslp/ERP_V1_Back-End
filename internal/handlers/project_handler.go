@@ -930,8 +930,8 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 		sampleCodes[1] = sampleCodes[0]
 	}
 	examples := [][]string{
-		{"โครงการตัวอย่าง", sampleCodes[0], "123 ถนนตัวอย่าง", "2026-01-01", "2026-12-31", "1000000", "MP,ME"},
-		{"โครงการตัวอย่าง 2", sampleCodes[1], "456 ถนนตัวอย่าง", "2026-02-01", "2026-11-30", "500000", "MS"},
+		{"โครงการตัวอย่าง", sampleCodes[0], "123 ถนนตัวอย่าง", "2026-01-01", "2026-12-31", "1000000", "MS,EE"},
+		{"โครงการตัวอย่าง 2", sampleCodes[1], "456 ถนนตัวอย่าง", "2026-02-01", "2026-11-30", "500000", "SN"},
 	}
 	for row, example := range examples {
 		for i, v := range example {
@@ -958,7 +958,7 @@ func (h *ProjectHandler) ImportTemplate(c *fiber.Ctx) error {
 	// comma-separated; a cell comment on the header (not a data row) carries the instruction.
 	if err := f.AddComment(sheet, excelize.Comment{
 		Cell: "G1",
-		Text: "พิมพ์ได้หลายค่า คั่นด้วยจุลภาค เช่น MP,ME,MS",
+		Text: "พิมพ์ได้หลายค่า คั่นด้วยจุลภาค เช่น MS,EE,SN",
 	}); err != nil {
 		return err
 	}

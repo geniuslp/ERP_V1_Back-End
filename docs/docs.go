@@ -797,7 +797,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Number of Memo / PO / WO documents waiting for the caller: status PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id; a NULL approver_id counts for nobody). Same filter as the approval lists.",
+                "description": "Number of Memo / PO / WO / PR documents waiting for the caller: status PENDING_APPROVAL (Memo, PR) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned to the caller (approver_id; a NULL approver_id counts for nobody). Same filter as the approval lists.",
                 "produces": [
                     "application/json"
                 ],
@@ -12653,14 +12653,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Every line must have a cost_subgroup_id, otherwise 400 \"กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)\". DRAFT saves are not affected. The same rule applies to POST /pr and PUT /pr/{id} when status=COMPLETED.",
+                "description": "Body {\"approver_id\": n} is required: the approver is picked from GET /master/eligible-approvers?doc_type=PR (400 otherwise). The PR becomes PENDING_APPROVAL and an approval_request is opened; stock is NOT reserved yet — that happens when the approver approves (PUT /approval/PR/{id}/approve -\u003e COMPLETED, see PostApprove). Every line must have a cost_subgroup_id, otherwise 400 \"กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)\". DRAFT saves are not affected. The same rule applies to POST /pr and PUT /pr/{id} when status is a submit status.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Purchase Request"
                 ],
-                "summary": "Submit PR (no approval required — goes straight to COMPLETED)",
+                "summary": "Submit PR for approval (DRAFT/REJECTED -\u003e PENDING_APPROVAL)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -12668,6 +12668,15 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "{approver_id}",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
                     }
                 ],
                 "responses": {
@@ -12678,7 +12687,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "missing cost code on one or more lines, or other validation error",
+                        "description": "missing cost code on one or more lines, no/ineligible approver, or other validation error",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -14122,7 +14131,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "data.source = WAREHOUSE -\u003e stock_item rows of the project's warehouse (COALESCE(linked_warehouse_code, warehouse_code)), never the whole table; data.source = PROJECT -\u003e ic_project_cost_item rows of the project. The two systems are never combined. only_with_stock defaults to true (qty \u003e 0); pass only_with_stock=false to include zero-qty rows. data.no_stock = true when the list is empty (frontend shows \"ยังไม่มีสินค้าในคลังนี้\"). job_code (e.g. MP) applies to PROJECT only. Newest updated_at first.",
+                "description": "data.source = WAREHOUSE -\u003e stock_item rows of the project's warehouse (COALESCE(linked_warehouse_code, warehouse_code)), never the whole table; data.source = PROJECT -\u003e ic_project_cost_item rows of the project. The two systems are never combined. only_with_stock defaults to true (qty \u003e 0); pass only_with_stock=false to include zero-qty rows. data.no_stock = true when the list is empty (frontend shows \"ยังไม่มีสินค้าในคลังนี้\"). job_code (e.g. MS) applies to PROJECT only. Newest updated_at first.",
                 "produces": [
                     "application/json"
                 ],
@@ -14152,7 +14161,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "PROJECT source only, e.g. MP",
+                        "description": "PROJECT source only, e.g. MS",
                         "name": "job_code",
                         "in": "query"
                     },
@@ -15569,7 +15578,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Update user profile information. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th is optional: omitted = keep stored value, empty string = clear (NULL), max 200 characters. department (free-text position) and dept_code are separate fields.",
+                "description": "Update user profile information. full_name (English name) is required (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored as NULL, 409 if another user already has it. full_name_th is optional: omitted = keep stored value, empty string = clear (NULL), max 200 characters. department (free-text position) and dept_code are separate fields. username is optional: omitted or empty = keep; otherwise trimmed, max 100, 409 if another user already has it (an existing refresh token carries the old username and stops working, so that user logs in again).",
                 "consumes": [
                     "application/json"
                 ],
@@ -16032,6 +16041,40 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/wo-contractor-log/by-wo/{woId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns data = {id} of the (latest) record for this work order, or data = null when none exists yet. The record is then read with GET /wo-contractor-log/{id}.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "หา id ของบันทึกงานผู้รับเหมาจากหนังสือสั่งจ้าง",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Work Order ID",
+                        "name": "woId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -18395,6 +18438,10 @@ const docTemplate = `{
                 "requested_by"
             ],
             "properties": {
+                "approver_id": {
+                    "description": "required when status is a submit status: picked from GET /master/eligible-approvers?doc_type=PR",
+                    "type": "integer"
+                },
                 "attachments": {
                     "type": "array",
                     "items": {
@@ -18452,6 +18499,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
+                    "description": "DRAFT | PENDING_APPROVAL (send for approval; COMPLETED is accepted as the same thing for older callers)",
                     "type": "string"
                 },
                 "warehouse_code": {
@@ -18528,6 +18576,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tax_invoice_no": {
+                    "type": "string"
+                },
+                "unit": {
+                    "description": "หน่วย, REQUIRED on every line (free text, max 50)",
                     "type": "string"
                 },
                 "unit_price": {
@@ -18654,7 +18706,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "job_codes": {
-                    "description": "subset of MP/ME/MS/MF/MG/MH/G — validated server-side",
+                    "description": "subset of MS/EE/SN/FF/GS/AC/G — validated server-side",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -19306,7 +19358,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "work_system": {
-                    "description": "at least 1 M-prefixed job code; validated in validateWorkOrderRequest",
+                    "description": "at least 1 of MS/EE/SN/FF/GS/AC; validated in validateWorkOrderRequest",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -20805,6 +20857,10 @@ const docTemplate = `{
                 "requested_by"
             ],
             "properties": {
+                "approver_id": {
+                    "description": "required when the status is a submit status",
+                    "type": "integer"
+                },
                 "dept_code": {
                     "type": "string"
                 },
@@ -20846,7 +20902,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
-                    "description": "\"DRAFT\" (default) | \"COMPLETED\" — COMPLETED runs the same completion logic as POST /pr/{id}/submit",
+                    "description": "\"DRAFT\" (default) | \"PENDING_APPROVAL\" — sends the PR for approval like POST /pr/{id}/submit (\"COMPLETED\" is accepted as the same thing for older callers)",
                     "type": "string"
                 },
                 "warehouse_code": {
@@ -20964,7 +21020,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "job_codes": {
-                    "description": "subset of MP/ME/MS/MF/MG/MH/G — validated server-side",
+                    "description": "subset of MS/EE/SN/FF/GS/AC/G — validated server-side",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -21127,6 +21183,10 @@ const docTemplate = `{
                 },
                 "role_id": {
                     "type": "integer"
+                },
+                "username": {
+                    "description": "nil/empty = keep; else trimmed, max 100, must be unique",
+                    "type": "string"
                 }
             }
         },

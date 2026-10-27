@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"erp-api/internal/middleware"
 	"erp-api/internal/models"
 
 	"github.com/gofiber/fiber/v2"
@@ -129,11 +130,29 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		availableForPOFilter = sqlPRPickerStatuses + ` AND ` + sqlPRHasOrderableLine
 	}
 
+	countArgs := []any{statusFilter, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter, orderTypeFilter}
+	listArgs := []any{statusFilter, limit, offset, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter, orderTypeFilter}
+	// my_approvals=true (the approval page): only PRs assigned to the caller, plus the ones they already decided
+	// (approval_scope.go) — the scope comes from the JWT user, never from request input.
+	var scopeCount, scopeList string
+	if c.QueryBool("my_approvals", false) {
+		claims := middleware.GetClaims(c)
+		if claims == nil {
+			return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+		}
+		if cond, a := approvalListCond(claims, "PR", "pr", countArgs); cond != "" {
+			countArgs, scopeCount = a, " AND "+cond
+		}
+		if cond, a := approvalListCond(claims, "PR", "pr", listArgs); cond != "" {
+			listArgs, scopeList = a, " AND "+cond
+		}
+	}
+
 	var total int64
 	h.db.QueryRow(context.Background(),
 		`SELECT COUNT(*) FROM purchase_request pr
-		 WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+countExtraFilters,
-		statusFilter, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter, orderTypeFilter,
+		 WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+countExtraFilters+scopeCount,
+		countArgs...,
 	).Scan(&total)
 
 	type PRListItem struct {
@@ -141,7 +160,9 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		PRNo               string     `json:"pr_no"`
 		Status             string     `json:"status"`
 		RequestedBy        string     `json:"requested_by"`
+		ApproverID         *int64     `json:"approver_id"`
 		ApproverName       *string    `json:"approver_name"`
+		RejectReason       *string    `json:"reject_reason"` // remarks of the latest REJECTED status-log row
 		LocationText       string     `json:"location_text"`
 		ProjectCode        *string    `json:"project_code"`
 		DeptCode           *string    `json:"dept_code,omitempty"`
@@ -184,7 +205,9 @@ activepo AS (
 )
 SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        COALESCE(u1.full_name, '') AS requested_by,
-       NULL::text                 AS approver_name,
+       pr.approver_id, au.full_name AS approver_name,
+       (SELECT l.remarks FROM pr_status_log l WHERE l.pr_id = pr.id AND l.to_status = 'REJECTED'
+         ORDER BY l.changed_at DESC, l.id DESC LIMIT 1) AS reject_reason,
        pr.location_text, pr.project_code, pr.dept_code, pr.remarks,
        pr.pr_date::text, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name,
        d.dept_name, pr.memo_id, m.memo_no, pr.required_date::text, pr.created_at::text,
@@ -198,17 +221,18 @@ SELECT pr.id AS pr_id, pr.pr_no, pr.status,
        `+sqlPRHasOrderableLine+` AS has_remaining
 FROM purchase_request pr
 LEFT JOIN users u1 ON u1.id = pr.requested_by
+LEFT JOIN users au ON au.id = pr.approver_id
 LEFT JOIN poconv pc ON pc.pr_id = pr.id
 LEFT JOIN activepo ap ON ap.pr_id = pr.id
-LEFT JOIN cost_subject cs ON cs.subject_code = LEFT(pr.job_code, 1)
-LEFT JOIN cost_job cj ON cj.subject_id = cs.id AND cj.job_code = SUBSTRING(pr.job_code FROM 2)
+LEFT JOIN cost_subject cs ON cs.subject_code = LEFT(job_cost_key(pr.job_code), 1)
+LEFT JOIN cost_job cj ON cj.subject_id = cs.id AND cj.job_code = SUBSTRING(job_cost_key(pr.job_code) FROM 2)
 LEFT JOIN project pj ON pj.project_code = pr.project_code
 LEFT JOIN departments d ON d.dept_code = pr.dept_code
 LEFT JOIN memo m ON m.id = pr.memo_id
-WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+selectExtraFilters+`
+WHERE pr.deleted_at IS NULL AND ($1::text IS NULL OR pr.status = $1) AND (`+availableForPOFilter+`)`+selectExtraFilters+scopeList+`
 ORDER BY pr.created_at DESC
 LIMIT $2 OFFSET $3`,
-		statusFilter, limit, offset, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter, orderTypeFilter,
+		listArgs...,
 	)
 	if err != nil {
 		return err
@@ -219,7 +243,7 @@ LIMIT $2 OFFSET $3`,
 	for rows.Next() {
 		var item PRListItem
 		var linkedJSON []byte
-		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverName,
+		rows.Scan(&item.ID, &item.PRNo, &item.Status, &item.RequestedBy, &item.ApproverID, &item.ApproverName, &item.RejectReason,
 			&item.LocationText, &item.ProjectCode, &item.DeptCode, &item.Remarks, &item.PRDate, &item.PRType, &item.OrderType, &item.JobCode,
 			&item.JobName, &item.ProjectName, &item.DeptName, &item.MemoID, &item.MemoNo, &item.RequiredDate, &item.CreatedAt,
 			&item.PoConversionStatus, &item.HasActivePOLink, &linkedJSON, &item.HasRemaining)
@@ -266,6 +290,11 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"success": false, "message": "invalid id"})
 	}
 
+	// ?for_approval=true (the approval page) is only open to the PR's assigned approver / a previous decider.
+	if err := requireApprovalDetailAccess(c, h.db, "PR", id); err != nil {
+		return err
+	}
+
 	type PRLineItem struct {
 		ID           int64   `json:"id"`
 		LineNo       int     `json:"line_no"`
@@ -302,6 +331,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		RequesterID        int64                     `json:"requester_id"`
 		ApproverID         *int64                    `json:"approver_id"`
 		ApproverName       *string                   `json:"approver_name"`
+		RejectReason       *string                   `json:"reject_reason"` // remarks of the latest REJECTED status-log row
 		LocationText       string                    `json:"location_text"`
 		ProjectCode        *string                   `json:"project_code"`
 		DeptCode           *string                   `json:"dept_code,omitempty"`
@@ -330,7 +360,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	row := h.db.QueryRow(context.Background(), `
 		SELECT pr.id, pr.pr_no, pr.status,
 		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
-		       NULL AS approver_id, NULL AS approver_name,
+		       pr.approver_id, au.full_name AS approver_name,
 		       pr.location_text, pr.project_code, pr.dept_code, d.dept_name, pr.warehouse_code, w.warehouse_name, pr.remarks,
 		       pr.pr_date::text, pr.required_date::text, pr.created_at::text, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name, pr.memo_id, m.memo_no,
 		       CASE
@@ -338,18 +368,21 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		           WHEN COALESCE(BOOL_OR(COALESCE(prl.qty_ordered, 0) > 0), false) THEN 'PARTIALLY_CONVERTED'
 		           ELSE 'NOT_CONVERTED'
 		       END AS po_conversion_status,
+		       (SELECT l.remarks FROM pr_status_log l WHERE l.pr_id = pr.id AND l.to_status = 'REJECTED'
+		         ORDER BY l.changed_at DESC, l.id DESC LIMIT 1) AS reject_reason,
 		       u1.signature_path, u1.signature_mime
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
+		LEFT JOIN users au ON au.id = pr.approver_id
 		LEFT JOIN warehouse w ON w.warehouse_code = pr.warehouse_code
-		LEFT JOIN cost_subject cs ON cs.subject_code = LEFT(pr.job_code, 1)
-		LEFT JOIN cost_job cj ON cj.subject_id = cs.id AND cj.job_code = SUBSTRING(pr.job_code FROM 2)
+		LEFT JOIN cost_subject cs ON cs.subject_code = LEFT(job_cost_key(pr.job_code), 1)
+		LEFT JOIN cost_job cj ON cj.subject_id = cs.id AND cj.job_code = SUBSTRING(job_cost_key(pr.job_code) FROM 2)
 		LEFT JOIN project pj ON pj.project_code = pr.project_code
 		LEFT JOIN departments d ON d.dept_code = pr.dept_code
 		LEFT JOIN memo m ON m.id = pr.memo_id
 		LEFT JOIN purchase_request_line prl ON prl.pr_id = pr.id
 		WHERE pr.id = $1 AND pr.deleted_at IS NULL
-		GROUP BY pr.id, pr.pr_no, pr.status, u1.full_name, pr.requested_by, pr.location_text,
+		GROUP BY pr.id, pr.pr_no, pr.status, u1.full_name, pr.requested_by, pr.approver_id, au.full_name, pr.location_text,
 		         pr.project_code, pr.dept_code, d.dept_name, pr.warehouse_code, w.warehouse_name, pr.remarks,
 		         pr.pr_date, pr.required_date, pr.created_at, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name, pr.memo_id, m.memo_no,
 		         u1.signature_path, u1.signature_mime`, id)
@@ -363,13 +396,13 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode, &pr.DeptCode, &pr.DeptName,
 		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.CreatedAt, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.JobName, &pr.ProjectName, &pr.MemoID, &pr.MemoNo,
-		&pr.PoConversionStatus, &requesterSigPath, &requesterSigMime,
+		&pr.PoConversionStatus, &pr.RejectReason, &requesterSigPath, &requesterSigMime,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
 	}
 
-	// PR has no approval flow — requester_signature is the only signature this endpoint ever
+	// (PR approval exists since 2026-10-26, but) requester_signature is the only signature this endpoint ever
 	// shows, and only once the PR has actually left DRAFT (matches print-page expectations: a
 	// draft PR isn't a submitted document yet).
 	if pr.Status != "DRAFT" {

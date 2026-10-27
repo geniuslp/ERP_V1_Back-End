@@ -561,7 +561,7 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 	where := " WHERE ici.project_code = $1 AND " + qtyExpr + " > 0"
 	if jc := c.Query("job_code"); jc != "" {
 		args = append(args, jc)
-		where += fmt.Sprintf(" AND csub.subject_code = LEFT($%d, 1) AND cj.job_code = SUBSTRING($%d FROM 2)", len(args), len(args))
+		where += fmt.Sprintf(" AND csub.subject_code = LEFT(job_cost_key($%d::text), 1) AND cj.job_code = SUBSTRING(job_cost_key($%d::text) FROM 2)", len(args), len(args))
 	}
 	if v := c.QueryInt("subgroup_id", 0); v > 0 {
 		args = append(args, v)
@@ -637,7 +637,7 @@ func (h *IcProjectMovementHandler) ListProjectCostCodes(c *fiber.Ctx) error {
 		JOIN cost_job cj    ON cj.id = cg.job_id
 		JOIN cost_subject csub ON csub.id = cj.subject_id
 		JOIN project p      ON p.project_code = $1
-		WHERE (csub.subject_code || cj.job_code) = ANY(p.job_codes)
+		WHERE (csub.subject_code || cj.job_code) = ANY(ARRAY(SELECT job_cost_key(jc) FROM unnest(p.job_codes) jc))
 		  AND NOT csg.is_head AND NOT csg.is_major -- Head / Major (roll-up) subgroups are never selectable
 		ORDER BY 2`, projectCode)
 	if err != nil {
@@ -1664,7 +1664,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 	}
 	if jobCode != "" {
 		args = append(args, jobCode)
-		where = append(where, fmt.Sprintf("csub.subject_code = LEFT($%[1]d, 1) AND cj.job_code = SUBSTRING($%[1]d FROM 2)", len(args)))
+		where = append(where, fmt.Sprintf("csub.subject_code = LEFT(job_cost_key($%[1]d::text), 1) AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)", len(args)))
 	}
 	if search != "" {
 		args = append(args, "%"+search+"%")

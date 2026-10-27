@@ -115,8 +115,8 @@ func (h *WorkOrderHandler) validateWorkOrderRequest(ctx context.Context, req *mo
 	}
 
 	// work_system is a text[] (multiple allowed, at least 1). New/edited documents accept only
-	// "M*" job codes that exist in JobTypes (the project job type list); old P/E/S values are
-	// only ever read back, never accepted here.
+	// engineering-system job codes (IsTradeJobCode) from JobTypes; the old letter values are gone
+	// after migration 030.
 	if len(req.WorkSystem) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกงานระบบอย่างน้อย 1 ระบบ")
 	}
@@ -124,8 +124,8 @@ func (h *WorkOrderHandler) validateWorkOrderRequest(ctx context.Context, req *mo
 	uniq := make([]string, 0, len(req.WorkSystem))
 	for _, ws := range req.WorkSystem {
 		ws = strings.TrimSpace(ws)
-		if !strings.HasPrefix(ws, "M") || !validJobCodes[ws] {
-			return fiber.NewError(fiber.StatusBadRequest, "งานระบบต้องเป็นประเภทงานที่ขึ้นต้นด้วย M ตามรายการประเภทงานของโครงการ")
+		if !IsTradeJobCode(ws) {
+			return fiber.NewError(fiber.StatusBadRequest, "งานระบบต้องเป็นหนึ่งใน MS, EE, SN, FF, GS, AC ตามรายการประเภทงานของโครงการ")
 		}
 		if !seen[ws] {
 			seen[ws] = true

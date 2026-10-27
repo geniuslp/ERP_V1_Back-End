@@ -265,19 +265,21 @@ type stockBalanceRow struct {
 	QtyOnHand      float64 `json:"qty_on_hand"`
 	UnitCost       float64 `json:"unit_cost"`
 	LocationCode   *string `json:"location_code,omitempty"`
-	UpdatedAt      string  `json:"updated_at"`
+	// StoreDescription is stock_item.description_store (the warehouse's own wording); WAREHOUSE source only.
+	StoreDescription *string `json:"store_description,omitempty"`
+	UpdatedAt        string  `json:"updated_at"`
 }
 
 // GetBalance godoc
 // @Summary      Stock balance of one project (Stock page, step 2)
-// @Description  data.source = WAREHOUSE -> stock_item rows of the project's warehouse (COALESCE(linked_warehouse_code, warehouse_code)), never the whole table; data.source = PROJECT -> ic_project_cost_item rows of the project. The two systems are never combined. only_with_stock defaults to true (qty > 0); pass only_with_stock=false to include zero-qty rows. data.no_stock = true when the list is empty (frontend shows "ยังไม่มีสินค้าในคลังนี้"). job_code (e.g. MP) applies to PROJECT only. Newest updated_at first.
+// @Description  data.source = WAREHOUSE -> stock_item rows of the project's warehouse (COALESCE(linked_warehouse_code, warehouse_code)), never the whole table; data.source = PROJECT -> ic_project_cost_item rows of the project. The two systems are never combined. only_with_stock defaults to true (qty > 0); pass only_with_stock=false to include zero-qty rows. data.no_stock = true when the list is empty (frontend shows "ยังไม่มีสินค้าในคลังนี้"). job_code (e.g. MS) applies to PROJECT only. Newest updated_at first.
 // @Tags         Stock
 // @Security     BearerAuth
 // @Produce      json
 // @Param        projectCode      path   string  true   "project.project_code"
 // @Param        search           query  string  false  "mat_code / material name"
 // @Param        only_with_stock  query  bool    false  "only qty > 0 (default true)"
-// @Param        job_code         query  string  false  "PROJECT source only, e.g. MP"
+// @Param        job_code         query  string  false  "PROJECT source only, e.g. MS"
 // @Param        page             query  int     false  "page number"  default(1)
 // @Param        page_size        query  int     false  "page size (max 100)"  default(20)
 // @Success      200  {object}  fiber.Map
@@ -318,7 +320,7 @@ func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search
 	}
 	if search != "" {
 		args = append(args, "%"+search+"%")
-		where = append(where, fmt.Sprintf("(si.mat_code ILIKE $%[1]d OR si.item_name ILIKE $%[1]d OR mn.mat_name ILIKE $%[1]d OR sp.spec_description ILIKE $%[1]d)", len(args)))
+		where = append(where, fmt.Sprintf("(si.mat_code ILIKE $%[1]d OR si.item_name ILIKE $%[1]d OR mn.mat_name ILIKE $%[1]d OR sp.spec_description ILIKE $%[1]d OR si.description_store ILIKE $%[1]d)", len(args)))
 	}
 	whereStr := strings.Join(where, " AND ")
 	join := `FROM stock_item si
@@ -341,6 +343,7 @@ func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search
 		       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), si.item_name),
 		       mc.cost_subgroup_id, `+costCodeSQL("csub", "cj", "cg", "csg")+`,
 		       COALESCE(u.unit_name, si.unit), si.qty, si.unit_cost, si.location_code,
+		       NULLIF(TRIM(si.description_store), ''),
 		       TO_CHAR(si.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		%s WHERE %s
 		ORDER BY si.updated_at DESC, si.id DESC
@@ -353,7 +356,7 @@ func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search
 	for rows.Next() {
 		var r stockBalanceRow
 		if err := rows.Scan(&r.ID, &r.MatCode, &r.MatName, &r.CostSubgroupID, &r.CostCode,
-			&r.Unit, &r.QtyOnHand, &r.UnitCost, &r.LocationCode, &r.UpdatedAt); err != nil {
+			&r.Unit, &r.QtyOnHand, &r.UnitCost, &r.LocationCode, &r.StoreDescription, &r.UpdatedAt); err != nil {
 			return nil, 0, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดยอดคงเหลือได้")
 		}
 		out = append(out, r)
@@ -372,7 +375,7 @@ func (h *StockByProjectHandler) projectBalance(ctx context.Context, projectCode,
 	}
 	if jobCode != "" {
 		args = append(args, jobCode)
-		where = append(where, fmt.Sprintf("csub.subject_code = LEFT($%[1]d, 1) AND cj.job_code = SUBSTRING($%[1]d FROM 2)", len(args)))
+		where = append(where, fmt.Sprintf("csub.subject_code = LEFT(job_cost_key($%[1]d::text), 1) AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)", len(args)))
 	}
 	if search != "" {
 		args = append(args, "%"+search+"%")

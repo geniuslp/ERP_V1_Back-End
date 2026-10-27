@@ -115,6 +115,15 @@ func (h *WOContractorLogHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
+	// One record per work order: the finance WO detail page opens it by WO, so a second one would be unreachable.
+	var dup bool
+	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wo_contractor_log WHERE wo_id=$1)`, req.WoID).Scan(&dup); err != nil {
+		return err
+	}
+	if dup {
+		return fiber.NewError(fiber.StatusConflict, "WO นี้มีบันทึกงานของผู้รับเหมาอยู่แล้ว")
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -276,4 +285,30 @@ func (h *WOContractorLogHandler) Get(c *fiber.Ctx) error {
 			"terms":                terms,
 		},
 	})
+}
+
+// FindByWO godoc
+// @Summary      หา id ของบันทึกงานผู้รับเหมาจากหนังสือสั่งจ้าง
+// @Description  Returns data = {id} of the (latest) record for this work order, or data = null when none exists yet. The record is then read with GET /wo-contractor-log/{id}.
+// @Tags         WOContractorLog
+// @Security     BearerAuth
+// @Produce      json
+// @Param        woId  path  int  true  "Work Order ID"
+// @Success      200   {object}  fiber.Map
+// @Router       /wo-contractor-log/by-wo/{woId} [get]
+func (h *WOContractorLogHandler) FindByWO(c *fiber.Ctx) error {
+	woID, err := strconv.ParseInt(c.Params("woId"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid woId")
+	}
+	var id int64
+	err = h.db.QueryRow(context.Background(),
+		`SELECT id FROM wo_contractor_log WHERE wo_id = $1 ORDER BY id DESC LIMIT 1`, woID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return c.JSON(fiber.Map{"success": true, "data": nil})
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": id}})
 }

@@ -177,6 +177,7 @@ func isPCTaxForm(code string) bool {
 type pcLine struct {
 	projectCode                             *string // nil = department-only line (project_code is nullable)
 	matCode                                 *string
+	unit                                    *string
 	costSubgroupID                          *int64
 	description, remarks                    *string
 	amount, vat, wht, net                   float64
@@ -273,6 +274,14 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 		}
 		ln.matCode = pcNilIfEmpty(mat)
 		ln.description = pcNilIfEmpty(desc)
+		unit := strings.TrimSpace(l.Unit)
+		if unit == "" {
+			return nil, tot, bad("กรุณาระบุหน่วย")
+		}
+		if utf8.RuneCountInString(unit) > 50 {
+			return nil, tot, bad("หน่วยยาวเกินกำหนด (สูงสุด 50 ตัวอักษร)")
+		}
+		ln.unit = pcNilIfEmpty(unit)
 		ln.remarks = l.Remarks
 		if l.CostSubgroupID != nil {
 			id := *l.CostSubgroupID
@@ -433,15 +442,15 @@ func insertPCLines(ctx context.Context, tx pgx.Tx, pcID int64, lines []pcLine) e
 			   supplier_id, supplier_name, supplier_address, supplier_tax_id,
 			   has_tax_invoice, tax_invoice_no, tax_invoice_date,
 			   has_wht, wht_base_amount, tax_form_code, wht_income_type_id, wht_pay_date,
-				   invoice_no, invoice_date)
+				   invoice_no, invoice_date, unit)
 			VALUES ($1,$2,$3,$4,$5,$6,1,$7,$7,0,'pct',0,$8,$9,$10,$11,$12,
-			        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+			        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 			pcID, i+1, ln.projectCode, ln.matCode, ln.costSubgroupID, ln.description, ln.amount,
 			ln.vat, ln.wht, ln.net, ln.whtRate, ln.remarks,
 			ln.supplierID, ln.supplierName, ln.supplierAddr, ln.supplierTax,
 			ln.hasTaxInvoice, ln.taxInvoiceNo, ln.taxInvoiceDate,
 			ln.hasWht, ln.whtBase, ln.taxForm, ln.whtIncomeTypeID, ln.whtPayDate,
-			ln.invoiceNo, ln.invoiceDate,
+			ln.invoiceNo, ln.invoiceDate, ln.unit,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && (pgErr.Code == "23503" || pgErr.Code == "23514") {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("รายการที่ %d: ข้อมูลไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง", i+1))
@@ -494,7 +503,7 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		       CASE WHEN pcl.cost_subgroup_id IS NULL THEN NULL
 		            ELSE ` + costCodeSQL("csub","cj","cg","csg") + ` END AS cost_code,
 		       wit.label_th,
-		       p.project_name, mn.mat_name, u.unit_name, COALESCE(ps.qty_on_hand, 0)
+		       p.project_name, mn.mat_name, COALESCE(NULLIF(pcl.unit, ''), u.unit_name), COALESCE(ps.qty_on_hand, 0)
 		FROM petty_cash_requisition_line pcl
 		LEFT JOIN project p ON p.project_code = pcl.project_code
 		LEFT JOIN material_code mc ON mc.mat_code = pcl.mat_code

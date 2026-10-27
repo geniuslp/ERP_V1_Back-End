@@ -60,11 +60,11 @@ func TestLastEditedByAndApproverNames(t *testing.T) {
 	}
 	// Created and last edited by A, approver chosen = B, waiting for approval.
 	poID := ins(`INSERT INTO purchase_order (po_no, job_code, created_by, updated_by, approver_id, status)
-		VALUES ('ZZ-PO-1','MP',$1,$1,$2,'PENDING_APPROVAL') RETURNING id`, a, b)
+		VALUES ('ZZ-PO-1','MS',$1,$1,$2,'PENDING_APPROVAL') RETURNING id`, a, b)
 	poNull := ins(`INSERT INTO purchase_order (po_no, job_code, created_by, updated_by, approver_id, status)
-		VALUES ('ZZ-PO-2','MP',$1,$1,NULL,'PENDING_APPROVAL') RETURNING id`, a)
+		VALUES ('ZZ-PO-2','MS',$1,$1,NULL,'PENDING_APPROVAL') RETURNING id`, a)
 	woID := ins(`INSERT INTO work_order (wo_no, work_system, employer_name, supplier_name, created_by, updated_by, approver_id, status)
-		VALUES ('ZZ-WO-1', ARRAY['MP'],'ZZ','ZZ',$1,$1,$2,'PENDING_APPROVAL') RETURNING id`, a, b)
+		VALUES ('ZZ-WO-1', ARRAY['MS'],'ZZ','ZZ',$1,$1,$2,'PENDING_APPROVAL') RETURNING id`, a, b)
 	if _, err := pool.Exec(ctx, `INSERT INTO approval_request (doc_type, doc_id, doc_no, step_no, requested_by, assigned_to, status)
 		VALUES ('PO',$1,'ZZ-PO-1',1,$2,$3,'PENDING')`, poID, a, b); err != nil {
 		t.Fatal(err)

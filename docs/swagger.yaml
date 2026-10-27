@@ -1141,6 +1141,9 @@ definitions:
     type: object
   models.CreatePRRequest:
     properties:
+      approver_id:
+        description: 'required when status is a submit status: picked from GET /master/eligible-approvers?doc_type=PR'
+        type: integer
       attachments:
         items:
           $ref: '#/definitions/models.AddAttachmentRequest'
@@ -1181,6 +1184,8 @@ definitions:
       required_date:
         type: string
       status:
+        description: DRAFT | PENDING_APPROVAL (send for approval; COMPLETED is accepted
+          as the same thing for older callers)
         type: string
       warehouse_code:
         type: string
@@ -1241,6 +1246,9 @@ definitions:
         description: YYYY-MM-DD
         type: string
       tax_invoice_no:
+        type: string
+      unit:
+        description: หน่วย, REQUIRED on every line (free text, max 50)
         type: string
       unit_price:
         type: number
@@ -1327,7 +1335,7 @@ definitions:
       end_date:
         type: string
       job_codes:
-        description: subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+        description: subset of MS/EE/SN/FF/GS/AC/G — validated server-side
         items:
           type: string
         type: array
@@ -1783,7 +1791,7 @@ definitions:
           rejected; approval decisions only ever happen through the dedicated Approve/Reject flow.
         type: string
       work_system:
-        description: at least 1 M-prefixed job code; validated in validateWorkOrderRequest
+        description: at least 1 of MS/EE/SN/FF/GS/AC; validated in validateWorkOrderRequest
         items:
           type: string
         type: array
@@ -2813,6 +2821,9 @@ definitions:
     type: object
   models.UpdatePRRequest:
     properties:
+      approver_id:
+        description: required when the status is a submit status
+        type: integer
       dept_code:
         type: string
       job_code:
@@ -2842,8 +2853,9 @@ definitions:
       required_date:
         type: string
       status:
-        description: '"DRAFT" (default) | "COMPLETED" — COMPLETED runs the same completion
-          logic as POST /pr/{id}/submit'
+        description: '"DRAFT" (default) | "PENDING_APPROVAL" — sends the PR for approval
+          like POST /pr/{id}/submit ("COMPLETED" is accepted as the same thing for
+          older callers)'
         type: string
       warehouse_code:
         type: string
@@ -2929,7 +2941,7 @@ definitions:
           value and preserves it rather than defaulting to false. See project_handler.go Update.
         type: boolean
       job_codes:
-        description: subset of MP/ME/MS/MF/MG/MH/G — validated server-side
+        description: subset of MS/EE/SN/FF/GS/AC/G — validated server-side
         items:
           type: string
         type: array
@@ -3043,6 +3055,9 @@ definitions:
         type: string
       role_id:
         type: integer
+      username:
+        description: nil/empty = keep; else trimmed, max 100, must be unique
+        type: string
     required:
     - full_name
     type: object
@@ -3777,10 +3792,10 @@ paths:
       - Approvals
   /approvals/my-pending-counts:
     get:
-      description: 'Number of Memo / PO / WO documents waiting for the caller: status
-        PENDING_APPROVAL (Memo) or PENDING_APPROVAL/PENDING_REAPPROVAL (PO, WO), assigned
-        to the caller (approver_id; a NULL approver_id counts for nobody). Same filter
-        as the approval lists.'
+      description: 'Number of Memo / PO / WO / PR documents waiting for the caller:
+        status PENDING_APPROVAL (Memo, PR) or PENDING_APPROVAL/PENDING_REAPPROVAL
+        (PO, WO), assigned to the caller (approver_id; a NULL approver_id counts for
+        nobody). Same filter as the approval lists.'
       produces:
       - application/json
       responses:
@@ -11992,15 +12007,26 @@ paths:
       - Purchase Request
   /pr/{id}/submit:
     post:
-      description: Every line must have a cost_subgroup_id, otherwise 400 "กรุณาระบุ
-        Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT saves are not
-        affected. The same rule applies to POST /pr and PUT /pr/{id} when status=COMPLETED.
+      description: 'Body {"approver_id": n} is required: the approver is picked from
+        GET /master/eligible-approvers?doc_type=PR (400 otherwise). The PR becomes
+        PENDING_APPROVAL and an approval_request is opened; stock is NOT reserved
+        yet — that happens when the approver approves (PUT /approval/PR/{id}/approve
+        -> COMPLETED, see PostApprove). Every line must have a cost_subgroup_id, otherwise
+        400 "กรุณาระบุ Cost Code ให้ครบทุกรายการก่อนส่ง (บรรทัดที่ N, ...)". DRAFT
+        saves are not affected. The same rule applies to POST /pr and PUT /pr/{id}
+        when status is a submit status.'
       parameters:
       - description: PR ID
         in: path
         name: id
         required: true
         type: integer
+      - description: '{approver_id}'
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
       produces:
       - application/json
       responses:
@@ -12009,8 +12035,8 @@ paths:
           schema:
             $ref: '#/definitions/fiber.Map'
         "400":
-          description: missing cost code on one or more lines, or other validation
-            error
+          description: missing cost code on one or more lines, no/ineligible approver,
+            or other validation error
           schema:
             $ref: '#/definitions/fiber.Map'
         "409":
@@ -12019,7 +12045,7 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: Submit PR (no approval required — goes straight to COMPLETED)
+      summary: Submit PR for approval (DRAFT/REJECTED -> PENDING_APPROVAL)
       tags:
       - Purchase Request
   /project-overview:
@@ -12973,7 +12999,7 @@ paths:
         systems are never combined. only_with_stock defaults to true (qty > 0); pass
         only_with_stock=false to include zero-qty rows. data.no_stock = true when
         the list is empty (frontend shows "ยังไม่มีสินค้าในคลังนี้"). job_code (e.g.
-        MP) applies to PROJECT only. Newest updated_at first.
+        MS) applies to PROJECT only. Newest updated_at first.
       parameters:
       - description: project.project_code
         in: path
@@ -12988,7 +13014,7 @@ paths:
         in: query
         name: only_with_stock
         type: boolean
-      - description: PROJECT source only, e.g. MP
+      - description: PROJECT source only, e.g. MS
         in: query
         name: job_code
         type: string
@@ -13903,7 +13929,10 @@ paths:
         (trimmed, max 200). employee_code is optional: trimmed, max 30, empty stored
         as NULL, 409 if another user already has it. full_name_th is optional: omitted
         = keep stored value, empty string = clear (NULL), max 200 characters. department
-        (free-text position) and dept_code are separate fields.'
+        (free-text position) and dept_code are separate fields. username is optional:
+        omitted or empty = keep; otherwise trimmed, max 100, 409 if another user already
+        has it (an existing refresh token carries the old username and stops working,
+        so that user logs in again).'
       parameters:
       - description: User ID
         in: path
@@ -14332,6 +14361,28 @@ paths:
       security:
       - BearerAuth: []
       summary: แก้ไขรายการรับวางบิล (แทนที่ lines และ invoices ทั้งหมด)
+      tags:
+      - WOContractorLog
+  /wo-contractor-log/by-wo/{woId}:
+    get:
+      description: Returns data = {id} of the (latest) record for this work order,
+        or data = null when none exists yet. The record is then read with GET /wo-contractor-log/{id}.
+      parameters:
+      - description: Work Order ID
+        in: path
+        name: woId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: หา id ของบันทึกงานผู้รับเหมาจากหนังสือสั่งจ้าง
       tags:
       - WOContractorLog
   /work-order:
