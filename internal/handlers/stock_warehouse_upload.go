@@ -21,7 +21,8 @@ import (
 //
 // Both write stock_transaction rows (ref_doc_type BULK_UPLOAD) so the change shows in the movement history.
 // stock_item is keyed by mat_code alone, so an item already stocked in ANOTHER warehouse is rejected rather than
-// silently moved. The upload is all-or-nothing: any problem row rejects the whole file, so a corrected file can be
+// silently moved. In Add mode the same code on several rows is summed (10 + 15 on top of 10 in stock = 35); in Update mode a
+// repeated code is rejected (it is unclear which value should win). The upload is all-or-nothing: any problem row rejects the whole file, so a corrected file can be
 // uploaded again without double-adding the rows that were fine.
 const (
 	whUploadModeUpdate = "update"
@@ -39,7 +40,8 @@ type whUploadRow struct {
 	NewQty      float64  `json:"new_qty"`     // quantity on hand after the upload
 	CurrentWH   string   `json:"current_warehouse,omitempty"`
 	IsNew       bool     `json:"is_new"`
-	Status      string   `json:"status"` // ok | code_not_found | other_warehouse | invalid_qty | duplicate
+	MergedRows  []int    `json:"merged_rows,omitempty"` // Add mode: every file row of this code, summed into this one
+	Status      string   `json:"status"`                // ok | code_not_found | other_warehouse | invalid_qty | duplicate
 	Message     string   `json:"message,omitempty"`
 	descStore   string
 	itemName    string
@@ -119,6 +121,28 @@ func (h *StockItemHandler) buildWarehouseUploadPlan(c *fiber.Ctx) (*whUploadPlan
 		dbRows.Close()
 	}
 
+	// Add mode: several rows of the same code are summed into the first one. Every source row must itself add something.
+	mergedFrom := map[string][]int{}
+	if mode == whUploadModeAdd {
+		var merged []parsedStockItemRow
+		idx := map[string]int{}
+		for _, p := range parsed {
+			if p.Qty <= 0 {
+				plan.Problems = append(plan.Problems, fmt.Sprintf("row %d: %s: จำนวนที่เพิ่มต้องมากกว่า 0", p.RowNo, p.MatCode))
+			}
+			i, dup := idx[p.MatCode]
+			if !dup {
+				idx[p.MatCode] = len(merged)
+				merged = append(merged, p)
+				mergedFrom[p.MatCode] = []int{p.RowNo}
+				continue
+			}
+			merged[i].Qty += p.Qty
+			mergedFrom[p.MatCode] = append(mergedFrom[p.MatCode], p.RowNo)
+		}
+		parsed = merged
+	}
+
 	seen := map[string]int{}
 	for _, p := range parsed {
 		r := whUploadRow{
@@ -146,6 +170,9 @@ func (h *StockItemHandler) buildWarehouseUploadPlan(c *fiber.Ctx) (*whUploadPlan
 			r.CurrentWH = e.wh
 		}
 		r.IsNew = !inStock
+		if rows := mergedFrom[p.MatCode]; len(rows) > 1 {
+			r.MergedRows = rows
+		}
 
 		firstRow, dup := seen[p.MatCode]
 		switch {
@@ -155,8 +182,6 @@ func (h *StockItemHandler) buildWarehouseUploadPlan(c *fiber.Ctx) (*whUploadPlan
 			bad("code_not_found", fmt.Sprintf("ไม่พบรหัสวัสดุ %s ในข้อมูลหลัก", p.MatCode))
 		case inStock && e.wh != wh:
 			bad("other_warehouse", fmt.Sprintf("%s อยู่ในคลัง %s ไม่ใช่คลัง %s ที่เลือก", p.MatCode, e.wh, wh))
-		case mode == whUploadModeAdd && p.Qty <= 0:
-			bad("invalid_qty", fmt.Sprintf("%s: จำนวนที่เพิ่มต้องมากกว่า 0", p.MatCode))
 		case p.Qty < 0 || math.IsNaN(p.Qty):
 			bad("invalid_qty", fmt.Sprintf("%s: จำนวนต้องไม่ติดลบ", p.MatCode))
 		}

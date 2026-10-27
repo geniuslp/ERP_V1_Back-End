@@ -301,7 +301,7 @@ func (h *StockByProjectHandler) GetBalance(c *fiber.Ctx) error {
 		total int64
 	)
 	if info.WarehouseCode != "" {
-		items, total, err = h.warehouseBalance(ctx, info.WarehouseCode, search, onlyWithStock, size, offset)
+		items, total, err = h.warehouseBalance(ctx, info.WarehouseCode, search, onlyWithStock, false, size, offset)
 	} else {
 		items, total, err = h.projectBalance(ctx, info.ProjectCode, search, strings.TrimSpace(c.Query("job_code")), onlyWithStock, size, offset)
 	}
@@ -312,11 +312,17 @@ func (h *StockByProjectHandler) GetBalance(c *fiber.Ctx) error {
 		fiber.Map{"no_stock": total == 0, "only_with_stock": onlyWithStock})})
 }
 
-func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search string, onlyWithStock bool, size, offset int) ([]stockBalanceRow, int64, error) {
+// orHasCostCode (with onlyWithStock) also keeps rows that have no stock but a Cost Code - the Master warehouse page rule:
+// an item belongs in the warehouse when it has a quantity OR a Cost Code.
+func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search string, onlyWithStock, orHasCostCode bool, size, offset int) ([]stockBalanceRow, int64, error) {
 	where := []string{"si.warehouse_code = $1"}
 	args := []interface{}{wh}
 	if onlyWithStock {
-		where = append(where, "si.qty > 0")
+		if orHasCostCode {
+			where = append(where, "(si.qty > 0 OR mc.cost_subgroup_id IS NOT NULL)")
+		} else {
+			where = append(where, "si.qty > 0")
+		}
 	}
 	if search != "" {
 		args = append(args, "%"+search+"%")

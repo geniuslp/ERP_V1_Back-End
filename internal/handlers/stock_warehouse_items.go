@@ -9,13 +9,13 @@ import (
 
 // ListWarehouseItems godoc
 // @Summary      Stock list of ONE warehouse (Master > คลังสินค้า page)
-// @Description  Same rows and columns as the WAREHOUSE-source balance of the Stock page (Cost Code, MatCode, MatName, store description, quantity, unit, unit cost), but addressed by warehouse_code instead of a project. only_with_stock defaults to false here so freshly created zero-quantity items are visible too.
+// @Description  Same rows and columns as the WAREHOUSE-source balance of the Stock page (Cost Code, MatCode, MatName, store description, quantity, unit, unit cost), but addressed by warehouse_code instead of a project. An item belongs in the warehouse when it has a quantity OR a Cost Code: only_with_stock (default true) keeps rows with qty > 0 or a Cost Code and hides the empty placeholder rows that mirror the material master; pass only_with_stock=false to list every row.
 // @Tags         Stock
 // @Security     BearerAuth
 // @Produce      json
 // @Param        warehouse_code   query  string  true   "BO | FAC-P | FAC-S | HO ..."
 // @Param        search           query  string  false  "mat_code / name / spec / store description"
-// @Param        only_with_stock  query  bool    false  "default false"
+// @Param        only_with_stock  query  bool    false  "default true"
 // @Param        page             query  int     false  "Page"
 // @Param        page_size        query  int     false  "Page size (max 100)"
 // @Router       /stock/warehouse-items [get]
@@ -34,7 +34,7 @@ func (h *StockByProjectHandler) ListWarehouseItems(c *fiber.Ctx) error {
 	}
 
 	page, size, offset := stockPaging(c)
-	items, total, err := h.warehouseBalance(ctx, wh, strings.TrimSpace(c.Query("search")), c.QueryBool("only_with_stock", false), size, offset)
+	items, total, err := h.warehouseBalance(ctx, wh, strings.TrimSpace(c.Query("search")), c.QueryBool("only_with_stock", true), true, size, offset)
 	if err != nil {
 		return err
 	}

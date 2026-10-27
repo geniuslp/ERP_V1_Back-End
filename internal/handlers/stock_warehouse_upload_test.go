@@ -119,11 +119,24 @@ func TestWarehouseUploadUpdateAndAdd(t *testing.T) {
 			t.Errorf("other warehouse: status %d, want 400", code)
 		}
 	}
-	// the same code twice in one file is rejected
-	if code, _ := call("/apply", "add", "FAC-S", xlsxFile([][3]any{{mat, 1, "ea"}, {mat, 1, "ea"}})); code != 400 {
-		t.Errorf("duplicate: status %d, want 400", code)
+	// Update: the same code twice in one file is rejected (unclear which value wins)
+	if code, _ := call("/apply", "update", "FAC-S", xlsxFile([][3]any{{mat, 1, "ea"}, {mat, 1, "ea"}})); code != 400 {
+		t.Errorf("update duplicate: status %d, want 400", code)
+	}
+	// Add: the same code on several rows is summed on top of the stock on hand (10 + 15 + existing)
+	base := qtyNow()
+	if code, out := call("/apply", "add", "FAC-S", xlsxFile([][3]any{{mat, 10, "ea"}, {mat, 15, "ea"}})); code != 200 {
+		t.Fatalf("add duplicate: %d %v", code, out)
+	}
+	if got := qtyNow(); got != base+25 {
+		t.Errorf("add duplicate: qty %v, want %v", got, base+25)
+	}
+	// ...and a non-positive source row still rejects the file
+	if code, _ := call("/apply", "add", "FAC-S", xlsxFile([][3]any{{mat, 5, "ea"}, {mat, 0, "ea"}})); code != 400 {
+		t.Errorf("add zero row: status %d, want 400", code)
 	}
 	// preview writes nothing and reports can_apply
+	before = qtyNow()
 	if code, out := call("/preview", "add", "FAC-S", xlsxFile([][3]any{{mat, 2, "ea"}})); code != 200 || out["data"].(map[string]any)["can_apply"] != true {
 		t.Errorf("preview: %d %v", code, out)
 	}
@@ -136,7 +149,7 @@ func TestWarehouseUploadUpdateAndAdd(t *testing.T) {
 func TestListWarehouseItems(t *testing.T) {
 	pool := cbTestPool(t)
 	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM stock_item WHERE warehouse_code='FAC-S'`).Scan(&n); err != nil || n == 0 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM stock_item si LEFT JOIN material_code mc ON mc.mat_code=si.mat_code WHERE si.warehouse_code='FAC-S' AND (si.qty > 0 OR mc.cost_subgroup_id IS NOT NULL)`).Scan(&n); err != nil || n == 0 {
 		t.Skip("no FAC-S stock fixture")
 	}
 	h := NewStockByProjectHandler(pool)
@@ -157,7 +170,7 @@ func TestListWarehouseItems(t *testing.T) {
 	if code, _ := get("?warehouse_code=ZZ-NOPE"); code != 400 {
 		t.Errorf("unknown warehouse: %d, want 400", code)
 	}
-	code, out := get("?warehouse_code=FAC-S&page_size=5")
+	code, out := get("?warehouse_code=FAC-S&page_size=5") // default: items with a quantity or a Cost Code
 	if code != 200 {
 		t.Fatalf("list: %d %v", code, out)
 	}

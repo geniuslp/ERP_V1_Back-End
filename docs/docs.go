@@ -15214,7 +15214,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Same rows and columns as the WAREHOUSE-source balance of the Stock page (Cost Code, MatCode, MatName, store description, quantity, unit, unit cost), but addressed by warehouse_code instead of a project. only_with_stock defaults to false here so freshly created zero-quantity items are visible too.",
+                "description": "Same rows and columns as the WAREHOUSE-source balance of the Stock page (Cost Code, MatCode, MatName, store description, quantity, unit, unit cost), but addressed by warehouse_code instead of a project. An item belongs in the warehouse when it has a quantity OR a Cost Code: only_with_stock (default true) keeps rows with qty \u003e 0 or a Cost Code and hides the empty placeholder rows that mirror the material master; pass only_with_stock=false to list every row.",
                 "produces": [
                     "application/json"
                 ],
@@ -15238,7 +15238,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "boolean",
-                        "description": "default false",
+                        "description": "default true",
                         "name": "only_with_stock",
                         "in": "query"
                     },
