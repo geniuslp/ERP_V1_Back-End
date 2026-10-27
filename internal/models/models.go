@@ -2223,8 +2223,8 @@ type CreatePettyCashLineItem struct {
 	Description    string   `json:"description"`
 	Unit           string   `json:"unit"` // หน่วย, REQUIRED on every line (free text, max 50)
 	// Amount (before VAT) is the new-style input; legacy callers may omit it and send qty*unit_price.
-	// Qty/UnitPrice/Discount/DiscType/WhtRate are only read for that legacy fallback — new-style
-	// lines are stored as qty=1, unit_price=amount, no discount; wht_rate comes from the income type.
+	// Qty is the stored quantity (default 1). UnitPrice/Discount/DiscType/WhtRate are only read for the legacy
+	// fallback — new-style lines get unit_price = amount / qty, no discount; wht_rate comes from the income type.
 	Amount    *float64 `json:"amount"`
 	Qty       float64  `json:"qty"`
 	UnitPrice float64  `json:"unit_price"`

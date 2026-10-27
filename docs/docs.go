@@ -18514,7 +18514,7 @@ const docTemplate = `{
             ],
             "properties": {
                 "amount": {
-                    "description": "Amount (before VAT) is the new-style input; legacy callers may omit it and send qty*unit_price.\nQty/UnitPrice/Discount/DiscType/WhtRate are only read for that legacy fallback — new-style\nlines are stored as qty=1, unit_price=amount, no discount; wht_rate comes from the income type.",
+                    "description": "Amount (before VAT) is the new-style input; legacy callers may omit it and send qty*unit_price.\nQty is the stored quantity (default 1). UnitPrice/Discount/DiscType/WhtRate are only read for the legacy\nfallback — new-style lines get unit_price = amount / qty, no discount; wht_rate comes from the income type.",
                     "type": "number"
                 },
                 "cost_subgroup_id": {

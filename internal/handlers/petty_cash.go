@@ -181,6 +181,7 @@ type pcLine struct {
 	costSubgroupID                          *int64
 	description, remarks                    *string
 	amount, vat, wht, net                   float64
+	qty                                     float64 // จำนวน (units); amount stays the entered money total
 	supplierID                              *int64
 	supplierName, supplierAddr, supplierTax *string
 	hasTaxInvoice                           bool
@@ -310,6 +311,11 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 			return nil, tot, bad("จำนวนเงินต้องมากกว่า 0")
 		}
 		ln.amount = amount
+		// qty is the quantity of the item (info only, amount is not derived from it); default 1
+		ln.qty = 1
+		if l.Qty > 0 {
+			ln.qty = l.Qty
+		}
 
 		// ── vendor ──
 		if l.SupplierID != nil && *l.SupplierID > 0 {
@@ -431,8 +437,8 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 	return out, tot, nil
 }
 
-// insertLines writes the resolved lines. New-style lines are stored as qty=1, unit_price=amount,
-// no discount (the line modal has no qty/price).
+// insertLines writes the resolved lines. New-style lines store the entered qty (default 1), unit_price = amount / qty,
+// no discount (the line modal has no price).
 func insertPCLines(ctx context.Context, tx pgx.Tx, pcID int64, lines []pcLine) error {
 	for i, ln := range lines {
 		if _, err := tx.Exec(ctx, `
@@ -443,14 +449,14 @@ func insertPCLines(ctx context.Context, tx pgx.Tx, pcID int64, lines []pcLine) e
 			   has_tax_invoice, tax_invoice_no, tax_invoice_date,
 			   has_wht, wht_base_amount, tax_form_code, wht_income_type_id, wht_pay_date,
 				   invoice_no, invoice_date, unit)
-			VALUES ($1,$2,$3,$4,$5,$6,1,$7,$7,0,'pct',0,$8,$9,$10,$11,$12,
+			VALUES ($1,$2,$3,$4,$5,$6,$28,$7::numeric / $28::numeric,$7,0,'pct',0,$8,$9,$10,$11,$12,
 			        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 			pcID, i+1, ln.projectCode, ln.matCode, ln.costSubgroupID, ln.description, ln.amount,
 			ln.vat, ln.wht, ln.net, ln.whtRate, ln.remarks,
 			ln.supplierID, ln.supplierName, ln.supplierAddr, ln.supplierTax,
 			ln.hasTaxInvoice, ln.taxInvoiceNo, ln.taxInvoiceDate,
 			ln.hasWht, ln.whtBase, ln.taxForm, ln.whtIncomeTypeID, ln.whtPayDate,
-			ln.invoiceNo, ln.invoiceDate, ln.unit,
+			ln.invoiceNo, ln.invoiceDate, ln.unit, ln.qty,
 		); err != nil {
 			if pgErr, ok := err.(*pgconn.PgError); ok && (pgErr.Code == "23503" || pgErr.Code == "23514") {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("รายการที่ %d: ข้อมูลไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง", i+1))
