@@ -168,7 +168,13 @@ func (h *GenericApprovalHandler) decide(c *fiber.Ctx, action string) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update document status: "+err.Error())
 	}
 
-	if _, err := tx.Exec(ctx, `UPDATE approval_request SET status=$1, updated_at=NOW() WHERE id=$2`, newValue, approvalReqID); err != nil {
+	// approval_request.status has its own vocabulary (PENDING/APPROVED/REJECTED/...), separate from the
+	// document's approved_value/rejected_value (PR's approved value is COMPLETED, which the CHECK rejects).
+	requestStatus := "APPROVED"
+	if action == "REJECT" {
+		requestStatus = "REJECTED"
+	}
+	if _, err := tx.Exec(ctx, `UPDATE approval_request SET status=$1, updated_at=NOW() WHERE id=$2`, requestStatus, approvalReqID); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update approval_request: "+err.Error())
 	}
 
