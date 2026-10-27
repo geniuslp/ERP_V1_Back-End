@@ -2141,6 +2141,9 @@ definitions:
       requested_by_name:
         description: populated via JOIN (ไม่ได้เก็บใน table)
         type: string
+      requested_by_username:
+        description: printed under the requester signature
+        type: string
       requester_signature:
         allOf:
         - $ref: '#/definitions/models.UserSignatureInfo'
@@ -13694,6 +13697,74 @@ paths:
       security:
       - BearerAuth: []
       summary: สร้าง Stock Transaction
+      tags:
+      - Stock
+  /stock/warehouse-items:
+    get:
+      description: Same rows and columns as the WAREHOUSE-source balance of the Stock
+        page (Cost Code, MatCode, MatName, store description, quantity, unit, unit
+        cost), but addressed by warehouse_code instead of a project. only_with_stock
+        defaults to false here so freshly created zero-quantity items are visible
+        too.
+      parameters:
+      - description: BO | FAC-P | FAC-S | HO ...
+        in: query
+        name: warehouse_code
+        required: true
+        type: string
+      - description: mat_code / name / spec / store description
+        in: query
+        name: search
+        type: string
+      - description: default false
+        in: query
+        name: only_with_stock
+        type: boolean
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size (max 100)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Stock list of ONE warehouse (Master > คลังสินค้า page)
+      tags:
+      - Stock
+  /stock/warehouse-upload/apply:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Same request as the preview. All-or-nothing: if any row has a
+        problem nothing is written and the problems are returned with 400. Writes
+        stock_item and stock_transaction (ref_doc_type BULK_UPLOAD) in one transaction.'
+      produces:
+      - application/json
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Warehouse stock upload — apply (Update overwrites, Add adds on top)
+      tags:
+      - Stock
+  /stock/warehouse-upload/preview:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'multipart: file (stock items template), mode = update|add, warehouse_code.
+        Returns every row with the current and resulting quantity and a status (ok,
+        code_not_found, other_warehouse, invalid_qty, duplicate), plus a summary.
+        can_apply is true only when every row is ok.'
+      produces:
+      - application/json
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Warehouse stock upload — preview (writes nothing)
       tags:
       - Stock
   /supplier/bulk:

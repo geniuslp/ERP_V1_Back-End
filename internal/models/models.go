@@ -1481,6 +1481,7 @@ type Memo struct {
 
 	// populated via JOIN (ไม่ได้เก็บใน table)
 	RequestedByName string           `json:"requested_by_name,omitempty"`
+	RequestedByUsername string       `json:"requested_by_username,omitempty"` // printed under the requester signature
 	ApproverName    *string          `json:"approver_name,omitempty"`
 	ProjectName     *string          `json:"project_name,omitempty"`
 	ApprovedAt      *time.Time       `json:"approved_at,omitempty"`
@@ -2011,6 +2012,7 @@ type PettyCashRequisition struct {
 	Amount             *float64 `json:"amount,omitempty"`
 	NetValue           *float64 `json:"net_value,omitempty"`
 	RequestedByName *string         `json:"requested_by_name,omitempty"`
+	RequestedByUsername *string     `json:"requested_by_username,omitempty"` // printed under the requester signature
 	ApproverName    *string         `json:"approver_name,omitempty"`
 	Lines           []PettyCashLine `json:"lines,omitempty"`
 	Attachments     []PettyCashAttachment `json:"attachments"`

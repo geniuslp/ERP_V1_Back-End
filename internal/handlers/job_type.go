@@ -29,6 +29,8 @@ var JobTypes = []JobTypeInfo{
 	{"004", "FF", "Fire Protection"},
 	{"005", "GS", "Gas System"},
 	{"006", "AC", "HVAC / BAS / Clean-R."},
+	{"013", "CS", "Civil&Structure"},
+	{"014", "AR", "Architec"},
 	{"007", "FS", "Stock FAC-S"},
 	{"008", "FP", "Stock FAC-P"},
 	{"009", "FB", "Stock FAC-BO"},
@@ -37,9 +39,9 @@ var JobTypes = []JobTypeInfo{
 	{"012", "OH", "General Code"},
 }
 
-// tradeJobCodes are the six engineering-system jobs (the old "M*" codes). Used wherever the old
+// tradeJobCodes are the eight engineering-system jobs (the old "M*" codes). Used wherever the old
 // code checked HasPrefix(code, "M") - the new codes no longer share a prefix.
-var tradeJobCodes = map[string]bool{"MS": true, "EE": true, "SN": true, "FF": true, "GS": true, "AC": true}
+var tradeJobCodes = map[string]bool{"MS": true, "EE": true, "SN": true, "FF": true, "GS": true, "AC": true, "CS": true, "AR": true}
 
 // IsTradeJobCode reports whether code is one of the six engineering-system job types.
 func IsTradeJobCode(code string) bool { return tradeJobCodes[code] }

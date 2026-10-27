@@ -15207,6 +15207,99 @@ const docTemplate = `{
                 }
             }
         },
+        "/stock/warehouse-items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same rows and columns as the WAREHOUSE-source balance of the Stock page (Cost Code, MatCode, MatName, store description, quantity, unit, unit cost), but addressed by warehouse_code instead of a project. only_with_stock defaults to false here so freshly created zero-quantity items are visible too.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Stock list of ONE warehouse (Master \u003e คลังสินค้า page)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "BO | FAC-P | FAC-S | HO ...",
+                        "name": "warehouse_code",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "mat_code / name / spec / store description",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "default false",
+                        "name": "only_with_stock",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (max 100)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {}
+            }
+        },
+        "/stock/warehouse-upload/apply": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same request as the preview. All-or-nothing: if any row has a problem nothing is written and the problems are returned with 400. Writes stock_item and stock_transaction (ref_doc_type BULK_UPLOAD) in one transaction.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Warehouse stock upload — apply (Update overwrites, Add adds on top)",
+                "responses": {}
+            }
+        },
+        "/stock/warehouse-upload/preview": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "multipart: file (stock items template), mode = update|add, warehouse_code. Returns every row with the current and resulting quantity and a status (ok, code_not_found, other_warehouse, invalid_qty, duplicate), plus a summary. can_apply is true only when every row is ok.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Stock"
+                ],
+                "summary": "Warehouse stock upload — preview (writes nothing)",
+                "responses": {}
+            }
+        },
         "/supplier/bulk": {
             "post": {
                 "security": [
@@ -19867,6 +19960,10 @@ const docTemplate = `{
                 },
                 "requested_by_name": {
                     "description": "populated via JOIN (ไม่ได้เก็บใน table)",
+                    "type": "string"
+                },
+                "requested_by_username": {
+                    "description": "printed under the requester signature",
                     "type": "string"
                 },
                 "requester_signature": {

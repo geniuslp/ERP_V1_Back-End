@@ -354,6 +354,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	stockByProjectH := handlers.NewStockByProjectHandler(db)
 	stock.Get("/by-project", stockByProjectH.ListProjects)
 	stock.Get("/by-project/:projectCode/balance", stockByProjectH.GetBalance)
+	stock.Get("/warehouse-items", stockByProjectH.ListWarehouseItems) // Master > คลังสินค้า: list of one warehouse
 	stock.Get("/by-project/:projectCode/transactions", stockByProjectH.ListTransactions)
 
 	// Item Master
@@ -363,6 +364,9 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	stock.Post("/items", stockItemH.Create)
 	stock.Post("/items/import", stockItemH.ImportExcel)
 	stock.Post("/items/bulk/preview", stockItemH.PreviewImportExcel)
+	// Master > คลังสินค้า: Excel upload into ONE warehouse, Update (overwrite qty) or Add (add on top)
+	stock.Post("/warehouse-upload/preview", stockItemH.PreviewWarehouseUpload)
+	stock.Post("/warehouse-upload/apply", stockItemH.ApplyWarehouseUpload)
 	stock.Get("/items/:id", stockItemH.GetByID)
 	stock.Put("/items/:id", stockItemH.Update)
 	stock.Delete("/items/:id", stockItemH.SoftDelete)

@@ -328,6 +328,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		PRNo               string                    `json:"pr_no"`
 		Status             string                    `json:"status"`
 		RequestedBy        string                    `json:"requested_by"`
+		RequesterUsername  string                    `json:"requester_username"` // printed under the requester signature
 		RequesterID        int64                     `json:"requester_id"`
 		ApproverID         *int64                    `json:"approver_id"`
 		ApproverName       *string                   `json:"approver_name"`
@@ -359,7 +360,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 	// ── Header ──────────────────────────────────────────────────────────────
 	row := h.db.QueryRow(context.Background(), `
 		SELECT pr.id, pr.pr_no, pr.status,
-		       COALESCE(u1.full_name, '') AS requested_by, pr.requested_by AS requester_id,
+		       COALESCE(u1.full_name, '') AS requested_by, COALESCE(u1.username, '') AS requester_username, pr.requested_by AS requester_id,
 		       pr.approver_id, au.full_name AS approver_name,
 		       pr.location_text, pr.project_code, pr.dept_code, d.dept_name, pr.warehouse_code, w.warehouse_name, pr.remarks,
 		       pr.pr_date::text, pr.required_date::text, pr.created_at::text, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name, pr.memo_id, m.memo_no,
@@ -382,7 +383,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		LEFT JOIN memo m ON m.id = pr.memo_id
 		LEFT JOIN purchase_request_line prl ON prl.pr_id = pr.id
 		WHERE pr.id = $1 AND pr.deleted_at IS NULL
-		GROUP BY pr.id, pr.pr_no, pr.status, u1.full_name, pr.requested_by, pr.approver_id, au.full_name, pr.location_text,
+		GROUP BY pr.id, pr.pr_no, pr.status, u1.full_name, u1.username, pr.requested_by, pr.approver_id, au.full_name, pr.location_text,
 		         pr.project_code, pr.dept_code, d.dept_name, pr.warehouse_code, w.warehouse_name, pr.remarks,
 		         pr.pr_date, pr.required_date, pr.created_at, pr.pr_type, pr.order_type, pr.job_code, cj.job_name, pj.project_name, pr.memo_id, m.memo_no,
 		         u1.signature_path, u1.signature_mime`, id)
@@ -393,7 +394,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 
 	var requesterSigPath, requesterSigMime *string
 	if err := row.Scan(
-		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterID,
+		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterUsername, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode, &pr.DeptCode, &pr.DeptName,
 		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.CreatedAt, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.JobName, &pr.ProjectName, &pr.MemoID, &pr.MemoNo,
 		&pr.PoConversionStatus, &pr.RejectReason, &requesterSigPath, &requesterSigMime,
