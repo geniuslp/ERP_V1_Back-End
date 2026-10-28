@@ -320,6 +320,7 @@ type ICSearchOption struct {
 // @Produce      json
 // @Param        projectId  path  int     true   "project.id"
 // @Param        for        query string  false  "return = do not require PRs to be fully ordered"
+// @Param        receive_status query string false "pending (default) or completed — receive lists only: drops fully received POs (and PRs whose POs are all received) from the pending list; ignored for=return"
 // @Success      200  {object}  fiber.Map
 // @Failure      404  {object}  fiber.Map
 // @Failure      500  {object}  fiber.Map
@@ -344,8 +345,23 @@ func (h *ICHandler) POSearchOptions(c *fiber.Ctx) error {
 	prSQL := `SELECT pr.id, pr.pr_no FROM purchase_request pr
 		WHERE pr.project_code = $1 AND pr.order_type IN ('stock','cost')
 		  AND pr.deleted_at IS NULL AND pr.status <> 'CANCELLED'`
+	// Receiving lists only documents that still match the pending/completed toggle: a PO with nothing left
+	// to receive (status_receive RECEIVED) drops out of the pending dropdown, and so does a PR whose linked
+	// POs are all received. for=return is not filtered by receive status.
+	poRecvCond := ""
 	if c.Query("for") != "return" {
-		prSQL += ` AND ` + prFullyOrderedSQL
+		if c.Query("receive_status", "pending") == "completed" {
+			poRecvCond = ` AND status_receive = 'RECEIVED'`
+		} else {
+			poRecvCond = ` AND status_receive IN ('NOT_SENT','SENT','PARTIALLY_RECEIVED')`
+		}
+		prSQL += ` AND ` + prFullyOrderedSQL + ` AND EXISTS (
+			SELECT 1 FROM purchase_order lp
+			WHERE lp.deleted_at IS NULL AND lp.status = 'APPROVED'` + strings.ReplaceAll(poRecvCond, "status_receive", "lp.status_receive") + `
+			  AND (lp.pr_id = pr.id OR EXISTS (
+			        SELECT 1 FROM purchase_order_line l1
+			        JOIN purchase_request_line r1 ON r1.id = l1.pr_line_id
+			        WHERE l1.po_id = lp.id AND r1.pr_id = pr.id)))`
 	}
 	prRows, err := h.db.Query(ctx, prSQL+` ORDER BY pr.pr_no`, projectCode)
 	if err != nil {
@@ -363,7 +379,7 @@ func (h *ICHandler) POSearchOptions(c *fiber.Ctx) error {
 	prRows.Close()
 
 	poRows, err := h.db.Query(ctx,
-		`SELECT id, po_no FROM purchase_order WHERE project_code = $1 AND status = 'APPROVED' AND deleted_at IS NULL AND order_type IN ('stock','cost') ORDER BY po_no`, projectCode)
+		`SELECT id, po_no FROM purchase_order WHERE project_code = $1 AND status = 'APPROVED' AND deleted_at IS NULL AND order_type IN ('stock','cost')`+poRecvCond+` ORDER BY po_no`, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list POs: "+err.Error())
 	}
@@ -1334,6 +1350,16 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 
 		switch orderType {
 		case "stock":
+			// The material's Cost Code comes from the PO line; fill it in on the master when still empty so the
+			// received item shows a cost code and is found by the stock search (which only lists cost-coded items).
+			if costSubgroupID != nil {
+				if _, err := tx.Exec(ctx, `
+					UPDATE material_code SET cost_subgroup_id = $1 WHERE mat_code = $2 AND cost_subgroup_id IS NULL`,
+					*costSubgroupID, matCode,
+				); err != nil {
+					return fmt.Errorf("mat_code %s: failed to set cost_subgroup_id: %w", matCode, err)
+				}
+			}
 			if err := icReceiveToStock(ctx, tx, matCode, lineNo, in.ReceiveQty, unitPrice, poID, claims.UserID, req.ReceiveDocumentID); err != nil {
 				return err
 			}

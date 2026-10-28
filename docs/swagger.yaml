@@ -6323,6 +6323,12 @@ paths:
         in: query
         name: for
         type: string
+      - description: 'pending (default) or completed — receive lists only: drops fully
+          received POs (and PRs whose POs are all received) from the pending list;
+          ignored for=return'
+        in: query
+        name: receive_status
+        type: string
       produces:
       - application/json
       responses:

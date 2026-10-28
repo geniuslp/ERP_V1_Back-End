@@ -4377,6 +4377,12 @@ const docTemplate = `{
                         "description": "return = do not require PRs to be fully ordered",
                         "name": "for",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "pending (default) or completed — receive lists only: drops fully received POs (and PRs whose POs are all received) from the pending list; ignored for=return",
+                        "name": "receive_status",
+                        "in": "query"
                     }
                 ],
                 "responses": {
