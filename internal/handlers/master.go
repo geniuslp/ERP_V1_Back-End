@@ -382,13 +382,14 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 	}
 
 	rows, err := h.db.Query(context.Background(), `
-		SELECT pol.mat_code, mn.mat_name, ss.spec_description AS spec_name, s.supplier_name, po.po_date, pol.unit_price, po.po_no,
+		SELECT pol.mat_code, mn.mat_name, ss.spec_description AS spec_name, br.brand_name, s.supplier_name, po.po_date, pol.unit_price, po.po_no,
 		       NULLIF(po.project_code, '') AS project_code, NULLIF(p.project_name, '') AS project_name
 		FROM purchase_order_line pol
 		JOIN purchase_order po       ON po.id = pol.po_id
 		JOIN material_code mc        ON mc.mat_code = pol.mat_code
 		JOIN mat_name mn             ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size ss       ON ss.id = mc.spec_id
+		LEFT JOIN brand br           ON br.id = mc.brand_id
 		LEFT JOIN supplier s         ON s.id = po.supplier_id
 		LEFT JOIN project p          ON p.project_code = po.project_code
 		WHERE pol.mat_code = $1
@@ -408,6 +409,7 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 		MatCode      string    `json:"mat_code"`
 		MatName      string    `json:"mat_name"`
 		SpecName     *string   `json:"spec_name,omitempty"`
+		BrandName    *string   `json:"brand_name,omitempty"`
 		SupplierName *string   `json:"supplier_name,omitempty"`
 		PODate       time.Time `json:"po_date"`
 		UnitPrice    float64   `json:"unit_price"`
@@ -419,7 +421,7 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 	items := []PriceHistoryRow{}
 	for rows.Next() {
 		var r PriceHistoryRow
-		if err := rows.Scan(&r.MatCode, &r.MatName, &r.SpecName, &r.SupplierName, &r.PODate, &r.UnitPrice, &r.PONo, &r.ProjectCode, &r.ProjectName); err != nil {
+		if err := rows.Scan(&r.MatCode, &r.MatName, &r.SpecName, &r.BrandName, &r.SupplierName, &r.PODate, &r.UnitPrice, &r.PONo, &r.ProjectCode, &r.ProjectName); err != nil {
 			return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
 		}
 		items = append(items, r)

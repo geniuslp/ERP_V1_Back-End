@@ -3178,6 +3178,7 @@ type poPrintItem struct {
 	// Spec — material_code's resolved spec_size.spec_description (same join
 	// GetDetail already uses), empty string when the material has no spec set.
 	Spec         string  `json:"spec"`
+	Brand        string  `json:"brand"` // material brand; blank / "--" is hidden by the frontend
 	Qty          float64 `json:"qty"`
 	Unit         string  `json:"unit"`
 	PricePerUnit float64 `json:"pricePerUnit"`
@@ -3328,12 +3329,13 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		SELECT pol.line_no, pol.mat_code, pol.description, pol.qty_ordered, pol.unit_price,
 		       pol.discount, pol.disc_type, pol.wht_rate, mn.mat_name, u.unit_name,
 		       ` + costCodeSQL("csub","cj","cg","csg") + ` AS cost_code,
-		       ss.spec_description
+		       ss.spec_description, b.brand_name
 		FROM purchase_order_line pol
 		LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
 		LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
 		LEFT JOIN unit u ON u.id = mc.unit_id
 		LEFT JOIN spec_size ss ON ss.id = mc.spec_id
+		LEFT JOIN brand b ON b.id = mc.brand_id
 		LEFT JOIN cost_subgroup csg  ON csg.id = pol.cost_subgroup_id
 		LEFT JOIN cost_group    cg   ON cg.id = csg.group_id
 		LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
@@ -3360,8 +3362,9 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 			unitName    *string
 			costCode    *string
 			specDesc    *string
+			brandName   *string
 		)
-		if err := rows.Scan(&lineNo, &matCode, &description, &qty, &unitPrice, &discount, &discType, &whtRate, &matName, &unitName, &costCode, &specDesc); err != nil {
+		if err := rows.Scan(&lineNo, &matCode, &description, &qty, &unitPrice, &discount, &discType, &whtRate, &matName, &unitName, &costCode, &specDesc, &brandName); err != nil {
 			return err
 		}
 
@@ -3387,6 +3390,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 			Code:         code,
 			Desc:         desc,
 			Spec:         derefString(specDesc),
+			Brand:        derefString(brandName),
 			Qty:          qty,
 			Unit:         unit,
 			PricePerUnit: unitPrice,

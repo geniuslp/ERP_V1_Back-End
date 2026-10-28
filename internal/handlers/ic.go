@@ -1026,7 +1026,7 @@ var icReceiveLinesQuery = `
 	SELECT pol.id, pol.line_no,
 	       ` + costCodeSQL("csub","cj","cg","cs") + `,
 	       pol.mat_code,
-	       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
+	       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''),
 	       pol.description,
 	       pol.qty_ordered, pol.qty_received, u.unit_name, pol.unit_price,
 		       cg.group_name, cg.group_code, cs.subgroup_name
@@ -1038,6 +1038,7 @@ var icReceiveLinesQuery = `
 	JOIN material_code mc      ON pol.mat_code = mc.mat_code
 	LEFT JOIN mat_name mn      ON mc.mat_name_id = mn.id
 	LEFT JOIN spec_size sp     ON mc.spec_id = sp.id
+	LEFT JOIN brand br ON br.id = mc.brand_id
 	LEFT JOIN unit u           ON mc.unit_id = u.id
 	WHERE pol.po_id = $1
 	ORDER BY pol.line_no`
@@ -1677,11 +1678,12 @@ func icReceiveToProjectCost(ctx context.Context, tx pgx.Tx, projectCode, matCode
 		var itemName string
 		var unitName *string
 		if err := tx.QueryRow(ctx, `
-			SELECT NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), mc.mat_code),
+			SELECT NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), mc.mat_code),
 			       u.unit_name
 			FROM material_code mc
 			LEFT JOIN mat_name mn  ON mc.mat_name_id = mn.id
 			LEFT JOIN spec_size sp ON mc.spec_id = sp.id
+			LEFT JOIN brand br ON br.id = mc.brand_id
 			LEFT JOIN unit u       ON mc.unit_id = u.id
 			WHERE mc.mat_code = $1`, matCode,
 		).Scan(&itemName, &unitName); err != nil {
@@ -1848,7 +1850,7 @@ var icReturnLinesQuery = `
 	SELECT pol.id, pol.line_no,
 	       ` + costCodeSQL("csub","cj","cg","cs") + `,
 	       pol.mat_code,
-	       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
+	       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''),
 	       pol.description,
 	       u.unit_name, pol.unit_price, pol.qty_received,
 		       cg.group_name, cg.group_code, cs.subgroup_name
@@ -1860,6 +1862,7 @@ var icReturnLinesQuery = `
 	JOIN material_code mc      ON pol.mat_code = mc.mat_code
 	LEFT JOIN mat_name mn      ON mc.mat_name_id = mn.id
 	LEFT JOIN spec_size sp     ON mc.spec_id = sp.id
+	LEFT JOIN brand br ON br.id = mc.brand_id
 	LEFT JOIN unit u           ON mc.unit_id = u.id
 	WHERE pol.po_id = $1
 	ORDER BY pol.line_no`

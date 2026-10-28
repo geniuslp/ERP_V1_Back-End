@@ -946,6 +946,7 @@ type PRLineWithPOStatus struct {
 	MatName       string         `json:"mat_name"`
 	Unit          string         `json:"unit"`
 	SpecName      *string        `json:"spec_name,omitempty"` // resolved spec_size.spec_description, same field name/join as GET /pr/{id}
+	BrandName     *string        `json:"brand_name,omitempty"`
 	QtyRequested  float64        `json:"qty_requested"`
 	QtyReserved   float64        `json:"qty_reserved"`
 	QtyOrdered    float64        `json:"qty_ordered"`

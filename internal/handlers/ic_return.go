@@ -76,6 +76,7 @@ type ICReturnDocumentLine struct {
 	MatCode   string  `json:"mat_code"`
 	ItemName  *string `json:"item_name"`
 	SpecName  *string `json:"spec_name"`
+	BrandName *string `json:"brand_name"`
 	Unit      *string `json:"unit"`
 	ReturnQty float64 `json:"return_qty"`
 	Remarks   *string `json:"remarks"`
@@ -124,7 +125,7 @@ func (h *ICHandler) GetReturnDocument(c *fiber.Ctx) error {
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.line_no,
 		       ` + costCodeSQL("csub","cj","cg","cs") + `,
-		       rl.mat_code, mn.mat_name, sp.spec_description, un.unit_name, rl.return_qty, rl.remarks
+		       rl.mat_code, mn.mat_name, sp.spec_description, br.brand_name, un.unit_name, rl.return_qty, rl.remarks
 		FROM ic_po_return_line rl
 		LEFT JOIN cost_subgroup cs ON cs.id = rl.cost_subgroup_id
 		LEFT JOIN cost_group    cg ON cg.id = cs.group_id
@@ -133,6 +134,7 @@ func (h *ICHandler) GetReturnDocument(c *fiber.Ctx) error {
 		LEFT JOIN material_code mc ON mc.mat_code = rl.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp     ON sp.id = mc.spec_id
+		LEFT JOIN brand br         ON br.id = mc.brand_id
 		LEFT JOIN unit un          ON un.id = mc.unit_id
 		WHERE rl.return_id = $1
 		ORDER BY rl.line_no`, id)
@@ -144,7 +146,7 @@ func (h *ICHandler) GetReturnDocument(c *fiber.Ctx) error {
 	lines := []ICReturnDocumentLine{}
 	for rows.Next() {
 		var l ICReturnDocumentLine
-		if err := rows.Scan(&l.LineNo, &l.CostCode, &l.MatCode, &l.ItemName, &l.SpecName, &l.Unit, &l.ReturnQty, &l.Remarks); err != nil {
+		if err := rows.Scan(&l.LineNo, &l.CostCode, &l.MatCode, &l.ItemName, &l.SpecName, &l.BrandName, &l.Unit, &l.ReturnQty, &l.Remarks); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถอ่านรายการคืนสินค้าได้")
 		}
 		lines = append(lines, l)

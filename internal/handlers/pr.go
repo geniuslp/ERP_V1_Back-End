@@ -1728,7 +1728,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(ctx, `
     SELECT
-        base.id, base.line_no, base.mat_code, base.mat_name, base.unit_name, base.spec_name,
+        base.id, base.line_no, base.mat_code, base.mat_name, base.unit_name, base.spec_name, base.brand_name,
         base.qty_requested, base.qty_reserved, base.qty_ordered, base.qty_remaining,
         base.status, base.referenced_pos,
         ph.last_price,
@@ -1739,7 +1739,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
     FROM (
         SELECT
             prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name,
-            ss.spec_description AS spec_name,
+            ss.spec_description AS spec_name, br.brand_name AS brand_name,
             prl.qty_requested, prl.qty_reserved,
             -- Both qty_ordered and qty_remaining are derived from the live referenced_pos
             -- sum below, not the cached prl.qty_ordered column, so neither can disagree
@@ -1764,6 +1764,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
         JOIN mat_name mn       ON mn.id = mc.mat_name_id
         JOIN unit u            ON u.id = mc.unit_id
         LEFT JOIN spec_size ss ON ss.id = mc.spec_id
+        LEFT JOIN brand br     ON br.id = mc.brand_id
         LEFT JOIN purchase_order_line pol
                ON pol.pr_line_id = prl.id
               AND pol.status != 'CANCELLED'
@@ -1774,7 +1775,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
         LEFT JOIN cost_job      cj   ON cj.id = cg.job_id
         LEFT JOIN cost_subject  csub ON csub.id = cj.subject_id
         WHERE prl.pr_id = $1
-        GROUP BY prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name, ss.spec_description,
+        GROUP BY prl.id, prl.line_no, prl.mat_code, mn.mat_name, u.unit_name, ss.spec_description, br.brand_name,
                  prl.qty_requested, prl.qty_reserved, prl.qty_ordered, prl.status,
                  prl.cost_subgroup_id, csub.subject_code, cj.job_code, cj.job_name, cg.group_code,
                  csg.subgroup_code, csg.subgroup_name
@@ -1824,7 +1825,7 @@ func (h *PRHandler) LinesWithPOStatus(c *fiber.Ctx) error {
 		var lastPrice *float64
 		var lastPriceDate *time.Time
 		var priceHistJSON []byte
-		if err := rows.Scan(&l.PRLineID, &l.LineNo, &l.MatCode, &l.MatName, &l.Unit, &l.SpecName,
+		if err := rows.Scan(&l.PRLineID, &l.LineNo, &l.MatCode, &l.MatName, &l.Unit, &l.SpecName, &l.BrandName,
 			&l.QtyRequested, &l.QtyReserved, &l.QtyOrdered, &l.QtyRemaining, &l.LineStatus, &refJSON,
 			&lastPrice, &lastPriceDate, &priceHistJSON,
 			&l.CostSubgroupID, &l.CostCode, &l.CostSubgroupName,

@@ -376,7 +376,7 @@ func queryLinkedWarehouseStock(ctx context.Context, db *pgxpool.Pool, matNameID 
 	}
 	rows, err := db.Query(ctx, `
 		SELECT si.id, si.mat_code,
-		       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), si.item_name, si.mat_code),
+		       COALESCE(NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''), si.item_name, si.mat_code),
 		       COALESCE(u.unit_name, si.unit),
 		       si.qty, si.unit_cost, TO_CHAR(si.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"'),
 		       COALESCE(mc.cost_subgroup_id, 0),
@@ -390,6 +390,7 @@ func queryLinkedWarehouseStock(ctx context.Context, db *pgxpool.Pool, matNameID 
 		LEFT JOIN cost_subject csub ON csub.id = cj.subject_id
 		LEFT JOIN mat_name mn  ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp ON sp.id = mc.spec_id
+		LEFT JOIN brand br ON br.id = mc.brand_id
 		LEFT JOIN unit u       ON u.id = mc.unit_id
 		`+where+`
 		ORDER BY si.mat_code`, args...)
@@ -578,7 +579,7 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 
 	rows, err := h.db.Query(context.Background(), `
 		SELECT ici.mat_code,
-		       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), ici.mat_code),
+		       COALESCE(NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''), ici.mat_code),
 		       ici.cost_subgroup_id,
 		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       csg.subgroup_name,
@@ -588,6 +589,7 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 		JOIN material_code mc      ON mc.mat_code = ici.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp     ON sp.id = mc.spec_id
+		LEFT JOIN brand br ON br.id = mc.brand_id
 		LEFT JOIN unit u           ON u.id = mc.unit_id
 		JOIN cost_subgroup csg     ON csg.id = ici.cost_subgroup_id
 		JOIN cost_group cg         ON cg.id = csg.group_id
@@ -837,7 +839,7 @@ func (h *IcProjectMovementHandler) ListMovementLines(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(context.Background(), `
 		SELECT l.id, l.line_no, l.mat_code,
-		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), l.mat_code),
+		       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), l.mat_code),
 		       COALESCE(l.cost_subgroup_id, 0),
 		       COALESCE(` + costCodeSQL("csub","cj","cg","csg") + `, ''),
 		       COALESCE(csg.subgroup_name, ''),
@@ -852,6 +854,7 @@ func (h *IcProjectMovementHandler) ListMovementLines(c *fiber.Ctx) error {
 		JOIN material_code mc      ON mc.mat_code = l.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp     ON sp.id = mc.spec_id
+		LEFT JOIN brand br ON br.id = mc.brand_id
 		LEFT JOIN unit u           ON u.id = mc.unit_id
 		LEFT JOIN cost_subgroup csg ON csg.id = l.cost_subgroup_id
 		LEFT JOIN cost_group cg    ON cg.id = csg.group_id
@@ -1177,11 +1180,12 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ic_project_cost_item (project_code, mat_code, cost_subgroup_id, item_name, unit, qty_on_hand, last_unit_cost)
 			SELECT $1, mc.mat_code, $3,
-			       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), mc.mat_code),
+			       COALESCE(NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''), mc.mat_code),
 			       u.unit_name, 0, 0
 			FROM material_code mc
 			LEFT JOIN mat_name mn  ON mc.mat_name_id = mn.id
 			LEFT JOIN spec_size sp ON mc.spec_id = sp.id
+			LEFT JOIN brand br ON br.id = mc.brand_id
 			LEFT JOIN unit u       ON mc.unit_id = u.id
 			WHERE mc.mat_code = $2
 			ON CONFLICT (project_code, mat_code, cost_subgroup_id) DO NOTHING`,
@@ -1400,11 +1404,12 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO stock_item (mat_code, item_name, unit, qty)
 				SELECT mc.mat_code,
-				       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), mc.mat_code),
+				       COALESCE(NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''), mc.mat_code),
 				       COALESCE(u.unit_name, '-'), 0
 				FROM material_code mc
 				LEFT JOIN mat_name mn  ON mc.mat_name_id = mn.id
 				LEFT JOIN spec_size sp ON mc.spec_id = sp.id
+				LEFT JOIN brand br ON br.id = mc.brand_id
 				LEFT JOIN unit u       ON mc.unit_id = u.id
 				WHERE mc.mat_code = $1
 				ON CONFLICT (mat_code) DO NOTHING`, r.line.MatCode); err != nil {
@@ -1508,6 +1513,7 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 		JOIN material_code mc         ON mc.mat_code = ici.mat_code
 		LEFT JOIN mat_name mn         ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp        ON sp.id = mc.spec_id
+		LEFT JOIN brand br ON br.id = mc.brand_id
 		JOIN cost_subgroup csg        ON csg.id = ici.cost_subgroup_id
 		JOIN cost_group cg            ON cg.id = csg.group_id
 		JOIN cost_job cj              ON cj.id = cg.job_id
@@ -1525,7 +1531,7 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 	rows, err := db.Query(ctx, fmt.Sprintf(`
 		SELECT t.id, t.qty, t.qty_before, t.qty_after, t.unit_cost, t.remarks, t.txn_date::text, t.ref_type,
 		       ici.mat_code,
-		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ici.mat_code),
+		       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ici.mat_code),
 		       ici.cost_subgroup_id,
 		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       csg.subgroup_name,
@@ -1669,13 +1675,13 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 	if search != "" {
 		args = append(args, "%"+search+"%")
 		where = append(where, fmt.Sprintf(
-			"(ici.mat_code ILIKE $%[1]d OR NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), '') ILIKE $%[1]d)",
+			"(ici.mat_code ILIKE $%[1]d OR NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), '') ILIKE $%[1]d)",
 			len(args)))
 	}
 
 	rows, err := h.db.Query(context.Background(), fmt.Sprintf(`
 		SELECT ici.id, ici.mat_code,
-		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
+		       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''),
 		       ici.cost_subgroup_id,
 		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       COALESCE(u.unit_name, ici.unit),
@@ -1684,6 +1690,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 		JOIN material_code mc      ON mc.mat_code = ici.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp     ON sp.id = mc.spec_id
+		LEFT JOIN brand br ON br.id = mc.brand_id
 		LEFT JOIN unit u           ON u.id = mc.unit_id
 		JOIN cost_subgroup csg     ON csg.id = ici.cost_subgroup_id
 		JOIN cost_group cg         ON cg.id = csg.group_id

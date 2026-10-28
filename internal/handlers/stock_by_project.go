@@ -333,6 +333,7 @@ func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search
 		LEFT JOIN material_code mc  ON mc.mat_code = si.mat_code
 		LEFT JOIN mat_name mn       ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp      ON sp.id = mc.spec_id
+		LEFT JOIN brand br ON br.id = mc.brand_id
 		LEFT JOIN unit u            ON u.id = mc.unit_id
 		LEFT JOIN cost_subgroup csg ON csg.id = mc.cost_subgroup_id
 		LEFT JOIN cost_group cg     ON cg.id = csg.group_id
@@ -346,7 +347,7 @@ func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search
 	args = append(args, size, offset)
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT si.id, si.mat_code,
-		       COALESCE(NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''), si.item_name),
+		       COALESCE(NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''), si.item_name),
 		       mc.cost_subgroup_id, `+costCodeSQL("csub", "cj", "cg", "csg")+`,
 		       COALESCE(u.unit_name, si.unit), si.qty, si.unit_cost, si.location_code,
 		       NULLIF(TRIM(si.description_store), ''),
@@ -386,13 +387,14 @@ func (h *StockByProjectHandler) projectBalance(ctx context.Context, projectCode,
 	if search != "" {
 		args = append(args, "%"+search+"%")
 		where = append(where, fmt.Sprintf(
-			"(ici.mat_code ILIKE $%[1]d OR NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), '') ILIKE $%[1]d)", len(args)))
+			"(ici.mat_code ILIKE $%[1]d OR NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), '') ILIKE $%[1]d)", len(args)))
 	}
 	whereStr := strings.Join(where, " AND ")
 	join := `FROM ic_project_cost_item ici
 		JOIN material_code mc      ON mc.mat_code = ici.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp     ON sp.id = mc.spec_id
+		LEFT JOIN brand br ON br.id = mc.brand_id
 		LEFT JOIN unit u           ON u.id = mc.unit_id
 		JOIN cost_subgroup csg     ON csg.id = ici.cost_subgroup_id
 		JOIN cost_group cg         ON cg.id = csg.group_id
@@ -406,7 +408,7 @@ func (h *StockByProjectHandler) projectBalance(ctx context.Context, projectCode,
 	args = append(args, size, offset)
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT ici.id, ici.mat_code,
-		       NULLIF(TRIM(COALESCE(mn.mat_name, '') || ' ' || COALESCE(sp.spec_description, '')), ''),
+		       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''),
 		       ici.cost_subgroup_id, `+costCodeSQL("csub", "cj", "cg", "csg")+`,
 		       COALESCE(u.unit_name, ici.unit), ici.qty_on_hand, ici.last_unit_cost,
 		       TO_CHAR(ici.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
