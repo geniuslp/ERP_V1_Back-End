@@ -625,11 +625,16 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 
 	var currentStatus string
 	var oldApproverID *int64
-	if err := h.db.QueryRow(ctx, `SELECT status, approver_id FROM public.memo WHERE id=$1`, id).Scan(&currentStatus, &oldApproverID); err != nil {
+	var ownerID int64
+	if err := h.db.QueryRow(ctx, `SELECT status, approver_id, requested_by FROM public.memo WHERE id=$1`, id).Scan(&currentStatus, &oldApproverID, &ownerID); err != nil {
 		if err == pgx.ErrNoRows {
 			return fiber.NewError(fiber.StatusNotFound, "memo not found")
 		}
 		return err
+	}
+	// Everyone can see every memo on the status page; only its owner (or an admin) may change it.
+	if claims != nil && claims.UserID != ownerID && !slices.Contains(claims.Roles, "ADMIN_CENTER") {
+		return fiber.NewError(fiber.StatusForbidden, "only the memo owner can edit this memo")
 	}
 	if currentStatus == "APPROVED" || currentStatus == "CANCELLED" {
 		return fiber.NewError(fiber.StatusBadRequest, "cannot edit memo in this status")
@@ -747,6 +752,16 @@ func (h *MemoHandler) Delete(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid id")
 	}
 	ctx := context.Background()
+
+	if claims := middleware.GetClaims(c); claims != nil && !slices.Contains(claims.Roles, "ADMIN_CENTER") {
+		var ownerID int64
+		if err := h.db.QueryRow(ctx, `SELECT requested_by FROM public.memo WHERE id=$1`, id).Scan(&ownerID); err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "memo not found")
+		}
+		if ownerID != claims.UserID {
+			return fiber.NewError(fiber.StatusForbidden, "only the memo owner can delete this memo")
+		}
+	}
 
 	var refCount int
 	if err := h.db.QueryRow(ctx,
