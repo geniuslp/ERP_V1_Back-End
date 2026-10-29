@@ -120,6 +120,7 @@ type ProjectFull struct {
 	InUse                 bool       `json:"in_use"`                // project_code already referenced by any work document (owner is then locked)
 	InUseBy               []string   `json:"in_use_by"`             // Thai doc-type names behind in_use; [] when unused
 	ProjectKind           string     `json:"project_kind"` // NEW | VO — decides which of budget_amount / vo_amount applies
+	ProjectTier           *int16     `json:"project_tier"` // 1-5 from the project value (DB-generated); null when no value/contract amount
 	VOAmount              float64    `json:"vo_amount"` // "มูลค่า VO" — separate from budget_amount, never summed with it
 	CostAmount            float64    `json:"cost_amount"`
 	SpentAmount           float64    `json:"spent_amount"`

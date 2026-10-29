@@ -79,7 +79,7 @@ WITH po AS (
 	GROUP BY l.project_code
 ), base AS (
 	SELECT p.id, p.customer_id, p.project_code, p.project_name, cu.customer_name,
-	       p.status AS project_status, p.is_active, p.project_kind,
+	       p.status AS project_status, p.is_active, p.project_kind, p.project_tier,
 	       (CASE WHEN p.project_kind = 'VO' THEN p.vo_amount ELSE p.budget_amount END) AS contract_budget,
 	       COALESCE(po.pu, 0) AS pu_po, COALESCE(wo.pu, 0) AS pu_wo, COALESCE(pc.amt, 0) AS pu_pc,
 	       COALESCE(po.ac, 0) AS ac_po, COALESCE(wo_paid.ac, 0) AS ac_wo, COALESCE(pc.amt, 0) AS ac_pc
@@ -104,7 +104,7 @@ WITH po AS (
 	          ELSE 'NORMAL' END) AS overview_status
 	FROM base b
 )
-SELECT c.id, c.customer_id, c.project_code, c.project_name, c.customer_name, c.project_status, c.is_active, c.project_kind,
+SELECT c.id, c.customer_id, c.project_code, c.project_name, c.customer_name, c.project_status, c.is_active, c.project_kind, c.project_tier,
        c.contract_budget::float8,
        c.pu_cost::float8, (c.contract_budget - c.pu_cost)::float8,
        c.ac_cost::float8, (c.contract_budget - c.ac_cost)::float8,
@@ -133,6 +133,7 @@ type overviewRow struct {
 	ProjectStatus string   `json:"project_status"`
 	IsActive      bool     `json:"is_active"`
 	ProjectKind   string   `json:"project_kind"`
+	ProjectTier   *int16   `json:"project_tier"`
 	Contract      float64  `json:"contract_budget"`
 	PuCost        float64  `json:"pu_cost"`
 	PuBalance     float64  `json:"pu_balance"`
@@ -200,7 +201,7 @@ func (h *ProjectOverviewHandler) List(c *fiber.Ctx) error {
 	var total int64
 	for rows.Next() {
 		var r overviewRow
-		if err := rows.Scan(&r.ID, &r.CustomerID, &r.ProjectCode, &r.ProjectName, &r.CustomerName, &r.ProjectStatus, &r.IsActive, &r.ProjectKind,
+		if err := rows.Scan(&r.ID, &r.CustomerID, &r.ProjectCode, &r.ProjectName, &r.CustomerName, &r.ProjectStatus, &r.IsActive, &r.ProjectKind, &r.ProjectTier,
 			&r.Contract, &r.PuCost, &r.PuBalance, &r.AcCost, &r.AcBalance, &r.UsagePct, &r.Status,
 			&r.PuBreakdown.PO, &r.PuBreakdown.WO, &r.PuBreakdown.PC,
 			&r.AcBreakdown.PO, &r.AcBreakdown.WO, &r.AcBreakdown.PC, &total); err != nil {

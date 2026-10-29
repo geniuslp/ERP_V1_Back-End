@@ -39,7 +39,7 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 	p.owner_id, u.full_name AS owner_name, p.owner_name AS project_owner_name,
 	p.customer_id, cu.customer_name,
 	p.responsible_person_name, p.job_codes,
-	p.budget_amount, p.vo_amount::float8, p.cost_amount::float8, p.project_kind,
+	p.budget_amount, p.vo_amount::float8, p.cost_amount::float8, p.project_kind, p.project_tier,
 	COALESCE((SELECT string_agg(ru.username, ', ' ORDER BY ru.username)
 		FROM project_responsible_person prp JOIN users ru ON ru.id = prp.user_id
 		WHERE prp.project_id = p.id), '') AS responsible_usernames,
@@ -82,7 +82,7 @@ func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName,
 		&p.CustomerID, &p.CustomerName,
 		&p.ResponsiblePersonName, &p.JobCodes,
-		&p.BudgetAmount, &p.VOAmount, &p.CostAmount, &p.ProjectKind, &p.ResponsibleUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
+		&p.BudgetAmount, &p.VOAmount, &p.CostAmount, &p.ProjectKind, &p.ProjectTier, &p.ResponsibleUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }

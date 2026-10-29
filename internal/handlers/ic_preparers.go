@@ -6,9 +6,11 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// icPreparerMenuCode is the menu the IC project list page (where the ผู้จัดทำ picker lives) is
-// guarded by on the frontend (App.tsx: RequirePermission menuCode="MENU_IC_PROJECT").
-const icPreparerMenuCode = "MENU_IC_PROJECT"
+// Only these people are offered in the picker: the Supply Chain department and the system admin role.
+const (
+	icPreparerDeptCode  = "SC"
+	icPreparerAdminRole = "ADMIN_CENTER"
+)
 
 type icPreparer struct {
 	ID         int64   `json:"id"`
@@ -18,12 +20,10 @@ type icPreparer struct {
 }
 
 // ListPreparers godoc
-// @Summary      List users who may open the IC pages (options for the ผู้จัดทำ picker)
-// @Description  Active users whose EFFECTIVE can_read on menu MENU_IC_PROJECT is true. Effective read uses the same
-// @Description  precedence as the frontend PermissionContext.can(): a per-user row (user_menu_permissions.can_read) wins
-// @Description  — including an explicit false, which denies; otherwise the role layer (role_menu_permissions, OR across
-// @Description  the user's roles); otherwise the department layer (dept_menu_permissions); otherwise no access.
-// @Description  Sorted by username. department is users.department (free text, used as position).
+// @Summary      List the people offered in the IC ผู้จัดทำ / ผู้ขอเบิก pickers
+// @Description  Exactly the active users of the Supply Chain department (users.dept_code = SC) plus active users with the
+// @Description  ADMIN_CENTER role — nobody else. Menu permissions are NOT consulted: this is just who may be named on an IC
+// @Description  document. department is users.department (free text, used as position). Sorted by username.
 // @Tags         IC
 // @Security     BearerAuth
 // @Produce      json
@@ -34,18 +34,11 @@ func (h *ICHandler) ListPreparers(c *fiber.Ctx) error {
 	rows, err := h.db.Query(context.Background(), `
 		SELECT u.id, u.username, u.full_name, u.department
 		FROM users u
-		JOIN menus m ON m.menu_code = $1 AND m.is_active = true
-		LEFT JOIN user_menu_permissions ump ON ump.user_id = u.id AND ump.menu_id = m.id
-		LEFT JOIN LATERAL (
-			SELECT BOOL_OR(rmp.can_read) AS can_read
-			FROM user_roles ur
-			JOIN role_menu_permissions rmp ON rmp.role_id = ur.role_id AND rmp.menu_id = m.id
-			WHERE ur.user_id = u.id
-		) rp ON TRUE
-		LEFT JOIN dept_menu_permissions dmp ON dmp.dept_code = u.dept_code AND dmp.menu_id = m.id
 		WHERE u.is_active = true
-		  AND COALESCE(ump.can_read, rp.can_read, dmp.can_read, false)
-		ORDER BY u.username`, icPreparerMenuCode)
+		  AND (u.dept_code = $1 OR EXISTS (
+		        SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+		        WHERE ur.user_id = u.id AND r.role_code = $2))
+		ORDER BY u.username`, icPreparerDeptCode, icPreparerAdminRole)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายชื่อผู้จัดทำได้ กรุณาลองใหม่อีกครั้ง")
 	}

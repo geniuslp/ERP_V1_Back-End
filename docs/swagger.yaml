@@ -143,6 +143,10 @@ definitions:
         description: free text ("เจ้าของโครงการ") — legacy, kept for backward compat
           with existing records
         type: string
+      project_tier:
+        description: 1-5 from the project value (DB-generated); null when no value/contract
+          amount
+        type: integer
       remaining_amount:
         type: number
       responsible_person_name:
@@ -413,6 +417,8 @@ definitions:
         type: string
       progress_installment_no:
         type: integer
+      progress_note:
+        type: string
       status:
         description: DRAFT (default) | SAVED
         type: string
@@ -5625,11 +5631,9 @@ paths:
   /ic/preparers:
     get:
       description: |-
-        Active users whose EFFECTIVE can_read on menu MENU_IC_PROJECT is true. Effective read uses the same
-        precedence as the frontend PermissionContext.can(): a per-user row (user_menu_permissions.can_read) wins
-        — including an explicit false, which denies; otherwise the role layer (role_menu_permissions, OR across
-        the user's roles); otherwise the department layer (dept_menu_permissions); otherwise no access.
-        Sorted by username. department is users.department (free text, used as position).
+        Exactly the active users of the Supply Chain department (users.dept_code = SC) plus active users with the
+        ADMIN_CENTER role — nobody else. Menu permissions are NOT consulted: this is just who may be named on an IC
+        document. department is users.department (free text, used as position). Sorted by username.
       produces:
       - application/json
       responses:
@@ -5643,7 +5647,7 @@ paths:
             $ref: '#/definitions/fiber.Map'
       security:
       - BearerAuth: []
-      summary: List users who may open the IC pages (options for the ผู้จัดทำ picker)
+      summary: List the people offered in the IC ผู้จัดทำ / ผู้ขอเบิก pickers
       tags:
       - IC
   /ic/projects:
@@ -14334,6 +14338,78 @@ paths:
       summary: แก้ไขบันทึกงานของผู้รับเหมาตามใบสั่งจ้าง (แทนที่ terms ทั้งหมด)
       tags:
       - WOContractorLog
+  /wo-contractor-log/{id}/attachments:
+    get:
+      parameters:
+      - description: wo_contractor_log.id
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: List the files attached to a work order contractor log
+      tags:
+      - WO Contractor Log
+    post:
+      consumes:
+      - multipart/form-data
+      description: Multipart field "file", max 10 MB, .pdf / .jpg / .jpeg only.
+      parameters:
+      - description: wo_contractor_log.id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: PDF or JPEG file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Attach a PDF / JPEG file to a work order contractor log
+      tags:
+      - WO Contractor Log
+  /wo-contractor-log/{id}/attachments/{attId}:
+    delete:
+      parameters:
+      - description: wo_contractor_log.id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: attachment id
+        in: path
+        name: attId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Delete a file attached to a work order contractor log
+      tags:
+      - WO Contractor Log
   /wo-contractor-log/{id}/bills:
     get:
       parameters:
@@ -14385,6 +14461,29 @@ paths:
       security:
       - BearerAuth: []
       summary: สร้างรายการรับวางบิล (tab ประเภทรับวางบิล)
+      tags:
+      - WOContractorLog
+  /wo-contractor-log/{id}/invoices:
+    get:
+      description: |-
+        One row per invoice of every bill (DRAFT and SAVED), oldest bill first. bill_no is the bill's order number (payment no. 1, 2, ...).
+        A bill with no invoices still appears once (invoice fields null) so each payment is visible.
+      parameters:
+      - description: Log ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Invoices of every bill of a contractor log
       tags:
       - WOContractorLog
   /wo-contractor-log/bills/{billId}:
@@ -14462,6 +14561,35 @@ paths:
       security:
       - BearerAuth: []
       summary: หา id ของบันทึกงานผู้รับเหมาจากหนังสือสั่งจ้าง
+      tags:
+      - WOContractorLog
+  /wo-contractor-log/summary/{woId}:
+    get:
+      description: |-
+        All values are calculated, nothing is typed in. Only SAVED bills are counted.
+        CONTRACT: amount = the WO contract value (ex VAT); accumulate = sum of every bill's "เงินงวดนี้" (PROGRESS) amount;
+        percent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -> 50%); balance = amount - accumulate.
+        ADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'
+        ADV_DEDUCT lines; balance = amount - accumulate.
+        RETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION
+        lines; balance = amount - accumulate.
+      parameters:
+      - description: work_order.id
+        in: path
+        name: woId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/fiber.Map'
+      security:
+      - BearerAuth: []
+      summary: Contract / Advance / Retention summary of a work order's contractor
+        bills
       tags:
       - WOContractorLog
   /work-order:

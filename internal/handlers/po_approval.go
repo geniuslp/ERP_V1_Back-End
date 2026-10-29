@@ -413,9 +413,13 @@ func (h *POApprovalHandler) Approve(c *fiber.Ctx) error {
 	}
 
 
+	var actorID *int64
+	if cl := middleware.GetClaims(c); cl != nil {
+		actorID = &cl.UserID
+	}
 	if _, err := h.db.Exec(context.Background(),
-		`UPDATE purchase_order SET status = 'APPROVED', updated_at = NOW() WHERE id = $1`,
-		id,
+		`UPDATE purchase_order SET status = 'APPROVED', updated_at = NOW(), updated_by = COALESCE($2, updated_by) WHERE id = $1`,
+		id, actorID,
 	); err != nil {
 		log.Printf("❌ PO approve update error: %v", err)
 		return err
@@ -483,8 +487,13 @@ func (h *POApprovalHandler) Reject(c *fiber.Ctx) error {
 
 
 	if _, err := h.db.Exec(context.Background(),
-		`UPDATE purchase_order SET status = 'REJECTED', remarks = $1, updated_at = NOW() WHERE id = $2`,
-		req.Reason, id,
+		`UPDATE purchase_order SET status = 'REJECTED', remarks = $1, updated_at = NOW(), updated_by = COALESCE($3, updated_by) WHERE id = $2`,
+		req.Reason, id, func() *int64 {
+			if cl := middleware.GetClaims(c); cl != nil {
+				return &cl.UserID
+			}
+			return nil
+		}(),
 	); err != nil {
 		log.Printf("❌ PO reject update error: %v", err)
 		return err
@@ -555,8 +564,13 @@ func (h *POApprovalHandler) Cancel(c *fiber.Ctx) error {
 	}
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE purchase_order SET status = 'CANCELLED', updated_at = NOW() WHERE id = $1`,
-		id,
+		`UPDATE purchase_order SET status = 'CANCELLED', updated_at = NOW(), updated_by = COALESCE($2, updated_by) WHERE id = $1`,
+		id, func() *int64 {
+			if cl := middleware.GetClaims(c); cl != nil {
+				return &cl.UserID
+			}
+			return nil
+		}(),
 	); err != nil {
 		log.Printf("❌ PO cancel update error: %v", err)
 		return err

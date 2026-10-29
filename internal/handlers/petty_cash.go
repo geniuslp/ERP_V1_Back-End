@@ -386,9 +386,10 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 
 		// ── withholding tax ──
 		if l.HasWht {
-			form := strings.TrimSpace(l.TaxFormCode)
-			if !isPCTaxForm(form) {
-				return nil, tot, bad("กรุณาเลือกแบบ ภ.ง.ด. ให้ถูกต้อง (PND3 หรือ PND53)")
+			// ภ.ง.ด. is no longer asked for; keep it only if a client still sends a valid code.
+			var taxForm *string
+			if form := strings.TrimSpace(l.TaxFormCode); isPCTaxForm(form) {
+				taxForm = &form
 			}
 			if l.WhtIncomeTypeID == nil || *l.WhtIncomeTypeID <= 0 {
 				return nil, tot, bad("กรุณาเลือกประเภทเงินได้ที่หัก ณ ที่จ่าย")
@@ -419,7 +420,7 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 				}
 				ln.whtPayDate = d
 			}
-			ln.hasWht, ln.taxForm, ln.whtIncomeTypeID = true, &form, l.WhtIncomeTypeID
+			ln.hasWht, ln.taxForm, ln.whtIncomeTypeID = true, taxForm, l.WhtIncomeTypeID
 			ln.whtBase, ln.whtRate = &base, &rate // rate is the server-side snapshot, never the client's
 			ln.wht = pcRound2(base * rate / 100)
 		}

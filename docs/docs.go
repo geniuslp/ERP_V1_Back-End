@@ -3366,14 +3366,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Active users whose EFFECTIVE can_read on menu MENU_IC_PROJECT is true. Effective read uses the same\nprecedence as the frontend PermissionContext.can(): a per-user row (user_menu_permissions.can_read) wins\n— including an explicit false, which denies; otherwise the role layer (role_menu_permissions, OR across\nthe user's roles); otherwise the department layer (dept_menu_permissions); otherwise no access.\nSorted by username. department is users.department (free text, used as position).",
+                "description": "Exactly the active users of the Supply Chain department (users.dept_code = SC) plus active users with the\nADMIN_CENTER role — nobody else. Menu permissions are NOT consulted: this is just who may be named on an IC\ndocument. department is users.department (free text, used as position). Sorted by username.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "IC"
                 ],
-                "summary": "List users who may open the IC pages (options for the ผู้จัดทำ picker)",
+                "summary": "List the people offered in the IC ผู้จัดทำ / ผู้ขอเบิก pickers",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -16181,6 +16181,40 @@ const docTemplate = `{
                 }
             }
         },
+        "/wo-contractor-log/summary/{woId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "All values are calculated, nothing is typed in. Only SAVED bills are counted.\nCONTRACT: amount = the WO contract value (ex VAT); accumulate = sum of every bill's \"เงินงวดนี้\" (PROGRESS) amount;\npercent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -\u003e 50%); balance = amount - accumulate.\nADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'\nADV_DEDUCT lines; balance = amount - accumulate.\nRETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION\nlines; balance = amount - accumulate.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "Contract / Advance / Retention summary of a work order's contractor bills",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "work_order.id",
+                        "name": "woId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/wo-contractor-log/{id}": {
             "get": {
                 "security": [
@@ -16270,6 +16304,121 @@ const docTemplate = `{
                 }
             }
         },
+        "/wo-contractor-log/{id}/attachments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WO Contractor Log"
+                ],
+                "summary": "List the files attached to a work order contractor log",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "wo_contractor_log.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Multipart field \"file\", max 10 MB, .pdf / .jpg / .jpeg only.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WO Contractor Log"
+                ],
+                "summary": "Attach a PDF / JPEG file to a work order contractor log",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "wo_contractor_log.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "PDF or JPEG file",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/wo-contractor-log/{id}/attachments/{attId}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WO Contractor Log"
+                ],
+                "summary": "Delete a file attached to a work order contractor log",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "wo_contractor_log.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "attachment id",
+                        "name": "attId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/wo-contractor-log/{id}/bills": {
             "get": {
                 "security": [
@@ -16346,6 +16495,40 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/wo-contractor-log/{id}/invoices": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One row per invoice of every bill (DRAFT and SAVED), oldest bill first. bill_no is the bill's order number (payment no. 1, 2, ...).\nA bill with no invoices still appears once (invoice fields null) so each payment is visible.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WOContractorLog"
+                ],
+                "summary": "Invoices of every bill of a contractor log",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Log ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -17077,6 +17260,10 @@ const docTemplate = `{
                     "description": "free text (\"เจ้าของโครงการ\") — legacy, kept for backward compat with existing records",
                     "type": "string"
                 },
+                "project_tier": {
+                    "description": "1-5 from the project value (DB-generated); null when no value/contract amount",
+                    "type": "integer"
+                },
                 "remaining_amount": {
                     "type": "number"
                 },
@@ -17477,6 +17664,9 @@ const docTemplate = `{
                 },
                 "progress_installment_no": {
                     "type": "integer"
+                },
+                "progress_note": {
+                    "type": "string"
                 },
                 "status": {
                     "description": "DRAFT (default) | SAVED",

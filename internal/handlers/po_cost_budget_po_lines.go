@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -26,7 +27,10 @@ type costBudgetPOLine struct {
 	// TR rows: po_id / po_no / po_status hold the movement id / TF doc_no / status, project_* is the OTHER
 	// project of the transfer (the source for money coming in, the destination for money going out),
 	// quantity and amount are negative when the goods leave this project.
-	DocProjectCode *string `json:"doc_project_code,omitempty"` // project that owns the TR document (for its detail route)
+	UpdatedAt      *time.Time `json:"updated_at"`                 // last update of the document
+	UpdatedByName  *string    `json:"updated_by_name"`            // who made that update (full name, else username)
+	CreatedAt      *time.Time `json:"created_at"`                 // when the document (PO / petty cash / transfer) was created
+	DocProjectCode *string    `json:"doc_project_code,omitempty"` // project that owns the TR document (for its detail route)
 }
 
 // CostBudgetPOLines godoc
@@ -108,7 +112,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	// rows, one query. src_ord keeps PO first.
 	rows, err := h.db.Query(ctx, `
 		SELECT x.po_id, x.po_no, x.project_code, x.project_name, x.line_no, x.mat_code, x.item_name,
-		       x.quantity, x.unit, x.remarks, x.po_status, x.amount, x.source, x.doc_project_code
+		       x.quantity, x.unit, x.remarks, x.po_status, x.amount, x.source, x.doc_project_code, x.created_at, x.updated_at, x.updated_by_name
 		FROM (
 			SELECT 0 AS src_ord, 'PO' AS source, NULL::text AS doc_project_code, po.id AS po_id, po.po_no, po.project_code, pj.project_name, pol.line_no, pol.mat_code,
 			       COALESCE(
@@ -117,10 +121,13 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       ) AS item_name,
 			       pol.qty_ordered::float8 AS quantity, un.unit_name AS unit, NULLIF(TRIM(pol.remarks), '') AS remarks,
 			       po.status AS po_status,
-			       (pol.qty_ordered * pol.unit_price)::float8 AS amount
+			       (pol.qty_ordered * pol.unit_price)::float8 AS amount,
+			       po.created_at AS created_at, po.updated_at AS updated_at,
+			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username) AS updated_by_name
 			FROM purchase_order_line pol
 			JOIN purchase_order po ON po.id = pol.po_id
 			LEFT JOIN project pj ON pj.project_code = po.project_code
+			LEFT JOIN users uu ON uu.id = COALESCE(po.updated_by, po.created_by)
 			LEFT JOIN material_code mc ON mc.mat_code = pol.mat_code
 			LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
 			LEFT JOIN spec_size ss ON ss.id = mc.spec_id
@@ -137,9 +144,12 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       ),
 			       l.qty::float8, un.unit_name, NULLIF(TRIM(l.remarks), ''),
 			       h.status,
-			       `+pcExVatSQL+`::float8
+			       `+pcExVatSQL+`::float8,
+			       h.created_at, h.updated_at,
+			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username)
 			FROM petty_cash_requisition_line l
 			JOIN petty_cash_requisition h ON h.id = l.pc_id
+			LEFT JOIN users uu ON uu.id = COALESCE(h.updated_by, h.created_by)
 			LEFT JOIN project pj ON pj.project_code = l.project_code
 			LEFT JOIN material_code mc ON mc.mat_code = l.mat_code
 			LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
@@ -157,10 +167,13 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(ss.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''),
 			       (CASE WHEN l.to_project_code = $1 THEN l.qty ELSE -l.qty END)::float8, un.unit_name,
 			       NULLIF(TRIM(COALESCE(l.remarks, m.remarks)), ''), m.status,
-			       (CASE WHEN l.to_project_code = $1 THEN l.qty ELSE -l.qty END * COALESCE(t.unit_cost, 0))::float8
+			       (CASE WHEN l.to_project_code = $1 THEN l.qty ELSE -l.qty END * COALESCE(t.unit_cost, 0))::float8,
+			       m.created_at, m.updated_at,
+			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username)
 			FROM ic_project_movement_line l
 			JOIN ic_project_movement m ON m.id = l.movement_id AND m.doc_type = 'TRANSFER' AND m.status = 'POSTED'
 			JOIN material_code mc ON mc.mat_code = l.mat_code
+			LEFT JOIN users uu ON uu.id = COALESCE(m.updated_by, m.created_by)
 			LEFT JOIN project sp ON sp.project_code = m.project_code
 			LEFT JOIN project dp ON dp.project_code = l.to_project_code
 			LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
@@ -184,7 +197,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	for rows.Next() {
 		var l costBudgetPOLine
 		if err := rows.Scan(&l.POID, &l.PONo, &l.ProjectCode, &l.ProjectName, &l.LineNo, &l.MatCode, &l.ItemName,
-			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount, &l.Source, &l.DocProjectCode); err != nil {
+			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount, &l.Source, &l.DocProjectCode, &l.CreatedAt, &l.UpdatedAt, &l.UpdatedByName); err != nil {
 			log.Printf("cost-budget po-lines scan: %v", err)
 			return fiber.NewError(fiber.StatusInternalServerError, loadErr)
 		}

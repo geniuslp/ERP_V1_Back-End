@@ -1462,7 +1462,7 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 		}
 	}
 
-	if _, err := tx.Exec(ctx, `UPDATE ic_project_movement SET status = 'POSTED', updated_at = NOW() WHERE id = $1`, movementID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE ic_project_movement SET status = 'POSTED', updated_at = NOW(), updated_by = $2 WHERE id = $1`, movementID, claims.UserID); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 
