@@ -121,7 +121,7 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 	// project OR a project_cost_budget row. Budget is a LEFT JOIN — no row => 0. The displayed
 	// cost code is output only; every filter/join below uses ids.
 	rows, err := h.db.Query(ctx, `
-		WITH po_c AS (
+		WITH po_raw AS (
 			SELECT pol.cost_subgroup_id,
 			       SUM(pol.qty_ordered * pol.unit_price)::float8 AS po_cost
 			FROM purchase_order_line pol
@@ -132,6 +132,33 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 			  AND pol.status <> 'CANCELLED'
 			  AND pol.cost_subgroup_id IS NOT NULL
 			GROUP BY pol.cost_subgroup_id
+		), tr_amt AS (
+			-- POSTED TRANSFER lines priced at the unit cost recorded when the document was posted:
+			-- + on the destination project's cost code, - on the source project's cost code (a
+			-- warehouse source with no cost code on the line falls back to the material's own).
+			SELECT l.to_project_code AS project_code, l.to_cost_subgroup_id AS cost_subgroup_id,
+			       (l.qty * t.unit_cost)::float8 AS amt
+			FROM ic_project_movement_line l
+			JOIN ic_project_movement m ON m.id = l.movement_id AND m.doc_type = 'TRANSFER' AND m.status = 'POSTED'
+			JOIN LATERAL (SELECT unit_cost FROM ic_project_cost_item_transaction
+			               WHERE movement_line_id = l.id ORDER BY id LIMIT 1) t ON true
+			WHERE l.to_cost_subgroup_id IS NOT NULL AND l.to_cost_subgroup_id > 0
+			UNION ALL
+			SELECT m.project_code, COALESCE(NULLIF(l.cost_subgroup_id, 0), mc.cost_subgroup_id),
+			       -(l.qty * t.unit_cost)::float8
+			FROM ic_project_movement_line l
+			JOIN ic_project_movement m ON m.id = l.movement_id AND m.doc_type = 'TRANSFER' AND m.status = 'POSTED'
+			JOIN material_code mc ON mc.mat_code = l.mat_code
+			JOIN LATERAL (SELECT unit_cost FROM ic_project_cost_item_transaction
+			               WHERE movement_line_id = l.id ORDER BY id LIMIT 1) t ON true
+		), po_c AS (
+			SELECT cost_subgroup_id, SUM(po_cost)::float8 AS po_cost
+			FROM (
+				SELECT cost_subgroup_id, po_cost FROM po_raw
+				UNION ALL
+				SELECT cost_subgroup_id, amt FROM tr_amt WHERE project_code = $1 AND cost_subgroup_id IS NOT NULL
+			) x
+			GROUP BY cost_subgroup_id
 		), pc AS (
 			SELECT l.cost_subgroup_id,
 			       SUM(`+pcExVatSQL+`)::float8 AS pc_cost

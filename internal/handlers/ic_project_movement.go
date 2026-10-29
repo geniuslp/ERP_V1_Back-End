@@ -1326,9 +1326,9 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 			// in stock_transaction (the real stock ledger); the destination cost-item credit
 			// below is shared with the normal path. Deliberate, confirmed exception.
 			var itemID int64
-			var itemQty float64
+			var itemQty, itemUnitCost float64
 			var itemLoc string
-			if err := tx.QueryRow(ctx, `SELECT id, qty, location_code FROM stock_item WHERE mat_code = $1 FOR UPDATE`, r.line.MatCode).Scan(&itemID, &itemQty, &itemLoc); err == pgx.ErrNoRows {
+			if err := tx.QueryRow(ctx, `SELECT id, qty, location_code, COALESCE(unit_cost, 0) FROM stock_item WHERE mat_code = $1 FOR UPDATE`, r.line.MatCode).Scan(&itemID, &itemQty, &itemLoc, &itemUnitCost); err == pgx.ErrNoRows {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: not found in stock_item", r.line.MatCode))
 			} else if err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -1351,7 +1351,12 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 				itemQty, itemQty-r.line.Qty, claims.UserID); err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 			}
-			unitCost = dstState.UnitCost
+			// The goods leave the warehouse at the stock item's own cost; using the destination's
+			// (new, so 0) cost item made the transferred value 0.
+			unitCost = itemUnitCost
+			if unitCost == 0 {
+				unitCost = dstState.UnitCost
+			}
 		} else if docType == "TRANSFER" {
 			srcID := itemIDByKey[r.srcKey]
 			src := itemStateByID[srcID]
@@ -1443,7 +1448,7 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 		qtyAfterDst := qtyBeforeDst + r.line.Qty
 		dstState.QtyOnHand = qtyAfterDst
 
-		if _, err := tx.Exec(ctx, `UPDATE ic_project_cost_item SET qty_on_hand = $1, updated_at = NOW() WHERE id = $2`, qtyAfterDst, dstID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE ic_project_cost_item SET qty_on_hand = $1, last_unit_cost = CASE WHEN $3::numeric > 0 THEN $3::numeric ELSE last_unit_cost END, updated_at = NOW() WHERE id = $2`, qtyAfterDst, dstID, unitCost); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 		if _, err := tx.Exec(ctx, `

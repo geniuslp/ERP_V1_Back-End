@@ -22,7 +22,11 @@ type costBudgetPOLine struct {
 	Remarks     *string `json:"remarks"`
 	POStatus    string  `json:"po_status"`
 	Amount      float64 `json:"amount"` // PO: qty_ordered * unit_price (reference); PC: amount - line_discount (ex-VAT)
-	Source      string  `json:"source"` // "PO" or "PC" (petty cash)
+	Source      string  `json:"source"` // "PO", "PC" (petty cash) or "TR" (project transfer)
+	// TR rows: po_id / po_no / po_status hold the movement id / TF doc_no / status, project_* is the OTHER
+	// project of the transfer (the source for money coming in, the destination for money going out),
+	// quantity and amount are negative when the goods leave this project.
+	DocProjectCode *string `json:"doc_project_code,omitempty"` // project that owns the TR document (for its detail route)
 }
 
 // CostBudgetPOLines godoc
@@ -84,7 +88,12 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 				    OR EXISTS (SELECT 1 FROM petty_cash_requisition_line l
 				               JOIN petty_cash_requisition h ON h.id = l.pc_id
 				               WHERE h.status = 'APPROVED' AND l.project_code = $1
-				                 AND l.cost_subgroup_id = cs.id)))`,
+				                 AND l.cost_subgroup_id = cs.id)
+				    OR EXISTS (SELECT 1 FROM ic_project_movement_line l
+				               JOIN ic_project_movement m ON m.id = l.movement_id
+				               WHERE m.doc_type = 'TRANSFER' AND m.status = 'POSTED'
+				                 AND ((l.to_project_code = $1 AND l.to_cost_subgroup_id = cs.id)
+				                   OR (m.project_code = $1 AND l.cost_subgroup_id = cs.id)))))`,
 			projectCode, *subgroupID).Scan(&belongs)
 	}
 	if err != nil {
@@ -99,9 +108,9 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	// rows, one query. src_ord keeps PO first.
 	rows, err := h.db.Query(ctx, `
 		SELECT x.po_id, x.po_no, x.project_code, x.project_name, x.line_no, x.mat_code, x.item_name,
-		       x.quantity, x.unit, x.remarks, x.po_status, x.amount, x.source
+		       x.quantity, x.unit, x.remarks, x.po_status, x.amount, x.source, x.doc_project_code
 		FROM (
-			SELECT 0 AS src_ord, 'PO' AS source, po.id AS po_id, po.po_no, po.project_code, pj.project_name, pol.line_no, pol.mat_code,
+			SELECT 0 AS src_ord, 'PO' AS source, NULL::text AS doc_project_code, po.id AS po_id, po.po_no, po.project_code, pj.project_name, pol.line_no, pol.mat_code,
 			       COALESCE(
 			           NULLIF(TRIM(CONCAT_WS(' ', mn.mat_name, ss.spec_description)), ''),
 			           NULLIF(TRIM(pol.description), '')
@@ -121,7 +130,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			  AND po.status NOT IN ('DRAFT','REJECTED','CANCELLED')
 			  AND pol.status <> 'CANCELLED'
 			UNION ALL
-			SELECT 1, 'PC', h.id, h.pc_no, l.project_code, pj.project_name, l.line_no, l.mat_code,
+			SELECT 1, 'PC', NULL::text, h.id, h.pc_no, l.project_code, pj.project_name, l.line_no, l.mat_code,
 			       COALESCE(
 			           NULLIF(TRIM(l.description), ''),
 			           NULLIF(TRIM(CONCAT_WS(' ', mn.mat_name, ss.spec_description)), '')
@@ -138,6 +147,31 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			LEFT JOIN unit un ON un.id = mc.unit_id
 			WHERE h.status = 'APPROVED' AND l.project_code = $1
 			  AND ((l.cost_subgroup_id IS NULL AND $2::bigint IS NULL) OR l.cost_subgroup_id = $2::bigint)
+			UNION ALL
+			-- Project transfers (POSTED) booked on this cost code. Coming in: counterpart = the source project;
+			-- going out: counterpart = the destination project, quantity / amount negative.
+			SELECT 2, 'TR', m.project_code, m.id, m.doc_no,
+			       CASE WHEN l.to_project_code = $1 THEN m.project_code ELSE l.to_project_code END,
+			       CASE WHEN l.to_project_code = $1 THEN sp.project_name ELSE dp.project_name END,
+			       l.line_no, l.mat_code,
+			       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(ss.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ''),
+			       (CASE WHEN l.to_project_code = $1 THEN l.qty ELSE -l.qty END)::float8, un.unit_name,
+			       NULLIF(TRIM(COALESCE(l.remarks, m.remarks)), ''), m.status,
+			       (CASE WHEN l.to_project_code = $1 THEN l.qty ELSE -l.qty END * COALESCE(t.unit_cost, 0))::float8
+			FROM ic_project_movement_line l
+			JOIN ic_project_movement m ON m.id = l.movement_id AND m.doc_type = 'TRANSFER' AND m.status = 'POSTED'
+			JOIN material_code mc ON mc.mat_code = l.mat_code
+			LEFT JOIN project sp ON sp.project_code = m.project_code
+			LEFT JOIN project dp ON dp.project_code = l.to_project_code
+			LEFT JOIN mat_name mn ON mn.id = mc.mat_name_id
+			LEFT JOIN spec_size ss ON ss.id = mc.spec_id
+			LEFT JOIN brand br ON br.id = mc.brand_id
+			LEFT JOIN unit un ON un.id = mc.unit_id
+			LEFT JOIN LATERAL (SELECT unit_cost FROM ic_project_cost_item_transaction
+			                    WHERE movement_line_id = l.id ORDER BY id LIMIT 1) t ON true
+			WHERE $2::bigint IS NOT NULL
+			  AND ((l.to_project_code = $1 AND l.to_cost_subgroup_id = $2::bigint)
+			    OR (m.project_code = $1 AND COALESCE(NULLIF(l.cost_subgroup_id, 0), mc.cost_subgroup_id) = $2::bigint))
 		) x
 		ORDER BY x.src_ord, x.po_no, x.line_no`, projectCode, subgroupID)
 	if err != nil {
@@ -150,7 +184,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	for rows.Next() {
 		var l costBudgetPOLine
 		if err := rows.Scan(&l.POID, &l.PONo, &l.ProjectCode, &l.ProjectName, &l.LineNo, &l.MatCode, &l.ItemName,
-			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount, &l.Source); err != nil {
+			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount, &l.Source, &l.DocProjectCode); err != nil {
 			log.Printf("cost-budget po-lines scan: %v", err)
 			return fiber.NewError(fiber.StatusInternalServerError, loadErr)
 		}
