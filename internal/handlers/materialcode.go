@@ -386,6 +386,9 @@ func (h *MaterialCodeHandler) UpsertBrand(c *fiber.Ctx) error {
 	if req.BrandCode == "" || req.BrandName == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "brand_code and brand_name are required")
 	}
+	if err := requireBrandCode(req.BrandCode); err != nil {
+		return err
+	}
 	b, err := h.svc.UpsertBrand(c.Context(), req)
 	if err != nil {
 		return matErrStatus(err)
@@ -460,6 +463,9 @@ func (h *MaterialCodeHandler) CreateMaterialCode(c *fiber.Ctx) error {
 	if req.GroupCode == "" || req.SubgroupCode == "" || req.MatNameCode == "" ||
 		req.SpecCode == "" || req.BrandCode == "" || req.UnitCode == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "all codes are required")
+	}
+	if err := requireBrandCode(req.BrandCode); err != nil {
+		return err
 	}
 	m, err := h.svc.CreateMaterialCode(c.Context(), req)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1624,6 +1625,18 @@ func (h *MasterHandler) CreateSupplier(c *fiber.Ctx) error {
 // @Failure      400   {object}  fiber.Map
 // @Failure      409   {object}  fiber.Map
 // @Router       /master/materials [post]
+// brandCodeRe: the brand segment of a material code (P + subgroup 3 + name 3 + spec 3 + BRAND 2 + unit 3) is
+// exactly 2 digits. A 3-digit brand code shifts every later segment and yields a 16-char mat_code
+// (PG06003008000030 instead of PG0600300800030), so it is rejected wherever a brand is created.
+var brandCodeRe = regexp.MustCompile(`^[0-9]{2}$`)
+
+func requireBrandCode(code string) error {
+	if !brandCodeRe.MatchString(code) {
+		return fiber.NewError(fiber.StatusBadRequest, "รหัสยี่ห้อต้องเป็นตัวเลข 2 หลัก (เช่น 00, 01)")
+	}
+	return nil
+}
+
 func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 	req, perr := parseCreateMaterialBody(c)
 	if perr != nil {
@@ -1640,6 +1653,9 @@ func (h *MasterHandler) CreateMaterial(c *fiber.Ctx) error {
 		if f.val == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "field "+f.name+" is required")
 		}
+	}
+	if err := requireBrandCode(req.BrandCode); err != nil {
+		return err
 	}
 
 	ctx := context.Background()
@@ -1802,6 +1818,9 @@ func (h *MasterHandler) BulkCreateMaterial(c *fiber.Ctx) error {
 			req.BrandCode == "" || req.UnitCode == "" {
 			// ลบ req.BrandName == "" ออก
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("item[%d]: all fields are required", i))
+		}
+		if err := requireBrandCode(req.BrandCode); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("item[%d]: %s", i, err.(*fiber.Error).Message))
 		}
 	}
 
