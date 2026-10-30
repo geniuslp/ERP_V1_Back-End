@@ -15,12 +15,12 @@ import (
 )
 
 // JobNeedsShare is the single source of truth for "does this project job code carry a
-// share_percent of the project budget". The stock jobs (FS, FP, FB), "G" and "OH" do not. It is an
+// share_percent of the project budget". Only the stock jobs (FS, FP, FB) do not; G (General Code) carries a share like the engineering jobs. It is an
 // explicit list because "FF" (Fire Protection) also starts with F but does carry a share. Validation
 // and the needs_share flag both call this - never re-implement the rule elsewhere.
 func JobNeedsShare(code string) bool {
 	switch code {
-	case "FS", "FP", "FB", "G", "OH":
+	case "FS", "FP", "FB":
 		return false
 	}
 	return true

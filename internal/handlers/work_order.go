@@ -124,8 +124,8 @@ func (h *WorkOrderHandler) validateWorkOrderRequest(ctx context.Context, req *mo
 	uniq := make([]string, 0, len(req.WorkSystem))
 	for _, ws := range req.WorkSystem {
 		ws = strings.TrimSpace(ws)
-		if !IsTradeJobCode(ws) {
-			return fiber.NewError(fiber.StatusBadRequest, "งานระบบต้องเป็นหนึ่งใน MS, EE, SN, FF, GS, AC, CS, AR ตามรายการประเภทงานของโครงการ")
+		if !IsWorkOrderSystemCode(ws) {
+			return fiber.NewError(fiber.StatusBadRequest, "งานระบบต้องเป็นหนึ่งใน MS, EE, SN, FF, GS, AC, CS, AR, G ตามรายการประเภทงานของโครงการ")
 		}
 		if !seen[ws] {
 			seen[ws] = true

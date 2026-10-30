@@ -28,8 +28,7 @@ var AllowedOrderTypes = []string{
 
 // dbJobCodes mirrors the live CHECK on purchase_request.job_code / purchase_order.job_code
 // exactly: MS, EE, SN, FF, GS, AC, CS, AR, FS, FP, FB, DE, RE, G. Deliberately separate from JobTypes
-// (job_type.go), whose list has "OH" where the DB has "G" — left untouched so stock/cost
-// behavior doesn't change.
+// (job_type.go); both lists use "G" for General Code since migration 041 (it used to be "OH" in JobTypes).
 var dbJobCodes = map[string]bool{
 	"MS": true, "EE": true, "SN": true, "FF": true, "GS": true, "AC": true, "CS": true, "AR": true,
 	"FS": true, "FP": true, "FB": true, "DE": true, "RE": true, "G": true,

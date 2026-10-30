@@ -36,7 +36,7 @@ var JobTypes = []JobTypeInfo{
 	{"009", "FB", "Stock FAC-BO"},
 	{"010", "DE", "Dead Stock"},
 	{"011", "RE", "Return Project"},
-	{"012", "OH", "General Code"},
+	{"012", "G", "General Code"}, // stored as "G" everywhere (PR/PO CHECK, order types); migration 041 renamed the old "OH" values
 }
 
 // tradeJobCodes are the eight engineering-system jobs (the old "M*" codes). Used wherever the old
@@ -45,6 +45,9 @@ var tradeJobCodes = map[string]bool{"MS": true, "EE": true, "SN": true, "FF": tr
 
 // IsTradeJobCode reports whether code is one of the six engineering-system job types.
 func IsTradeJobCode(code string) bool { return tradeJobCodes[code] }
+
+// IsWorkOrderSystemCode: what a work order's work_system (งานระบบ) may hold — the engineering systems plus G (General Code).
+func IsWorkOrderSystemCode(code string) bool { return tradeJobCodes[code] || code == "G" }
 
 // validJobCodes is the lookup used by ValidateJobCode/validateJobCodes. Built once from
 // JobTypes so the 12-value list only ever needs to be edited in one place.

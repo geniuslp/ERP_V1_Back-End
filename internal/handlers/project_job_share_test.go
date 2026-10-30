@@ -12,7 +12,7 @@ func TestJobNeedsShare(t *testing.T) {
 	for _, code := range []string{"FS", "FP", "FB", "G", "OH", "HO", "MS", "AC", "DE", "RE"} {
 		t.Logf("JobNeedsShare(%s) = %v", code, JobNeedsShare(code))
 	}
-	want := map[string]bool{"FS": false, "FP": false, "FB": false, "G": false, "OH": false, "HO": true, "AC": true, "FF": true, "DE": true, "RE": true, "MS": true}
+	want := map[string]bool{"FS": false, "FP": false, "FB": false, "G": true, "HO": true, "AC": true, "FF": true, "DE": true, "RE": true, "MS": true}
 	for code, w := range want {
 		if got := JobNeedsShare(code); got != w {
 			t.Errorf("JobNeedsShare(%q) = %v, want %v", code, got, w)
@@ -42,7 +42,7 @@ func TestValidateJobShares(t *testing.T) {
 		{"0.1+0.2 style exact", []models.ProjectJobShareInput{sh("MS", "33.33"), sh("EE", "33.33"), sh("SN", "33.34")}, "", []string{"MS=33.33", "EE=33.33", "SN=33.34"}},
 		// rules that are kept
 		{"share on FS", []models.ProjectJobShareInput{sh("MS", "40"), sh("FS", "10")}, "ไม่ต้องกำหนดสัดส่วน", nil},
-		{"share on G", []models.ProjectJobShareInput{sh("MS", "40"), sh("G", "10")}, "ไม่ต้องกำหนดสัดส่วน", nil},
+		{"share on FS", []models.ProjectJobShareInput{sh("MS", "40"), sh("FS", "10")}, "ไม่ต้องกำหนดสัดส่วน", nil},
 		{"share on OH not in project", []models.ProjectJobShareInput{sh("MS", "40"), sh("OH", "10")}, "ไม่ได้อยู่ในรายการงาน", nil},
 		{"duplicate", []models.ProjectJobShareInput{sh("MS", "10"), sh("MS", "10")}, "ซ้ำกัน", nil},
 		{"3 decimals", []models.ProjectJobShareInput{sh("MS", "33.333"), sh("EE", "30")}, "ทศนิยมไม่เกิน 2", nil},
