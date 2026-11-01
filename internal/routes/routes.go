@@ -431,6 +431,7 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	workOrder.Get("/", workOrderH.List)
 	workOrder.Get("/reserve-number", workOrderH.ReserveWONumber)
 	workOrder.Get("/wht-defaults", workOrderH.WhtDefaults)
+	workOrder.Get("/available-prs", workOrderH.AvailablePRs)
 	workOrder.Post("/", workOrderH.Create)
 	workOrder.Get("/:id", workOrderH.Get)
 	workOrder.Put("/:id", workOrderH.Update)
@@ -438,6 +439,9 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	workOrder.Post("/:id/submit", workOrderH.Submit)
 	workOrder.Put("/:id/lines", workOrderH.UpdateLines)
 	workOrder.Get("/:woId/payment-conditions", workOrderH.GetPaymentConditions)
+	workOrder.Get("/:id/attachments", workOrderH.ListAttachments)
+	workOrder.Post("/:id/attachments", workOrderH.AddAttachment)
+	workOrder.Delete("/:id/attachments/:attId", workOrderH.DeleteAttachment)
 	workOrder.Post("/:woId/payment-conditions", workOrderH.UpdatePaymentConditions)
 
 	woContractorLogH := handlers.NewWOContractorLogHandler(db)

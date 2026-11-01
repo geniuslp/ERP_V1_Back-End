@@ -6554,55 +6554,6 @@ const docTemplate = `{
                         }
                     }
                 }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "INSERT order (FK parent-first): unit → group → subgroup → mat_name → spec_size → brand → material_code",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Master"
-                ],
-                "summary": "Create a single material (full transaction)",
-                "parameters": [
-                    {
-                        "description": "Material data",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/models.CreateMaterialRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "$ref": "#/definitions/fiber.Map"
-                        }
-                    }
-                }
             }
         },
         "/master/materials/bulk": {
@@ -16188,7 +16139,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "All values are calculated, nothing is typed in. Only SAVED bills are counted.\nCONTRACT: amount = the WO contract value (ex VAT); accumulate = sum of every bill's \"เงินงวดนี้\" (PROGRESS) amount;\npercent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -\u003e 50%); balance = amount - accumulate.\nADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'\nADV_DEDUCT lines; balance = amount - accumulate.\nRETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION\nlines; balance = amount - accumulate.",
+                "description": "All values are calculated, nothing is typed in. Only SAVED bills are counted.\nCONTRACT: amount = the WO contract value (ex VAT) minus the advance (contract_total is the full value); accumulate = sum of every bill's \"เงินงวดนี้\" (PROGRESS) amount;\npercent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -\u003e 50%); balance = amount - accumulate.\nADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'\nADV_DEDUCT lines; balance = amount - accumulate.\nRETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION\nlines; balance = amount - accumulate.",
                 "produces": [
                     "application/json"
                 ],
@@ -16647,6 +16598,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/work-order/available-prs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Approved PRs (status COMPLETED) whose pr_type is PO_WO or WO_ONLY and that are not already linked to a live (not CANCELLED / REJECTED) work order. Optional ?wo_id= keeps the PR already linked to that WO in the list.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "List PRs that can be pulled into a new work order",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
         "/work-order/reserve-number": {
             "get": {
                 "security": [
@@ -16785,6 +16761,121 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/work-order/{id}/attachments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "List the files attached to a work order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "work_order.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Multipart field \"file\", max 10 MB, .pdf / .jpg / .jpeg only. Not allowed on a CANCELLED work order.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "Attach a PDF / JPEG file to a work order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "work_order.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "PDF or JPEG file",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Map"
+                        }
+                    }
+                }
+            }
+        },
+        "/work-order/{id}/attachments/{attId}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WorkOrder"
+                ],
+                "summary": "Delete a file attached to a work order",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "work_order.id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "attachment id",
+                        "name": "attId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/fiber.Map"
                         }
@@ -17601,6 +17692,9 @@ const docTemplate = `{
                 },
                 "delivery_date": {
                     "type": "string"
+                },
+                "invoice_amount": {
+                    "type": "number"
                 },
                 "invoice_date": {
                     "type": "string"
@@ -19566,6 +19660,10 @@ const docTemplate = `{
                 "penalty_pct_per_day": {
                     "type": "number"
                 },
+                "pr_id": {
+                    "description": "PRID links the WO to an approved PR (pr_type PO_WO / WO_ONLY). Update: omitted/null keeps the stored link, 0 clears it.",
+                    "type": "integer"
+                },
                 "progress_payment_note": {
                     "type": "string"
                 },
@@ -21154,6 +21252,13 @@ const docTemplate = `{
                     "description": "required when the status is a submit status",
                     "type": "integer"
                 },
+                "attachments": {
+                    "description": "Attachments: files the client holds for this PR (already-saved ones are echoed back too).\nUpdate inserts only entries whose file_path isn't already on this PR; it never deletes.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.AddAttachmentRequest"
+                    }
+                },
                 "dept_code": {
                     "type": "string"
                 },
@@ -21717,6 +21822,10 @@ const docTemplate = `{
                 },
                 "qty": {
                     "type": "number"
+                },
+                "remarks": {
+                    "description": "per-line รายละเอียด (free text)",
+                    "type": "string"
                 },
                 "unit_price": {
                     "type": "number",

@@ -178,6 +178,84 @@ func requireWOLinesForSubmit(ctx context.Context, db interface {
 	return nil
 }
 
+// sqlWOEligiblePR is a boolean expression over a purchase_request aliased `pr`: approved (COMPLETED), meant for a
+// WO (pr_type PO_WO or WO_ONLY) and not already behind another live work order (CANCELLED / REJECTED ones free it).
+// $1 below is the WO being edited (0 on create), so editing a WO never conflicts with its own link.
+const sqlWOEligiblePR = `pr.deleted_at IS NULL
+	AND pr.status = 'COMPLETED'
+	AND pr.pr_type IN ('PO_WO','WO_ONLY')
+	AND NOT EXISTS (
+		SELECT 1 FROM work_order w
+		WHERE w.pr_id = pr.id AND w.id <> $1 AND w.status NOT IN ('CANCELLED','REJECTED')
+	)`
+
+// requireWOPR checks that prID may be linked to a work order (plain Thai 400 / 404, never a raw DB error).
+func requireWOPR(ctx context.Context, db interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, prID, excludeWOID int64) error {
+	var exists, ok bool
+	if err := db.QueryRow(ctx,
+		`SELECT TRUE, (`+sqlWOEligiblePR+`) FROM purchase_request pr WHERE pr.id = $2`, excludeWOID, prID,
+	).Scan(&exists, &ok); err != nil {
+		if err == pgx.ErrNoRows {
+			return fiber.NewError(fiber.StatusBadRequest, "ไม่พบ PR ที่เลือก")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบ PR ได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if !ok {
+		return fiber.NewError(fiber.StatusBadRequest, "PR นี้ใช้สร้างหนังสือสั่งจ้างไม่ได้ (ต้องอนุมัติแล้ว, ประเภทเอกสาร PO/WO หรือ WO และยังไม่ถูกใช้ในหนังสือสั่งจ้างอื่น)")
+	}
+	return nil
+}
+
+// AvailablePRs godoc
+// @Summary      List PRs that can be pulled into a new work order
+// @Description  Approved PRs (status COMPLETED) whose pr_type is PO_WO or WO_ONLY and that are not already linked to a live (not CANCELLED / REJECTED) work order. Optional ?wo_id= keeps the PR already linked to that WO in the list.
+// @Tags         WorkOrder
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  fiber.Map
+// @Router       /work-order/available-prs [get]
+func (h *WorkOrderHandler) AvailablePRs(c *fiber.Ctx) error {
+	woID := int64(c.QueryInt("wo_id", 0))
+	rows, err := h.db.Query(context.Background(), `
+		SELECT pr.id, pr.pr_no, pr.pr_type, pr.order_type, pr.job_code,
+		       NULLIF(pr.project_code,''), NULLIF(p.project_name,''),
+		       COALESCE(u.full_name,''), pr.pr_date::text, pr.remarks
+		FROM purchase_request pr
+		LEFT JOIN project p ON p.project_code = pr.project_code
+		LEFT JOIN users u ON u.id = pr.requested_by
+		WHERE `+sqlWOEligiblePR+`
+		   OR ($1 > 0 AND pr.id = (SELECT w.pr_id FROM work_order w WHERE w.id = $1) AND pr.deleted_at IS NULL)
+		ORDER BY pr.created_at DESC`, woID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type availablePR struct {
+		PRID        int64   `json:"pr_id"`
+		PRNo        string  `json:"pr_no"`
+		PRType      string  `json:"pr_type"`
+		OrderType   string  `json:"order_type"`
+		JobCode     *string `json:"job_code"`
+		ProjectCode *string `json:"project_code"`
+		ProjectName *string `json:"project_name"`
+		RequestedBy string  `json:"requested_by"`
+		PRDate      string  `json:"pr_date"`
+		Remarks     *string `json:"remarks"`
+	}
+	items := []availablePR{}
+	for rows.Next() {
+		var r availablePR
+		if err := rows.Scan(&r.PRID, &r.PRNo, &r.PRType, &r.OrderType, &r.JobCode, &r.ProjectCode, &r.ProjectName, &r.RequestedBy, &r.PRDate, &r.Remarks); err != nil {
+			return err
+		}
+		items = append(items, r)
+	}
+	return c.JSON(fiber.Map{"success": true, "data": items})
+}
+
 // Create godoc
 // @Summary      สร้างหนังสือสั่งจ้าง (DRAFT)
 // @Description  `lines` may be omitted or empty: the work order is created as DRAFT with all header totals 0.
@@ -198,6 +276,11 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 	}
 	if err := h.validateWorkOrderRequest(context.Background(), &req); err != nil {
 		return err
+	}
+	if req.PRID != nil && *req.PRID > 0 {
+		if err := requireWOPR(context.Background(), h.db, *req.PRID, 0); err != nil {
+			return err
+		}
 	}
 
 	// advance_deduct_amount: sent => as is; omitted => ROUND(contract_amount * advance_deduct_pct / 100, 2).
@@ -260,7 +343,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			use_discount, discount_type, use_vat, use_wht,
 			total_amount, discount_amount, vat_amount, wht_amount, net_amount,
 			project_name_text, subcontractor_signed_name, advance_deduct_amount, approver_id,
-			has_penalty, warranty_note,
+			has_penalty, warranty_note, pr_id,
 			created_by, updated_by
 		) VALUES (
 			$1,$2,$3,$4,$5,
@@ -274,7 +357,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			$34,$35,$36,$37,
 			$38,$39,$40,$41,$42,
 			$43,$44,COALESCE($45,0),$46,
-			COALESCE($47,false),$48,
+			COALESCE($47,false),$48,NULLIF($49::bigint,0),
 			$30,$30
 		) RETURNING id`,
 		woNo, woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
@@ -288,7 +371,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 		useDiscount, discountType, useVAT, useWHT,
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
 		req.ProjectNameText, req.SubcontractorSignedName, advanceDeductAmount, req.ApproverID,
-		req.HasPenalty, req.WarrantyNote,
+		req.HasPenalty, req.WarrantyNote, req.PRID,
 	).Scan(&woID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "insert error: "+err.Error())
@@ -434,7 +517,7 @@ const workOrderSelectCols = `
 	(SELECT COUNT(*) FROM work_order_edit_log wel WHERE wel.wo_id = wo.id) AS revision_round,
 	wo.updated_by, uu.full_name AS updated_by_name,
 	COALESCE(apru.full_name, evu.full_name) AS approver_name, ev.ev_at, evu.full_name AS approved_by_name,
-	wo.has_penalty, wo.warranty_note`
+	wo.has_penalty, wo.warranty_note, wo.pr_id, prq.pr_no`
 
 var workOrderJoins = `
 	FROM work_order wo
@@ -444,6 +527,7 @@ var workOrderJoins = `
 	LEFT JOIN users au ON au.id = wo.authorized_by
 	LEFT JOIN users uu ON uu.id = wo.updated_by
 	LEFT JOIN users apru ON apru.id = wo.approver_id
+	LEFT JOIN purchase_request prq ON prq.id = wo.pr_id
 	` + approvedEventLateralSQL("WO", "wo", "work_order_status_log", "wo_id") + `
 	LEFT JOIN users evu ON evu.id = ev.ev_by`
 
@@ -465,7 +549,7 @@ func scanWorkOrder(row interface{ Scan(dest ...any) error }) (*models.WorkOrder,
 		&w.TotalAmount, &w.DiscountAmount, &w.VatAmount, &w.WhtAmount, &w.NetAmount,
 		&w.SupplierID, &w.ProjectNameText, &w.AdvanceDeductAmount, &w.ApproverID, &w.RevisionRound,
 		&w.UpdatedBy, &w.UpdatedByName, &w.ApproverName, &w.ApprovedAt, &w.ApprovedByName,
-		&w.HasPenalty, &w.WarrantyNote,
+		&w.HasPenalty, &w.WarrantyNote, &w.PRID, &w.PRNo,
 	)
 	if err != nil {
 		return nil, err
@@ -648,7 +732,7 @@ func (h *WorkOrderHandler) Get(c *fiber.Ctx) error {
 func fetchWorkOrderLines(ctx context.Context, db *pgxpool.Pool, woID int64) ([]models.WorkOrderLine, error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, wo_id, sort_order, cost_code, description, qty, unit_price, amount,
-		       disc, disc_type, vat_rate, wht_rate, created_at, created_by
+		       disc, disc_type, vat_rate, wht_rate, created_at, created_by, remarks
 		FROM work_order_line
 		WHERE wo_id=$1
 		ORDER BY sort_order`, woID)
@@ -662,7 +746,7 @@ func fetchWorkOrderLines(ctx context.Context, db *pgxpool.Pool, woID int64) ([]m
 		var l models.WorkOrderLine
 		if err := rows.Scan(
 			&l.ID, &l.WoID, &l.SortOrder, &l.CostCode, &l.Description, &l.Qty, &l.UnitPrice, &l.Amount,
-			&l.Disc, &l.DiscType, &l.VatRate, &l.WhtRate, &l.CreatedAt, &l.CreatedBy,
+			&l.Disc, &l.DiscType, &l.VatRate, &l.WhtRate, &l.CreatedAt, &l.CreatedBy, &l.Remarks,
 		); err != nil {
 			return nil, err
 		}
@@ -734,9 +818,9 @@ func insertWorkOrderLines(ctx context.Context, tx pgx.Tx, woID int64, lines []mo
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO work_order_line
-			  (wo_id, sort_order, cost_code, description, qty, unit_price, disc, disc_type, vat_rate, wht_rate, created_by)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-			woID, i+1, l.CostCode, l.Description, l.Qty, l.UnitPrice, disc, discType, l.VatRate, l.WhtRate, userID,
+			  (wo_id, sort_order, cost_code, description, qty, unit_price, disc, disc_type, vat_rate, wht_rate, created_by, remarks)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			woID, i+1, l.CostCode, l.Description, l.Qty, l.UnitPrice, disc, discType, l.VatRate, l.WhtRate, userID, l.Remarks,
 		); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("lines[%d]: insert error: %s", i, err.Error()))
 		}
@@ -944,6 +1028,18 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 	} else if !woEditableStatuses[currentStatus] {
 		return woNotEditableErr(currentStatus)
 	}
+	// pr_id: only a NEW link is validated (an already linked PR stays valid even if its state changed later).
+	if req.PRID != nil && *req.PRID > 0 {
+		var storedPR *int64
+		if err := h.db.QueryRow(ctx, `SELECT pr_id FROM work_order WHERE id=$1`, id).Scan(&storedPR); err != nil {
+			return fiber.NewError(fiber.StatusNotFound, "work order not found")
+		}
+		if storedPR == nil || *storedPR != *req.PRID {
+			if err := requireWOPR(ctx, h.db, *req.PRID, id); err != nil {
+				return err
+			}
+		}
+	}
 	// Lowering contract_amount is only possible through edit-approved (increase / same value is fine).
 	// 0.005 tolerance so numeric(…,2) round-trips never read as a decrease.
 	if !editApproved && req.ContractAmount < currentContractAmount-0.005 {
@@ -1096,7 +1192,8 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 			advance_deduct_amount = COALESCE($46, advance_deduct_amount),
 			approver_id = COALESCE($47, approver_id),
 			has_penalty = COALESCE($48, has_penalty),
-			warranty_note = $49
+			warranty_note = $49,
+			pr_id = CASE WHEN $50::bigint IS NULL THEN pr_id WHEN $50::bigint = 0 THEN NULL ELSE $50::bigint END
 		WHERE id = $43`,
 		woDate, req.EmployerName, req.ProjectCode, req.ProjectScopeText,
 		req.SupplierID, req.SupplierName, req.ContactPerson, req.SupplierAddress, req.SupplierPhone,
@@ -1109,7 +1206,7 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 		totalAmount, discountAmount, vatAmount, whtAmount, netAmount,
 		newStatus, claims.UserID, id,
 		req.ProjectNameText, req.SubcontractorSignedName, req.AdvanceDeductAmount, req.ApproverID,
-		req.HasPenalty, req.WarrantyNote,
+		req.HasPenalty, req.WarrantyNote, req.PRID,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "update error: "+err.Error())
 	}

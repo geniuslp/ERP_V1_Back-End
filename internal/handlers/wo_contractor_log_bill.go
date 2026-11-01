@@ -22,11 +22,12 @@ type woBillLine struct {
 }
 
 type woBillInvoice struct {
-	InvoiceNo    *string `json:"invoice_no"`
-	InvoiceDate  *string `json:"invoice_date"`
-	DeliveryDate *string `json:"delivery_date"`
-	BillDate     *string `json:"bill_date"`
-	PayDate      *string `json:"pay_date"`
+	InvoiceNo    *string  `json:"invoice_no"`
+	InvoiceDate  *string  `json:"invoice_date"`
+	DeliveryDate *string  `json:"delivery_date"`
+	BillDate     *string  `json:"bill_date"`
+	PayDate      *string  `json:"pay_date"`
+	Amount       *float64 `json:"invoice_amount"`
 }
 
 type woBillRequest struct {
@@ -98,10 +99,11 @@ func insertWOBillChildren(ctx context.Context, tx pgx.Tx, billID int64, req *woB
 	for i, inv := range req.Invoices {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO wo_contractor_log_bill_invoice
-			  (bill_id, line_no, invoice_no, invoice_date, delivery_date, bill_date, pay_date)
-			VALUES ($1,$2,$3, NULLIF($4,'')::date, NULLIF($5,'')::date, NULLIF($6,'')::date, NULLIF($7,'')::date)`,
+			  (bill_id, line_no, invoice_no, invoice_date, delivery_date, bill_date, pay_date, invoice_amount)
+			VALUES ($1,$2,$3, NULLIF($4,'')::date, NULLIF($5,'')::date, NULLIF($6,'')::date, NULLIF($7,'')::date, $8)`,
 			billID, i+1, inv.InvoiceNo,
 			derefStr(inv.InvoiceDate), derefStr(inv.DeliveryDate), derefStr(inv.BillDate), derefStr(inv.PayDate),
+			inv.Amount,
 		); err != nil {
 			return err
 		}
@@ -337,7 +339,7 @@ func (h *WOContractorLogHandler) GetBill(c *fiber.Ctx) error {
 
 	invRows, err := h.db.Query(ctx, `
 		SELECT invoice_no, TO_CHAR(invoice_date,'YYYY-MM-DD'), TO_CHAR(delivery_date,'YYYY-MM-DD'),
-		       TO_CHAR(bill_date,'YYYY-MM-DD'), TO_CHAR(pay_date,'YYYY-MM-DD')
+		       TO_CHAR(bill_date,'YYYY-MM-DD'), TO_CHAR(pay_date,'YYYY-MM-DD'), invoice_amount::float8
 		FROM wo_contractor_log_bill_invoice WHERE bill_id=$1 ORDER BY line_no`, billID)
 	if err != nil {
 		return err
@@ -346,7 +348,7 @@ func (h *WOContractorLogHandler) GetBill(c *fiber.Ctx) error {
 	invoices := []woBillInvoice{}
 	for invRows.Next() {
 		var inv woBillInvoice
-		if err := invRows.Scan(&inv.InvoiceNo, &inv.InvoiceDate, &inv.DeliveryDate, &inv.BillDate, &inv.PayDate); err != nil {
+		if err := invRows.Scan(&inv.InvoiceNo, &inv.InvoiceDate, &inv.DeliveryDate, &inv.BillDate, &inv.PayDate, &inv.Amount); err != nil {
 			return err
 		}
 		invoices = append(invoices, inv)

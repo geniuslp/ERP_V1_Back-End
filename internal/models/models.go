@@ -1028,6 +1028,9 @@ type UpdatePRRequest struct {
 	ApproverID    *int64         `json:"approver_id,omitempty"` // required when the status is a submit status
 	Remarks       *string        `json:"remarks,omitempty"`
 	Lines         []UpdatePRLine `json:"lines" validate:"required,min=1"`
+	// Attachments: files the client holds for this PR (already-saved ones are echoed back too).
+	// Update inserts only entries whose file_path isn't already on this PR; it never deletes.
+	Attachments []AddAttachmentRequest `json:"attachments,omitempty"`
 }
 
 // UpdatePRLine's ID identifies an existing purchase_request_line row to update in place.
@@ -1640,6 +1643,8 @@ type WorkOrder struct {
 	WarrantyYears           int       `json:"warranty_years"`
 	HasPenalty              bool      `json:"has_penalty"`   // 8.1 เบี้ยปรับ มี/ไม่มี (fixed 1.00% of contract value per day)
 	WarrantyNote            *string   `json:"warranty_note"` // 8.2 ประกันผลงาน (free text)
+	PRID                    *int64    `json:"pr_id"`         // PR this WO was created from (null = none)
+	PRNo                    *string   `json:"pr_no"`
 	RefNo                   *string   `json:"ref_no"`
 	OtherTerms              *string   `json:"other_terms"`
 	Status                  string    `json:"status"` // DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|CANCELLED
@@ -1712,6 +1717,8 @@ type CreateWorkOrderRequest struct {
 	WarrantyYears       *int     `json:"warranty_years"`
 	HasPenalty          *bool    `json:"has_penalty"`   // omitted on PUT keeps the stored value
 	WarrantyNote        *string  `json:"warranty_note"`
+	// PRID links the WO to an approved PR (pr_type PO_WO / WO_ONLY). Update: omitted/null keeps the stored link, 0 clears it.
+	PRID                *int64   `json:"pr_id"`
 	RefNo               *string  `json:"ref_no"`
 	OtherTerms          *string  `json:"other_terms"`
 	SectionHeadID       *int64   `json:"section_head_id"`
@@ -1739,6 +1746,7 @@ type WorkOrderLineInput struct {
 	DiscType    *string  `json:"disc_type" validate:"omitempty,oneof=pct amt"`
 	VatRate     *float64 `json:"vat_rate"`
 	WhtRate     *float64 `json:"wht_rate" validate:"omitempty,oneof=1 3 5"`
+	Remarks     *string  `json:"remarks"` // per-line รายละเอียด (free text)
 }
 
 // WorkOrderLine mirrors the work_order_line table (db row + response shape).
@@ -1757,6 +1765,7 @@ type WorkOrderLine struct {
 	WhtRate     *float64  `json:"wht_rate"`
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   *int64    `json:"created_by"`
+	Remarks     *string   `json:"remarks"`
 }
 
 // UpdateWorkOrderLinesRequest replaces the full set of lines (+ discount/VAT/WHT flags) for a WO.

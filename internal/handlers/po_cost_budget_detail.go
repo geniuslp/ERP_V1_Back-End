@@ -31,6 +31,24 @@ type costBudgetDetailProject struct {
 // spent_amount (pcProjectSpentSQL) still uses line_net (VAT-inclusive, net of WHT) — a different basis.
 const pcExVatSQL = `(COALESCE(l.amount, l.qty * l.unit_price) - l.line_discount)`
 
+// woLineCostSubgroupJoin maps a work_order_line (alias `wol`) to its cost_subgroup as alias `wom`
+// (wom.cost_subgroup_id). A WO line stores the COMBINED cost code text (e.g. LP30303), not an id, so the code is
+// rebuilt from the cost tree (costCodeSQL) and matched; one line maps to exactly one non-Head, non-Major subgroup
+// (lowest id if the text were ever ambiguous), so a line is never counted twice. A line whose code matches no
+// subgroup is simply not charged to any cost code. Only APPROVED work orders are counted by the callers.
+func woLineCostSubgroupJoin() string {
+	return `JOIN LATERAL (
+			SELECT cs2.id AS cost_subgroup_id
+			FROM cost_subgroup cs2
+			JOIN cost_group    cg2  ON cg2.id  = cs2.group_id
+			JOIN cost_job      cj2  ON cj2.id  = cg2.job_id
+			JOIN cost_subject  csb2 ON csb2.id = cj2.subject_id
+			WHERE NOT cs2.is_head AND NOT cs2.is_major
+			  AND ` + costCodeSQL("csb2", "cj2", "cg2", "cs2") + ` = wol.cost_code
+			ORDER BY cs2.id LIMIT 1
+		) wom ON true`
+}
+
 // costBudgetUnassignedLabel is the description of the synthetic row that holds APPROVED petty cash
 // lines of the project that have no cost code.
 const costBudgetUnassignedLabel = "ไม่ระบุรหัสต้นทุน"
@@ -132,6 +150,15 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 			  AND pol.status <> 'CANCELLED'
 			  AND pol.cost_subgroup_id IS NOT NULL
 			GROUP BY pol.cost_subgroup_id
+		), wo_raw AS (
+			-- APPROVED work orders of the project: qty * unit_price per line (same basis as PO), charged to the
+			-- cost code written on the line. Counted in po_cost together with PO and transfers.
+			SELECT wom.cost_subgroup_id,
+			       SUM(wol.qty * wol.unit_price)::float8 AS wo_cost
+			FROM work_order_line wol
+			JOIN work_order wo ON wo.id = wol.wo_id AND wo.project_code = $1 AND wo.status = 'APPROVED'
+			`+woLineCostSubgroupJoin()+`
+			GROUP BY wom.cost_subgroup_id
 		), tr_amt AS (
 			-- POSTED TRANSFER lines priced at the unit cost recorded when the document was posted:
 			-- + on the destination project's cost code, - on the source project's cost code (a
@@ -155,6 +182,8 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 			SELECT cost_subgroup_id, SUM(po_cost)::float8 AS po_cost
 			FROM (
 				SELECT cost_subgroup_id, po_cost FROM po_raw
+				UNION ALL
+				SELECT cost_subgroup_id, wo_cost FROM wo_raw
 				UNION ALL
 				SELECT cost_subgroup_id, amt FROM tr_amt WHERE project_code = $1 AND cost_subgroup_id IS NOT NULL
 			) x
@@ -282,6 +311,14 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 		return err
 	}
 
+	// Budget of a whole job = the project value * the job's share % (project_job_share, set on the project
+	// form). It is shown on the job's MAJOR row; HEAD / ITEM rows keep their own (cost-code level) budget.
+	jobBudgets, err := h.loadJobShareBudgets(ctx, projectCode)
+	if err != nil {
+		log.Printf("cost-budget-detail job shares project=%s: %v", projectCode, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูลงบประมาณต้นทุนได้ กรุณาลองใหม่อีกครั้ง")
+	}
+
 	// Flat ordered list per job: MAJOR, then each group's HEAD followed by its ITEMs.
 	jobOrder := make([]*cbJob, 0, len(jobs))
 	for _, j := range jobs {
@@ -296,8 +333,12 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 
 	result := []costBudgetDetailRow{}
 	for _, j := range jobOrder {
+		majorSum := j.sum
+		if b, ok := jobBudgets[j.subjectCode+j.jobCode]; ok {
+			majorSum.budget = b // the page total stays the whole project value (below), not the sum of these
+		}
 		for _, m := range j.majors {
-			result = append(result, cbRow("MAJOR", m, j.sum))
+			result = append(result, cbRow("MAJOR", m, majorSum))
 		}
 		gs := make([]*cbGroup, 0, len(j.groupIDs))
 		for _, gid := range j.groupIDs {
@@ -339,7 +380,19 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 		totals.PuCost += unassigned
 	}
 
-	// Grand total = ITEM rows (incl. the unassigned row), never the MAJOR / HEAD roll-ups.
+	// Grand total: costs = ITEM rows (incl. the unassigned row), never the MAJOR / HEAD roll-ups. Budget = the
+	// project's whole value (vo_amount for VO projects, else budget_amount), not just the jobs shown here; when the
+	// project has no value set it stays the sum of the item budgets.
+	var projectValue float64
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(CASE WHEN project_kind = 'VO' THEN vo_amount ELSE budget_amount END, 0)::float8
+		FROM project WHERE project_code = $1`, projectCode).Scan(&projectValue); err != nil {
+		log.Printf("cost-budget-detail project value project=%s: %v", projectCode, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูลงบประมาณต้นทุนได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if projectValue > 0 {
+		totals.Budget = projectValue
+	}
 	totals.Budget = cbRound(totals.Budget)
 	totals.PoCost = cbRound(totals.PoCost)
 	totals.PcCost = cbRound(totals.PcCost)
@@ -478,4 +531,55 @@ func (h *POHandler) CostBudgetDetailPurchases(c *fiber.Ctx) error {
 		return err
 	}
 	return c.JSON(fiber.Map{"success": true, "data": result})
+}
+
+// jobShareCostKey maps a project job code (MS, EE, ..., G) to the cost_subject.subject_code || cost_job.job_code
+// key of its MAJOR row (same mapping as the SQL function job_cost_key; General Code lives under subject OH).
+func jobShareCostKey(code string) string {
+	switch code {
+	case "MS":
+		return "MP"
+	case "EE":
+		return "ME"
+	case "SN":
+		return "MS"
+	case "FF":
+		return "MF"
+	case "GS":
+		return "MG"
+	case "AC":
+		return "MH"
+	case "CS":
+		return "MC"
+	case "AR":
+		return "MA"
+	case "G":
+		return "OHG"
+	}
+	return code
+}
+
+// loadJobShareBudgets returns, per subject||job key, project value (vo_amount for VO projects, else
+// budget_amount) * share_percent / 100 for every job that has a share on the project.
+func (h *POHandler) loadJobShareBudgets(ctx context.Context, projectCode string) (map[string]float64, error) {
+	rows, err := h.db.Query(ctx, `
+		SELECT s.job_code,
+		       (CASE WHEN p.project_kind = 'VO' THEN p.vo_amount ELSE p.budget_amount END * s.share_percent / 100)::float8
+		FROM project_job_share s
+		JOIN project p ON p.id = s.project_id
+		WHERE p.project_code = $1`, projectCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var code string
+		var amount float64
+		if err := rows.Scan(&code, &amount); err != nil {
+			return nil, err
+		}
+		out[jobShareCostKey(code)] = cbRound(amount)
+	}
+	return out, rows.Err()
 }

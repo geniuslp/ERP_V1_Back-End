@@ -169,6 +169,10 @@ type poListRow struct {
 	ProjectName    *string    `json:"project_name,omitempty"`
 	CreatedByName  string     `json:"created_by_name"`
 	UpdatedByName  string     `json:"updated_by_name"`
+	// LastEditedAt / LastEditedByName: the last REAL edit of the content (PUT /po/:id, PUT /po/:id/edit-approved).
+	// Approve / reject / cancel / goods receipt do not count; nil = never edited (or edited before this was tracked).
+	LastEditedAt     *time.Time `json:"last_edited_at,omitempty"`
+	LastEditedByName *string    `json:"last_edited_by_name,omitempty"`
 	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
 	ApprovedByName *string    `json:"approved_by_name,omitempty"`
 	// ApproverName: the document's assigned approver (purchase_order.approver_id); when that is NULL (legacy rows),
@@ -216,12 +220,14 @@ var poListSelectSQL = `
 		       ` + poPRIDsSQL + ` AS pr_ids,
 		       s.payment_terms, COALESCE(po.deposit_paid, false), po.remarks, COALESCE(po.discount_amount, 0),
 		       ` + poPaidAmountSQL + ` AS paid_amount, ` + poPaymentStatusSQL + ` AS payment_status,
-		       ` + poPRRefsSQL + ` AS pr_refs
+		       ` + poPRRefsSQL + ` AS pr_refs,
+		       po.last_edited_at, leu.full_name AS last_edited_by_name
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
 		LEFT JOIN users cu ON cu.id = po.created_by
 		LEFT JOIN users uu ON uu.id = po.updated_by
+		LEFT JOIN users leu ON leu.id = po.last_edited_by
 		LEFT JOIN users apr ON apr.id = po.approver_id
 		` + approvedEventLateralSQL("PO", "po", "po_status_log", "po_id") + `
 		LEFT JOIN users au ON au.id = ev.ev_by
@@ -304,7 +310,7 @@ func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
 			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName, &r.ApproverName,
 			&r.RevisionRound, &r.PRNos, &r.PRIDs, &terms, &r.DepositPaid, &r.Remarks, &r.DiscountAmount,
-			&r.PaidAmount, &r.PaymentStatus, &r.PRRefs); err != nil {
+			&r.PaidAmount, &r.PaymentStatus, &r.PRRefs, &r.LastEditedAt, &r.LastEditedByName); err != nil {
 			return nil, err
 		}
 		r.Credit = poCredit(terms)
@@ -1933,7 +1939,7 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		    total_amount=$14, vat_amount=$15, net_amount=$16, status=$17,
 		    use_discount=$18, discount_type=$19, discount_amount=$20, use_vat=$21, use_wht=$22, wht_amount=$23,
 		    order_type=$24, job_code=$25, receiver_name=$26, receiver_phone=$27,
-		    updated_at=NOW(), updated_by=$28
+		    updated_at=NOW(), updated_by=$28, last_edited_at=NOW(), last_edited_by=$28
 		WHERE id=$29`,
 		req.SupplierID, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref,
 		req.Currency, req.ExpectedDate, req.PaymentTerms, req.Remarks,
@@ -2404,7 +2410,7 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		    warehouse_code=COALESCE($5, warehouse_code), currency=$6, expected_date=$7,
 		    payment_terms=$8, remarks=$9, receiver_name=$10, receiver_phone=$11, total_amount=$12, vat_amount=$13, net_amount=$14,
 		    use_discount=$15, discount_type=$16, discount_amount=$17, use_vat=$18, use_wht=$19, wht_amount=$20,
-		    status='PENDING_REAPPROVAL', updated_at=NOW(), updated_by=$21
+		    status='PENDING_REAPPROVAL', updated_at=NOW(), updated_by=$21, last_edited_at=NOW(), last_edited_by=$21
 		WHERE id=$22`,
 		req.SupplierID, req.LocationText, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Currency, req.ExpectedDate,
 		req.PaymentTerms, req.Remarks, req.ReceiverName, req.ReceiverPhone, totalAmount, vatAmount, netAmount,
@@ -3175,6 +3181,8 @@ type poPrintItem struct {
 	// the line has no cost_subgroup_id set.
 	Code string `json:"code"`
 	Desc string `json:"desc"`
+	// SubDesc — the line's own remark (purchase_order_line.description), printed under the item name.
+	SubDesc string `json:"subDesc"`
 	// Spec — material_code's resolved spec_size.spec_description (same join
 	// GetDetail already uses), empty string when the material has no spec set.
 	Spec         string  `json:"spec"`
@@ -3368,11 +3376,17 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 			return err
 		}
 
-		desc := ""
-		if description != nil && strings.TrimSpace(*description) != "" {
-			desc = *description
-		} else if matName != nil {
-			desc = *matName
+		// Item name first (material master), the line's remark underneath. A line with no material name
+		// (e.g. created from a memo without a mat_code) has only the remark text, so it stays the name.
+		desc, subDesc := "", ""
+		remarkText := ""
+		if description != nil {
+			remarkText = strings.TrimSpace(*description)
+		}
+		if matName != nil && strings.TrimSpace(*matName) != "" {
+			desc, subDesc = *matName, remarkText
+		} else {
+			desc = remarkText
 		}
 		unit := ""
 		if unitName != nil {
@@ -3389,6 +3403,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 			No:           strconv.Itoa(lineNo),
 			Code:         code,
 			Desc:         desc,
+			SubDesc:      subDesc,
 			Spec:         derefString(specDesc),
 			Brand:        derefString(brandName),
 			Qty:          qty,

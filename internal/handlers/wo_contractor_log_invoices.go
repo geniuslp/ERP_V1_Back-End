@@ -8,16 +8,17 @@ import (
 )
 
 type woLogInvoiceHistoryRow struct {
-	BillID        int64   `json:"bill_id"`
-	BillNo        int     `json:"bill_no"` // 1, 2, ... in the order the bills were created (ครั้งที่จ่าย)
-	BillType      string  `json:"bill_type"`
-	InstallmentNo *int    `json:"installment_no"`
-	Status        string  `json:"status"`
-	InvoiceNo     *string `json:"invoice_no"`
-	InvoiceDate   *string `json:"invoice_date"`
-	DeliveryDate  *string `json:"delivery_date"`
-	BillDate      *string `json:"bill_date"`
-	PayDate       *string `json:"pay_date"`
+	BillID        int64    `json:"bill_id"`
+	BillNo        int      `json:"bill_no"` // 1, 2, ... in the order the bills were created (ครั้งที่จ่าย)
+	BillType      string   `json:"bill_type"`
+	InstallmentNo *int     `json:"installment_no"`
+	Status        string   `json:"status"`
+	InvoiceNo     *string  `json:"invoice_no"`
+	InvoiceDate   *string  `json:"invoice_date"`
+	DeliveryDate  *string  `json:"delivery_date"`
+	BillDate      *string  `json:"bill_date"`
+	PayDate       *string  `json:"pay_date"`
+	Amount        *float64 `json:"invoice_amount"`
 }
 
 // ListInvoices godoc
@@ -38,7 +39,8 @@ func (h *WOContractorLogHandler) ListInvoices(c *fiber.Ctx) error {
 	rows, err := h.db.Query(context.Background(), `
 		SELECT b.id, ROW_NUMBER() OVER (ORDER BY b.id)::int, b.bill_type, b.installment_no, b.status,
 		       i.invoice_no, TO_CHAR(i.invoice_date,'YYYY-MM-DD'), TO_CHAR(i.delivery_date,'YYYY-MM-DD'),
-		       TO_CHAR(i.bill_date,'YYYY-MM-DD'), TO_CHAR(i.pay_date,'YYYY-MM-DD')
+		       TO_CHAR(i.bill_date,'YYYY-MM-DD'), TO_CHAR(i.pay_date,'YYYY-MM-DD'),
+		       i.invoice_amount::float8
 		FROM wo_contractor_log_bill b
 		LEFT JOIN wo_contractor_log_bill_invoice i ON i.bill_id = b.id
 		WHERE b.log_id = $1
@@ -51,7 +53,7 @@ func (h *WOContractorLogHandler) ListInvoices(c *fiber.Ctx) error {
 	for rows.Next() {
 		var r woLogInvoiceHistoryRow
 		if err := rows.Scan(&r.BillID, &r.BillNo, &r.BillType, &r.InstallmentNo, &r.Status,
-			&r.InvoiceNo, &r.InvoiceDate, &r.DeliveryDate, &r.BillDate, &r.PayDate); err != nil {
+			&r.InvoiceNo, &r.InvoiceDate, &r.DeliveryDate, &r.BillDate, &r.PayDate, &r.Amount); err != nil {
 			return err
 		}
 		items = append(items, r)

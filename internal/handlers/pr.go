@@ -1533,6 +1533,30 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		}
 	}
 
+	// Attachments added during this edit: the payload also echoes the already-saved ones, so skip any
+	// file_path this PR already has and insert only the new ones (same on-disk check as Create).
+	for _, att := range req.Attachments {
+		var already bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM pr_attachment WHERE pr_id=$1 AND file_path=$2)`, prID, att.FilePath,
+		).Scan(&already); err != nil {
+			return err
+		}
+		if already {
+			continue
+		}
+		if err := checkAttachmentOnDisk(att.FilePath, att.FileName); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO pr_attachment (pr_id, file_name, file_path, file_size, file_type, uploaded_by, uploaded_at)
+			VALUES ($1,$2,$3,$4,$5,$6,now())`,
+			prID, att.FileName, att.FilePath, att.FileSize, att.FileType, claims.UserID,
+		); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to insert attachment: "+err.Error())
+		}
+	}
+
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO erp_audit_log (table_name, record_id, action, changed_by, new_data)
 		VALUES ('purchase_request',$1,'UPDATE',$2,$3)`,
