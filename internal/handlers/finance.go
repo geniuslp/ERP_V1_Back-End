@@ -73,10 +73,10 @@ const payableApprovalStatusSQL = `(CASE
 
 // payableStatusClause turns the status query param into a condition on d.status. No $n params:
 // the values are fixed literals chosen by a whitelist, so COUNT and SELECT numbering are unaffected.
-// Empty = both pending and approved documents. PENDING_REAPPROVAL exists on purchase_order only.
+// Empty = both pending and approved documents. PENDING_REAPPROVAL exists on purchase_order and work_order (edited after approval).
 func payableStatusClause(docType, status string) (string, error) {
 	pending := `'PENDING_APPROVAL'`
-	if docType == "PO" {
+	if docType == "PO" || docType == "WO" {
 		pending = `'PENDING_APPROVAL', 'PENDING_REAPPROVAL'`
 	}
 	switch strings.ToUpper(strings.TrimSpace(status)) {

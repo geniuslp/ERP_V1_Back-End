@@ -14556,8 +14556,8 @@ paths:
         percent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -> 50%); balance = amount - accumulate.
         ADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'
         ADV_DEDUCT lines; balance = amount - accumulate.
-        RETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION
-        lines; balance = amount - accumulate.
+        RETENTION: only what was entered in the bills (5. หักเงินประกันผลงาน), the WO's own retention terms are ignored.
+        amount = accumulate = sum of the bills' RETENTION lines; percent = amount / contract value; balance = 0.
       parameters:
       - description: work_order.id
         in: path

@@ -26,8 +26,8 @@ func woRound2(v float64) float64 { return math.Round(v*100) / 100 }
 // @Description  percent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -> 50%); balance = amount - accumulate.
 // @Description  ADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'
 // @Description  ADV_DEDUCT lines; balance = amount - accumulate.
-// @Description  RETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION
-// @Description  lines; balance = amount - accumulate.
+// @Description  RETENTION: only what was entered in the bills (5. หักเงินประกันผลงาน), the WO's own retention terms are ignored.
+// @Description  amount = accumulate = sum of the bills' RETENTION lines; percent = amount / contract value; balance = 0.
 // @Tags         WOContractorLog
 // @Security     BearerAuth
 // @Produce      json
@@ -49,13 +49,6 @@ func (h *WOContractorLogHandler) SummaryByWO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "record not found")
 	}
 	if err != nil {
-		return err
-	}
-
-	var retPct float64
-	if err := h.db.QueryRow(ctx, `
-		SELECT COALESCE((SELECT percent_of_contract FROM work_order_retention WHERE wo_id = $1 ORDER BY id LIMIT 1), 0)::float8`,
-		woID).Scan(&retPct); err != nil {
 		return err
 	}
 
@@ -105,7 +98,13 @@ func (h *WOContractorLogHandler) SummaryByWO(c *fiber.Ctx) error {
 		return err
 	}
 
-	retAmount := woRound2(contract * retPct / 100)
+	// Retention comes ONLY from what was typed in the bills (line RETENTION, 5. หักเงินประกันผลงาน) — the WO's own
+	// retention terms (7.3) are not used. Its % is that total against the contract value.
+	retAmount := woRound2(retAmt)
+	retPct := 0.0
+	if contract > 0 {
+		retPct = retAmount / contract * 100
+	}
 	// The installments (เงินงวดนี้) are a % of the contract value AFTER the advance is taken out
 	// (3,000,000 - 10% advance = 2,700,000), so the Contract row works on that base.
 	if advAmount == 0 {
