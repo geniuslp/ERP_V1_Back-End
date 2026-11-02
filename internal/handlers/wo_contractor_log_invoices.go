@@ -19,6 +19,7 @@ type woLogInvoiceHistoryRow struct {
 	BillDate      *string  `json:"bill_date"`
 	PayDate       *string  `json:"pay_date"`
 	Amount        *float64 `json:"invoice_amount"`
+	Description   *string  `json:"description"` // the bill's รายละเอียด (shown as หมายเหตุ in the history)
 }
 
 // ListInvoices godoc
@@ -40,7 +41,7 @@ func (h *WOContractorLogHandler) ListInvoices(c *fiber.Ctx) error {
 		SELECT b.id, ROW_NUMBER() OVER (ORDER BY b.id)::int, b.bill_type, b.installment_no, b.status,
 		       i.invoice_no, TO_CHAR(i.invoice_date,'YYYY-MM-DD'), TO_CHAR(i.delivery_date,'YYYY-MM-DD'),
 		       TO_CHAR(i.bill_date,'YYYY-MM-DD'), TO_CHAR(i.pay_date,'YYYY-MM-DD'),
-		       i.invoice_amount::float8
+		       i.invoice_amount::float8, b.description
 		FROM wo_contractor_log_bill b
 		LEFT JOIN wo_contractor_log_bill_invoice i ON i.bill_id = b.id
 		WHERE b.log_id = $1
@@ -53,7 +54,7 @@ func (h *WOContractorLogHandler) ListInvoices(c *fiber.Ctx) error {
 	for rows.Next() {
 		var r woLogInvoiceHistoryRow
 		if err := rows.Scan(&r.BillID, &r.BillNo, &r.BillType, &r.InstallmentNo, &r.Status,
-			&r.InvoiceNo, &r.InvoiceDate, &r.DeliveryDate, &r.BillDate, &r.PayDate, &r.Amount); err != nil {
+			&r.InvoiceNo, &r.InvoiceDate, &r.DeliveryDate, &r.BillDate, &r.PayDate, &r.Amount, &r.Description); err != nil {
 			return err
 		}
 		items = append(items, r)
