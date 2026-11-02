@@ -3244,6 +3244,8 @@ type poPrintData struct {
 	// ApprovalSignature: only populated when the PO's status is APPROVED — see
 	// resolvePOApprovalSignature. Shared shape/resolution logic with POHandler.Get.
 	ApprovalSignature *models.UserSignatureInfo `json:"approval_signature"`
+	// CreatedByUsername: username of the PO creator (purchase_order.created_by), printed in the first signature box.
+	CreatedByUsername string `json:"created_by_username"`
 }
 
 // PrintData godoc
@@ -3296,6 +3298,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		fallbackApproverName        *string
 		fallbackApproverSigPath     *string
 		fallbackApproverSigMime     *string
+		createdByName               *string
 	)
 
 	err := h.db.QueryRow(ctx, `
@@ -3307,11 +3310,13 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		       s.supplier_name, s.address, s.payment_terms, s.contact_name, s.contact_phone, s.sales_person, s.sales_person_phone,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id),
 		       po.status, po.approver_id,
-		       `+poApprovalSignatureSelect+`
+		       `+poApprovalSignatureSelect+`,
+		       cu.username
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
+		LEFT JOIN users cu ON cu.id = po.created_by
 		`+poApprovalSignatureJoins+`
 		WHERE po.id = $1 AND po.deleted_at IS NULL`, id,
 	).Scan(&poNo, &poDate, &expectedDate, &projectCode, &projectName, &locationText,
@@ -3324,6 +3329,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		&status, &approverID,
 		&approvedAt, &approvedByID, &approvedByName, &approvedBySigPath, &approvedBySigMime,
 		&fallbackApproverName, &fallbackApproverSigPath, &fallbackApproverSigMime,
+		&createdByName,
 	)
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
@@ -3462,6 +3468,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		UseVat:            derefBool(useVat),
 		UseWht:            derefBool(useWht),
 		ApprovalSignature: approvalSignature,
+		CreatedByUsername: derefString(createdByName),
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": data})
