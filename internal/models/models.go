@@ -2025,6 +2025,7 @@ type PettyCashRequisition struct {
 	RequestedByName *string         `json:"requested_by_name,omitempty"`
 	RequestedByUsername *string     `json:"requested_by_username,omitempty"` // printed under the requester signature
 	ApproverName    *string         `json:"approver_name,omitempty"`
+	ApprovedAt      *time.Time      `json:"approved_at,omitempty"` // latest APPROVE in approval_log (GET /petty-cash/:id only)
 	Lines           []PettyCashLine `json:"lines,omitempty"`
 	Attachments     []PettyCashAttachment `json:"attachments"`
 	ApprovalChain   any                   `json:"approval_chain,omitempty"` // detail endpoint only

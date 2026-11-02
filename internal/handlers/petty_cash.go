@@ -478,7 +478,9 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		       pc.created_at, pc.updated_at, pc.created_by, pc.updated_by,
 		       pc.doc_type, pc.branch_code, pc.payee_emp_code, pc.payee_name, pc.project_code, pc.project_name,
 		       pc.order_type, pc.dept_code, pc.dept_name, pc.ref_doc_no, pc.approver_remarks,
-		       u.full_name AS requested_by_name, u.username AS requested_by_username, au.full_name AS approver_name
+		       u.full_name AS requested_by_name, u.username AS requested_by_username, au.full_name AS approver_name,
+		       (SELECT MAX(al.action_at) FROM approval_log al
+		         WHERE al.doc_type = 'PETTY_CASH' AND al.doc_id = pc.id AND al.action = 'APPROVE') AS approved_at
 		FROM petty_cash_requisition pc
 		LEFT JOIN users u ON u.id = pc.requested_by
 		LEFT JOIN users au ON au.id = pc.approver_id
@@ -491,7 +493,7 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		&pc.CreatedAt, &pc.UpdatedAt, &pc.CreatedBy, &pc.UpdatedBy,
 		&pc.DocType, &pc.BranchCode, &pc.PayeeEmpCode, &pc.PayeeName, &pc.ProjectCode, &pc.ProjectName,
 		&pc.OrderType, &pc.DeptCode, &pc.DeptName, &pc.RefDocNo, &pc.ApproverRemarks,
-		&pc.RequestedByName, &pc.RequestedByUsername, &pc.ApproverName,
+		&pc.RequestedByName, &pc.RequestedByUsername, &pc.ApproverName, &pc.ApprovedAt,
 	)
 	if err != nil {
 		return nil, err
