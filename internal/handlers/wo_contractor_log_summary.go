@@ -60,16 +60,17 @@ func (h *WOContractorLogHandler) SummaryByWO(c *fiber.Ctx) error {
 	}
 
 	// Totals over every SAVED bill of this work order's contractor log.
-	var progPct, progAmt, deductAmt, retAmt float64
+	var progPct, progAmt, deductAmt, retAmt, advPaid float64
 	if err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN l.line_code = 'PROGRESS'   THEN COALESCE(l.percent, 0) END), 0)::float8,
 		       COALESCE(SUM(CASE WHEN l.line_code = 'PROGRESS'   THEN l.amount END), 0)::float8,
 		       COALESCE(SUM(CASE WHEN l.line_code = 'ADV_DEDUCT' THEN l.amount END), 0)::float8,
-		       COALESCE(SUM(CASE WHEN l.line_code = 'RETENTION'  THEN l.amount END), 0)::float8
+		       COALESCE(SUM(CASE WHEN l.line_code = 'RETENTION'  THEN l.amount END), 0)::float8,
+		       COALESCE(SUM(CASE WHEN l.line_code = 'ADV'        THEN l.amount END), 0)::float8
 		FROM wo_contractor_log lg
 		JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
 		JOIN wo_contractor_log_bill_line l ON l.bill_id = b.id
-		WHERE lg.wo_id = $1`, woID).Scan(&progPct, &progAmt, &deductAmt, &retAmt); err != nil {
+		WHERE lg.wo_id = $1`, woID).Scan(&progPct, &progAmt, &deductAmt, &retAmt, &advPaid); err != nil {
 		return err
 	}
 
@@ -110,7 +111,21 @@ func (h *WOContractorLogHandler) SummaryByWO(c *fiber.Ctx) error {
 	if advAmount == 0 {
 		advAmount = woRound2(contract * advPct / 100)
 	}
+	// The work order itself may carry no advance (7.1 left empty) while an advance bill was already paid:
+	// then the paid advance is the advance of this contract.
+	if advAmount == 0 && advPaid > 0 {
+		advAmount = woRound2(advPaid)
+		if contract > 0 {
+			advPct = woRound2(advPaid / contract * 100)
+		}
+	}
 	payBase := contract - advAmount
+	// The Contract balance (what is still to be paid as Work Progress) only starts counting once a Work Progress
+	// installment has been paid; with none paid yet the whole row stays at 0.
+	contractBalance := 0.0
+	if progAmt > 0 {
+		contractBalance = woRound2(payBase - progAmt)
+	}
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
@@ -122,7 +137,7 @@ func (h *WOContractorLogHandler) SummaryByWO(c *fiber.Ctx) error {
 			"contract": woLogSummaryRow{
 				// Amount = what has been paid as Work Progress so far (0 until the first installment bill is saved);
 				// payment_base below is the value those installments are a % of.
-				Percent: woRound2(progPct), Amount: woRound2(progAmt), Accumulate: woRound2(progAmt), Balance: woRound2(payBase - progAmt),
+				Percent: woRound2(progPct), Amount: woRound2(progAmt), Accumulate: woRound2(progAmt), Balance: contractBalance,
 			},
 			"advance": woLogSummaryRow{
 				Percent: woRound2(advPct), Amount: woRound2(advAmount), Accumulate: woRound2(deductAmt), Balance: woRound2(advAmount - deductAmt),

@@ -16605,7 +16605,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Approved PRs (status COMPLETED) whose pr_type is PO_WO or WO_ONLY and that are not already linked to a live (not CANCELLED / REJECTED) work order. Optional ?wo_id= keeps the PR already linked to that WO in the list.",
+                "description": "Approved PRs (status COMPLETED) whose pr_type is PO_WO or WO_ONLY and that are not already linked to a live (not CANCELLED / REJECTED) work order or to an active purchase order. Optional ?wo_id= keeps the PR already linked to that WO in the list.",
                 "produces": [
                     "application/json"
                 ],

@@ -179,11 +179,13 @@ func requireWOLinesForSubmit(ctx context.Context, db interface {
 }
 
 // sqlWOEligiblePR is a boolean expression over a purchase_request aliased `pr`: approved (COMPLETED), meant for a
-// WO (pr_type PO_WO or WO_ONLY) and not already behind another live work order (CANCELLED / REJECTED ones free it).
+// WO (pr_type PO_WO or WO_ONLY) and not already used: neither behind another live work order (CANCELLED / REJECTED
+// ones free it) nor behind an active purchase order (a PO line referencing it, see sqlActivePOLinks).
 // $1 below is the WO being edited (0 on create), so editing a WO never conflicts with its own link.
 const sqlWOEligiblePR = `pr.deleted_at IS NULL
 	AND pr.status = 'COMPLETED'
 	AND pr.pr_type IN ('PO_WO','WO_ONLY')
+	AND NOT EXISTS (SELECT 1 FROM (` + sqlActivePOLinks + `) po_lk WHERE po_lk.pr_id = pr.id)
 	AND NOT EXISTS (
 		SELECT 1 FROM work_order w
 		WHERE w.pr_id = pr.id AND w.id <> $1 AND w.status NOT IN ('CANCELLED','REJECTED')
@@ -203,14 +205,14 @@ func requireWOPR(ctx context.Context, db interface {
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบ PR ได้ กรุณาลองใหม่อีกครั้ง")
 	}
 	if !ok {
-		return fiber.NewError(fiber.StatusBadRequest, "PR นี้ใช้สร้างหนังสือสั่งจ้างไม่ได้ (ต้องอนุมัติแล้ว, ประเภทเอกสาร PO/WO หรือ WO และยังไม่ถูกใช้ในหนังสือสั่งจ้างอื่น)")
+		return fiber.NewError(fiber.StatusBadRequest, "PR นี้ใช้สร้างหนังสือสั่งจ้างไม่ได้ (ต้องอนุมัติแล้ว, ประเภทเอกสาร PO/WO หรือ WO และยังไม่ถูกใช้ในหนังสือสั่งจ้างอื่นหรือใบสั่งซื้อ)")
 	}
 	return nil
 }
 
 // AvailablePRs godoc
 // @Summary      List PRs that can be pulled into a new work order
-// @Description  Approved PRs (status COMPLETED) whose pr_type is PO_WO or WO_ONLY and that are not already linked to a live (not CANCELLED / REJECTED) work order. Optional ?wo_id= keeps the PR already linked to that WO in the list.
+// @Description  Approved PRs (status COMPLETED) whose pr_type is PO_WO or WO_ONLY and that are not already linked to a live (not CANCELLED / REJECTED) work order or to an active purchase order. Optional ?wo_id= keeps the PR already linked to that WO in the list.
 // @Tags         WorkOrder
 // @Security     BearerAuth
 // @Produce      json
