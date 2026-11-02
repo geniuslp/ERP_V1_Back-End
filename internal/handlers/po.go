@@ -167,6 +167,8 @@ type poListRow struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 	ProjectCode    *string    `json:"project_code,omitempty"`
 	ProjectName    *string    `json:"project_name,omitempty"`
+	DeptCode       *string    `json:"dept_code,omitempty"`
+	DeptName       *string    `json:"dept_name,omitempty"`
 	CreatedByName  string     `json:"created_by_name"`
 	UpdatedByName  string     `json:"updated_by_name"`
 	// LastEditedAt / LastEditedByName: the last REAL edit of the content (PUT /po/:id, PUT /po/:id/edit-approved).
@@ -221,7 +223,8 @@ var poListSelectSQL = `
 		       s.payment_terms, COALESCE(po.deposit_paid, false), po.remarks, COALESCE(po.discount_amount, 0),
 		       ` + poPaidAmountSQL + ` AS paid_amount, ` + poPaymentStatusSQL + ` AS payment_status,
 		       ` + poPRRefsSQL + ` AS pr_refs,
-		       po.last_edited_at, leu.full_name AS last_edited_by_name
+		       po.last_edited_at, leu.full_name AS last_edited_by_name,
+		       po.dept_code, dpt.dept_name
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
@@ -229,6 +232,7 @@ var poListSelectSQL = `
 		LEFT JOIN users uu ON uu.id = po.updated_by
 		LEFT JOIN users leu ON leu.id = po.last_edited_by
 		LEFT JOIN users apr ON apr.id = po.approver_id
+		LEFT JOIN departments dpt ON dpt.dept_code = po.dept_code
 		` + approvedEventLateralSQL("PO", "po", "po_status_log", "po_id") + `
 		LEFT JOIN users au ON au.id = ev.ev_by
 		` + poPaidJoinSQL + `
@@ -310,7 +314,8 @@ func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
 			&r.ExpectedDate, &r.CreatedAt, &r.UpdatedAt, &r.ProjectCode, &r.ProjectName,
 			&r.CreatedByName, &r.UpdatedByName, &r.ApprovedAt, &r.ApprovedByName, &r.ApproverName,
 			&r.RevisionRound, &r.PRNos, &r.PRIDs, &terms, &r.DepositPaid, &r.Remarks, &r.DiscountAmount,
-			&r.PaidAmount, &r.PaymentStatus, &r.PRRefs, &r.LastEditedAt, &r.LastEditedByName); err != nil {
+			&r.PaidAmount, &r.PaymentStatus, &r.PRRefs, &r.LastEditedAt, &r.LastEditedByName,
+				&r.DeptCode, &r.DeptName); err != nil {
 			return nil, err
 		}
 		r.Credit = poCredit(terms)
@@ -833,7 +838,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		       COALESCE(s.supplier_name, ''),
 		       s.office_phone, s.sales_person,
 		       s.contact_email, s.contact_phone,
-		       pr.pr_no, w.address, pj.project_name,
+		       pr.pr_no, w.address, pj.project_name, po.dept_code, dpt.dept_name,
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id),
 		       `+poApprovalSignatureSelect+`
 		FROM purchase_order po
@@ -842,6 +847,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		LEFT JOIN warehouse w ON w.warehouse_code = po.warehouse_code
 		LEFT JOIN project pj ON pj.project_code = po.project_code
+		LEFT JOIN departments dpt ON dpt.dept_code = po.dept_code
 		`+poApprovalSignatureJoins+`
 		WHERE po.id = $1 AND po.deleted_at IS NULL`, id)
 
@@ -864,7 +870,7 @@ func (h *POHandler) Get(c *fiber.Ctx) error {
 		&po.SupplierName,
 		&po.OfficePhone, &po.SalesPerson,
 		&po.ContactEmail, &po.ContactPhone,
-		&po.PRNo, &po.WarehouseAddress, &po.ProjectName,
+		&po.PRNo, &po.WarehouseAddress, &po.ProjectName, &po.DeptCode, &po.DeptName,
 		&po.RevisionRound,
 		&approvedAt, &approvedByID, &approvedByName, &approvedBySigPath, &approvedBySigMime,
 		&fallbackApproverName, &fallbackApproverSigPath, &fallbackApproverSigMime); err != nil {
@@ -1086,6 +1092,34 @@ func (h *POHandler) resolvePOAutoFields(
 	return projectCode, requestedBy, warehouseCode, nil, nil, orderType, nil
 }
 
+// resolvePODeptCode decides purchase_order.dept_code. With a PR linked, the PR's department wins
+// (client value ignored, same as project_code); a PR without a department, or no PR at all, falls back
+// to the client-supplied code, which must exist in departments. Empty -> NULL (department is optional).
+func (h *POHandler) resolvePODeptCode(ctx context.Context, prID *int64, reqDept *string) (*string, error) {
+	if prID != nil {
+		var prDept *string
+		if err := h.db.QueryRow(ctx, `SELECT dept_code FROM purchase_request WHERE id=$1`, *prID).Scan(&prDept); err != nil {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "PR not found")
+		}
+		if prDept != nil && strings.TrimSpace(*prDept) != "" {
+			v := strings.TrimSpace(*prDept)
+			return &v, nil
+		}
+	}
+	if reqDept == nil || strings.TrimSpace(*reqDept) == "" {
+		return nil, nil
+	}
+	v := strings.TrimSpace(*reqDept)
+	var exists bool
+	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM departments WHERE dept_code=$1)`, v).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
+	}
+	return &v, nil
+}
+
 // resolveLineCostSubgroupID applies the same precedence pattern as PurchaseOrder.JobCode's
 // PR auto-fill: an explicit cost_subgroup_id on the line always wins; otherwise, if the line
 // is split from a PR line (pr_line_id set) and prLineCostSubgroup has an entry for it, that
@@ -1224,6 +1258,9 @@ func (h *POHandler) Create(c *fiber.Ctx) error {
 
 	projectCode, requestedBy, warehouseCode, prJobCode, prLineCostSubgroup, effectiveOrderType, err := h.resolvePOAutoFields(ctx, req.PRID, req.OrderType, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Lines)
 	if err != nil {
+		return err
+	}
+	if req.DeptCode, err = h.resolvePODeptCode(ctx, req.PRID, req.DeptCode); err != nil {
 		return err
 	}
 	{
@@ -1410,13 +1447,13 @@ func (h *POHandler) createPOTx(ctx context.Context, userID int64, req models.Cre
 		  (po_no, po_date, supplier_id, pr_id, rfq_id, location_text, warehouse_code, project_code, requested_by, approver_id, ref, currency,
 		   total_amount, vat_amount, net_amount, expected_date,
 		   use_discount, discount_type, discount_amount, use_vat, use_wht, wht_amount,
-		   status, order_type, job_code, payment_terms, remarks, receiver_name, receiver_phone, created_by)
-		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+		   status, order_type, job_code, payment_terms, remarks, receiver_name, receiver_phone, created_by, dept_code)
+		VALUES ($1,CURRENT_DATE,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
 		RETURNING id`,
 		poNo, req.SupplierID, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref, req.Currency,
 		totalAmount, vatAmount, netAmount, req.ExpectedDate,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
-		status, req.OrderType, *jobCode, req.PaymentTerms, req.Remarks, req.ReceiverName, req.ReceiverPhone, userID,
+		status, req.OrderType, *jobCode, req.PaymentTerms, req.Remarks, req.ReceiverName, req.ReceiverPhone, userID, req.DeptCode,
 	).Scan(&poID)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -1814,6 +1851,10 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	deptCode, err := h.resolvePODeptCode(ctx, req.PRID, req.DeptCode)
+	if err != nil {
+		return err
+	}
 	{
 		stored, err := storedCostSubgroupIDs(ctx, h.db, "purchase_order_line", poID)
 		if err != nil {
@@ -1939,6 +1980,7 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		    total_amount=$14, vat_amount=$15, net_amount=$16, status=$17,
 		    use_discount=$18, discount_type=$19, discount_amount=$20, use_vat=$21, use_wht=$22, wht_amount=$23,
 		    order_type=$24, job_code=$25, receiver_name=$26, receiver_phone=$27,
+		    dept_code=$30,
 		    updated_at=NOW(), updated_by=$28, last_edited_at=NOW(), last_edited_by=$28
 		WHERE id=$29`,
 		req.SupplierID, req.PRID, req.RFQID, req.LocationText, warehouseCode, projectCode, requestedBy, req.ApproverID, req.Ref,
@@ -1946,7 +1988,7 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		totalAmount, vatAmount, netAmount, newStatus,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
 		orderType, *jobCode, req.ReceiverName, req.ReceiverPhone,
-		claims.UserID, poID,
+		claims.UserID, poID, deptCode,
 	); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23503" {
 			detail := "invalid supplier_id, pr_id, rfq_id, warehouse_code or project_code"

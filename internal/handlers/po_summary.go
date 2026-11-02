@@ -88,10 +88,11 @@ func poSummaryNewFilters(c *fiber.Ctx, conditions []string, args []any) ([]strin
 	if v := strings.TrimSpace(c.Query("dept_code")); v != "" {
 		args = append(args, v)
 		// requester's department; fall back to the linked PR's dept_code when requested_by is NULL.
-		conditions = append(conditions, fmt.Sprintf(`(CASE
+		// The PO's own department wins; older POs without one keep the previous rule.
+		conditions = append(conditions, fmt.Sprintf(`COALESCE(po.dept_code, (CASE
 			WHEN po.requested_by IS NOT NULL THEN (SELECT ru.dept_code FROM users ru WHERE ru.id = po.requested_by)
 			ELSE (SELECT rp.dept_code FROM purchase_request rp WHERE rp.id = po.pr_id)
-		END)::text = $%d::text`, len(args)))
+		END))::text = $%d::text`, len(args)))
 	}
 	if v := strings.TrimSpace(c.Query("search")); v != "" {
 		args = append(args, "%"+v+"%")

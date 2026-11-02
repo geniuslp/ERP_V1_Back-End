@@ -18695,6 +18695,10 @@ const docTemplate = `{
                 "currency": {
                     "type": "string"
                 },
+                "dept_code": {
+                    "description": "DeptCode: optional; with pr_id set it is always taken from that PR (when the PR has one), client value ignored.",
+                    "type": "string"
+                },
                 "discount_type": {
                     "type": "string",
                     "enum": [
@@ -20633,6 +20637,12 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "currency": {
+                    "type": "string"
+                },
+                "dept_code": {
+                    "type": "string"
+                },
+                "dept_name": {
                     "type": "string"
                 },
                 "discount_amount": {

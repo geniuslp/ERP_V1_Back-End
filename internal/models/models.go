@@ -1069,6 +1069,8 @@ type PurchaseOrder struct {
 	WarehouseAddress *string   `json:"warehouse_address,omitempty"`
 	ProjectCode      *string   `json:"project_code,omitempty" db:"project_code"`
 	ProjectName      *string   `json:"project_name,omitempty"`
+	DeptCode         *string   `json:"dept_code,omitempty" db:"dept_code"`
+	DeptName         *string   `json:"dept_name,omitempty"`
 	RequestedBy      *int64    `json:"requested_by,omitempty" db:"requested_by"`
 	RequestedByName  string    `json:"requested_by_name,omitempty"`
 	ApproverID       *int64    `json:"approver_id,omitempty"`
@@ -1181,6 +1183,8 @@ type CreatePORequest struct {
 	LocationText  string  `json:"location_text" validate:"required"`
 	WarehouseCode *string `json:"warehouse_code,omitempty"`
 	ProjectCode   *string `json:"project_code,omitempty"`
+	// DeptCode: optional; with pr_id set it is always taken from that PR (when the PR has one), client value ignored.
+	DeptCode      *string `json:"dept_code,omitempty"`
 	RequestedBy   *int64  `json:"requested_by,omitempty"`
 	ApproverID    *int64  `json:"approver_id,omitempty"`
 	Ref           *string `json:"ref,omitempty"`
