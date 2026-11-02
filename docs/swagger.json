@@ -12084,7 +12084,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "matches pr_no or remarks (ILIKE, substring)",
+                        "description": "matches pr_no, remarks or the po_no of a linked active PO (ILIKE, substring)",
                         "name": "search",
                         "in": "query"
                     },
@@ -16133,7 +16133,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "All values are calculated, nothing is typed in. Only SAVED bills are counted.\nCONTRACT: amount = the WO contract value (ex VAT) minus the advance (contract_total is the full value); accumulate = sum of every bill's \"เงินงวดนี้\" (PROGRESS) amount;\npercent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -\u003e 50%); balance = amount - accumulate.\nADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'\nADV_DEDUCT lines; balance = amount - accumulate.\nRETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION\nlines; balance = amount - accumulate.",
+                "description": "All values are calculated, nothing is typed in. Only SAVED bills are counted.\nCONTRACT: amount = Work Progress paid so far (payment_base = contract value minus the advance, contract_total = the full value); accumulate = sum of every bill's \"เงินงวดนี้\" (PROGRESS) amount;\npercent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -\u003e 50%); balance = amount - accumulate.\nADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'\nADV_DEDUCT lines; balance = amount - accumulate.\nRETENTION: percent = the WO's retention % (7.3); amount = contract value * percent / 100; accumulate = sum of the bills' RETENTION\nlines; balance = amount - accumulate.",
                 "produces": [
                     "application/json"
                 ],

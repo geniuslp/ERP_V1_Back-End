@@ -55,7 +55,7 @@ func NewPRApprovalHandler(db *pgxpool.Pool) *PRApprovalHandler {
 // @Produce      json
 // @Param        status            query  string  false  "status filter — one of DRAFT, COMPLETED, STOCK_CHECK, PARTIALLY_FILLED, FULFILLED, CANCELLED"
 // @Param        available_for_po  query  bool    false  "true = only COMPLETED/PARTIALLY_FILLED PRs with qty_requested - qty_reserved - qty_ordered > 0 on at least one line"
-// @Param        search            query  string  false  "matches pr_no or remarks (ILIKE, substring)"
+// @Param        search            query  string  false  "matches pr_no, remarks or the po_no of a linked active PO (ILIKE, substring)"
 // @Param        date_from         query  string  false  "filter by created_at >= this date (YYYY-MM-DD)"
 // @Param        date_to           query  string  false  "filter by created_at <= this date (YYYY-MM-DD)"
 // @Param        job_code          query  string  false  "exact match on pr.job_code"
@@ -107,13 +107,15 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	// Used with two different parameter offsets: $2-$5 in the count query (no limit/offset there),
 	// $4-$7 in the main select (after $2=limit, $3=offset).
 	countExtraFilters := `
-		AND ($2::text IS NULL OR pr.pr_no ILIKE '%' || $2 || '%' OR pr.remarks ILIKE '%' || $2 || '%')
+		AND ($2::text IS NULL OR pr.pr_no ILIKE '%' || $2 || '%' OR pr.remarks ILIKE '%' || $2 || '%'
+		     OR EXISTS (SELECT 1 FROM (` + sqlActivePOLinks + `) lk WHERE lk.pr_id = pr.id AND lk.po_no ILIKE '%' || $2 || '%'))
 		AND ($3::date IS NULL OR pr.created_at::date >= $3::date)
 		AND ($4::date IS NULL OR pr.created_at::date <= $4::date)
 		AND ($5::text IS NULL OR pr.job_code = $5)
 		AND ($6::text IS NULL OR pr.order_type = $6)`
 	selectExtraFilters := `
-		AND ($4::text IS NULL OR pr.pr_no ILIKE '%' || $4 || '%' OR pr.remarks ILIKE '%' || $4 || '%')
+		AND ($4::text IS NULL OR pr.pr_no ILIKE '%' || $4 || '%' OR pr.remarks ILIKE '%' || $4 || '%'
+		     OR EXISTS (SELECT 1 FROM (` + sqlActivePOLinks + `) lk WHERE lk.pr_id = pr.id AND lk.po_no ILIKE '%' || $4 || '%'))
 		AND ($5::date IS NULL OR pr.created_at::date >= $5::date)
 		AND ($6::date IS NULL OR pr.created_at::date <= $6::date)
 		AND ($7::text IS NULL OR pr.job_code = $7)

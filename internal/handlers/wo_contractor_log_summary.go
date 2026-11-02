@@ -22,7 +22,7 @@ func woRound2(v float64) float64 { return math.Round(v*100) / 100 }
 // SummaryByWO godoc
 // @Summary      Contract / Advance / Retention summary of a work order's contractor bills
 // @Description  All values are calculated, nothing is typed in. Only SAVED bills are counted.
-// @Description  CONTRACT: amount = the WO contract value (ex VAT) minus the advance (contract_total is the full value); accumulate = sum of every bill's "เงินงวดนี้" (PROGRESS) amount;
+// @Description  CONTRACT: amount = Work Progress paid so far (payment_base = contract value minus the advance, contract_total = the full value); accumulate = sum of every bill's "เงินงวดนี้" (PROGRESS) amount;
 // @Description  percent = sum of those bills' PROGRESS percent (e.g. installment 1 = 20% and installment 2 = 30% -> 50%); balance = amount - accumulate.
 // @Description  ADVANCE: percent / amount = the WO's advance (7.1, advance_deduct_pct / advance_deduct_amount); accumulate = sum of the bills'
 // @Description  ADV_DEDUCT lines; balance = amount - accumulate.
@@ -116,10 +116,13 @@ func (h *WOContractorLogHandler) SummaryByWO(c *fiber.Ctx) error {
 		"data": fiber.Map{
 			"bills_paid_total": woRound2(billsPaid), // ex VAT / WHT, see above
 			"contract_total":   woRound2(contract),  // full WO contract value (before the advance is taken out)
+			"payment_base":     woRound2(payBase),   // contract value minus the advance: the base of every installment %
 			"credit_term_days": creditTermDays,
 			"bill_count":       billCount, // number of bills (any status) on this WO's contractor log
 			"contract": woLogSummaryRow{
-				Percent: woRound2(progPct), Amount: woRound2(payBase), Accumulate: woRound2(progAmt), Balance: woRound2(payBase - progAmt),
+				// Amount = what has been paid as Work Progress so far (0 until the first installment bill is saved);
+				// payment_base below is the value those installments are a % of.
+				Percent: woRound2(progPct), Amount: woRound2(progAmt), Accumulate: woRound2(progAmt), Balance: woRound2(payBase - progAmt),
 			},
 			"advance": woLogSummaryRow{
 				Percent: woRound2(advPct), Amount: woRound2(advAmount), Accumulate: woRound2(deductAmt), Balance: woRound2(advAmount - deductAmt),
