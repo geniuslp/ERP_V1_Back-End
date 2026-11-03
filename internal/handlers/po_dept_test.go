@@ -83,6 +83,7 @@ func TestPODeptCode(t *testing.T) {
 	app.Put("/po/:id", h.Update)
 	app.Get("/po/:id", h.Get)
 	app.Get("/po", h.List)
+	app.Get("/po/:id/print-data", h.PrintData)
 
 	do := func(method, path string, body any) (int, map[string]any) {
 		t.Helper()
@@ -143,6 +144,17 @@ func TestPODeptCode(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT dept_code FROM purchase_order WHERE id=$1`, po1).Scan(&stored)
 	if stored == nil || *stored != deptA {
 		t.Errorf("stored purchase_order.dept_code = %v, want %s", stored, deptA)
+	}
+
+	// print data (PurchaseOrderPrint) carries the department too
+	if _, pm := do("GET", "/po/"+strconv.FormatInt(po1, 10)+"/print-data", nil); true {
+		pd, _ := pm["data"].(map[string]any)
+		if pd == nil {
+			pd = pm
+		}
+		if pd["deptCode"] != deptA || pd["deptName"] == "" || pd["deptName"] == nil {
+			t.Errorf("print-data deptCode/deptName = %v / %v, want %s with a name", pd["deptCode"], pd["deptName"], deptA)
+		}
 	}
 
 	// 2) the list returns it and the dept filter finds it

@@ -3262,7 +3262,10 @@ type poPrintData struct {
 	// ProjectName resolved via LEFT JOIN project pj ON pj.project_code =
 	// po.project_code — empty string when the PO has no project_code or it
 	// doesn't match any project row.
-	ProjectName   string  `json:"projectName"`
+	ProjectName string `json:"projectName"`
+	// DeptCode / DeptName: purchase_order.dept_code and its departments.dept_name — empty strings when the PO has no department.
+	DeptCode      string  `json:"deptCode"`
+	DeptName      string  `json:"deptName"`
 	DeliveryPlace string  `json:"deliveryPlace"`
 	Job           string  `json:"job"`
 	QuotationNo   string  `json:"quotationNo"`
@@ -3341,6 +3344,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		fallbackApproverSigPath     *string
 		fallbackApproverSigMime     *string
 		createdByName               *string
+		deptCode, deptName          *string
 	)
 
 	err := h.db.QueryRow(ctx, `
@@ -3353,12 +3357,13 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		       (SELECT COUNT(*) FROM po_edit_log pel WHERE pel.po_id = po.id),
 		       po.status, po.approver_id,
 		       `+poApprovalSignatureSelect+`,
-		       cu.username
+		       cu.username, po.dept_code, dpt.dept_name
 		FROM purchase_order po
 		LEFT JOIN supplier s ON s.id = po.supplier_id
 		LEFT JOIN purchase_request pr ON pr.id = po.pr_id
 		LEFT JOIN project pj ON pj.project_code = po.project_code
 		LEFT JOIN users cu ON cu.id = po.created_by
+		LEFT JOIN departments dpt ON dpt.dept_code = po.dept_code
 		`+poApprovalSignatureJoins+`
 		WHERE po.id = $1 AND po.deleted_at IS NULL`, id,
 	).Scan(&poNo, &poDate, &expectedDate, &projectCode, &projectName, &locationText,
@@ -3371,7 +3376,7 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		&status, &approverID,
 		&approvedAt, &approvedByID, &approvedByName, &approvedBySigPath, &approvedBySigMime,
 		&fallbackApproverName, &fallbackApproverSigPath, &fallbackApproverSigMime,
-		&createdByName,
+		&createdByName, &deptCode, &deptName,
 	)
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "PO not found")
@@ -3472,6 +3477,8 @@ func (h *POHandler) PrintData(c *fiber.Ctx) error {
 		DeliveryDate:  formatPrintDate(expectedDate),
 		Project:       derefString(projectCode),
 		ProjectName:   derefString(projectName),
+		DeptCode:      derefString(deptCode),
+		DeptName:      derefString(deptName),
 		DeliveryPlace: derefString(locationText),
 		ReceiverName:  receiverName,
 		ReceiverPhone: receiverPhone,
