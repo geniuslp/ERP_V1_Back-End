@@ -40,6 +40,9 @@ type woBillRequest struct {
 	ProgressInstallmentNo *int            `json:"progress_installment_no"`
 	ProgressNote          *string         `json:"progress_note"`
 	WhtType               *string         `json:"wht_type"`
+	// RetentionMode: how row 5 (เงินประกันผลงาน) was worked out — EVERY (% of this bill, default) | ONCE (contract x % split over all installments).
+	// Only remembered here; the amount is the RETENTION line.
+	RetentionMode         string          `json:"retention_mode"`
 	Status                string          `json:"status"` // DRAFT (default) | SAVED
 	Lines                 []woBillLine    `json:"lines"`
 	Invoices              []woBillInvoice `json:"invoices"`
@@ -62,6 +65,12 @@ func validateWOBillRequest(req *woBillRequest) error {
 	case "ADV", "PROGRESS", "RETENTION":
 	default:
 		return fiber.NewError(fiber.StatusBadRequest, "bill_type must be ADV, PROGRESS or RETENTION")
+	}
+	if req.RetentionMode == "" {
+		req.RetentionMode = "EVERY"
+	}
+	if req.RetentionMode != "EVERY" && req.RetentionMode != "ONCE" {
+		return fiber.NewError(fiber.StatusBadRequest, "retention_mode must be EVERY or ONCE")
 	}
 	if req.Status == "" {
 		req.Status = "DRAFT"
@@ -200,10 +209,10 @@ func (h *WOContractorLogHandler) CreateBill(c *fiber.Ctx) error {
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO wo_contractor_log_bill
 		  (log_id, bill_type, installment_no, ap_voucher_no, pay_to, credit_term_days, description,
-		   progress_installment_no, wht_type, subtotal, net_amount, status, progress_note, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14) RETURNING id`,
+		   progress_installment_no, wht_type, subtotal, net_amount, status, progress_note, retention_mode, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15) RETURNING id`,
 		logID, req.BillType, req.InstallmentNo, req.ApVoucherNo, req.PayTo, req.CreditTermDays, req.Description,
-		req.ProgressInstallmentNo, req.WhtType, subtotal, net, req.Status, req.ProgressNote, claims.UserID,
+		req.ProgressInstallmentNo, req.WhtType, subtotal, net, req.Status, req.ProgressNote, req.RetentionMode, claims.UserID,
 	).Scan(&billID); err != nil {
 		log.Printf("wo bill insert: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลได้ กรุณาลองใหม่อีกครั้ง")
@@ -259,11 +268,11 @@ func (h *WOContractorLogHandler) UpdateBill(c *fiber.Ctx) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE wo_contractor_log_bill SET
 		  bill_type=$1, installment_no=$2, ap_voucher_no=$3, pay_to=$4, credit_term_days=$5, description=$6,
-		  progress_installment_no=$7, wht_type=$8, subtotal=$9, net_amount=$10, status=$11, progress_note=$12,
-		  updated_at=NOW(), updated_by=$13
-		WHERE id=$14`,
+		  progress_installment_no=$7, wht_type=$8, subtotal=$9, net_amount=$10, status=$11, progress_note=$12, retention_mode=$13,
+		  updated_at=NOW(), updated_by=$14
+		WHERE id=$15`,
 		req.BillType, req.InstallmentNo, req.ApVoucherNo, req.PayTo, req.CreditTermDays, req.Description,
-		req.ProgressInstallmentNo, req.WhtType, subtotal, net, req.Status, req.ProgressNote, claims.UserID, billID)
+		req.ProgressInstallmentNo, req.WhtType, subtotal, net, req.Status, req.ProgressNote, req.RetentionMode, claims.UserID, billID)
 	if err != nil {
 		log.Printf("wo bill update: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลได้ กรุณาลองใหม่อีกครั้ง")
@@ -308,14 +317,15 @@ func (h *WOContractorLogHandler) GetBill(c *fiber.Ctx) error {
 		billType, status                                       string
 		installmentNo, creditTermDays, progressInstallmentNo   *int
 		apVoucherNo, payTo, description, whtType, progressNote *string
+		retentionMode                                          string
 		subtotal, netAmount                                    float64
 	)
 	err = h.db.QueryRow(ctx, `
 		SELECT log_id, bill_type, installment_no, ap_voucher_no, pay_to, credit_term_days, description,
-		       progress_installment_no, wht_type, subtotal, net_amount, status, progress_note
+		       progress_installment_no, wht_type, subtotal, net_amount, status, progress_note, retention_mode
 		FROM wo_contractor_log_bill WHERE id=$1`, billID,
 	).Scan(&logID, &billType, &installmentNo, &apVoucherNo, &payTo, &creditTermDays, &description,
-		&progressInstallmentNo, &whtType, &subtotal, &netAmount, &status, &progressNote)
+		&progressInstallmentNo, &whtType, &subtotal, &netAmount, &status, &progressNote, &retentionMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fiber.NewError(fiber.StatusNotFound, "record not found")
 	}
@@ -359,7 +369,7 @@ func (h *WOContractorLogHandler) GetBill(c *fiber.Ctx) error {
 		"data": fiber.Map{
 			"id": billID, "log_id": logID, "bill_type": billType, "installment_no": installmentNo,
 			"ap_voucher_no": apVoucherNo, "pay_to": payTo, "credit_term_days": creditTermDays,
-			"description": description, "progress_installment_no": progressInstallmentNo, "progress_note": progressNote, "wht_type": whtType,
+			"description": description, "progress_installment_no": progressInstallmentNo, "progress_note": progressNote, "wht_type": whtType, "retention_mode": retentionMode,
 			"subtotal": subtotal, "net_amount": netAmount, "status": status,
 			"lines": lines, "invoices": invoices,
 		},

@@ -421,6 +421,11 @@ definitions:
         type: integer
       progress_note:
         type: string
+      retention_mode:
+        description: |-
+          RetentionMode: how row 5 (เงินประกันผลงาน) was worked out — EVERY (% of this bill, default) | ONCE (contract x % split over all installments).
+          Only remembered here; the amount is the RETENTION line.
+        type: string
       status:
         description: DRAFT (default) | SAVED
         type: string
