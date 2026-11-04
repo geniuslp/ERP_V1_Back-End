@@ -239,7 +239,7 @@ var poListSelectSQL = `
 		`
 
 // buildPOListFilters builds the WHERE clause shared by GET /po and GET /po/export: my, status
-// (comma-separated), order_type, date_from/date_to (po.po_date), dept_code and search.
+// (comma-separated), supplier (name), order_type, date_from/date_to (po.po_date), dept_code and search.
 func buildPOListFilters(c *fiber.Ctx) (string, []any, error) {
 	conditions := []string{"po.deleted_at IS NULL"}
 	var args []any
@@ -277,6 +277,11 @@ func buildPOListFilters(c *fiber.Ctx) (string, []any, error) {
 			args = append(args, statuses)
 			conditions = append(conditions, fmt.Sprintf("po.status = ANY($%d)", len(args)))
 		}
+	}
+	// supplier: part of the supplier (ร้านค้า) name, case-insensitive. EXISTS so it works in both the COUNT and the SELECT.
+	if v := strings.TrimSpace(c.Query("supplier")); v != "" {
+		args = append(args, "%"+v+"%")
+		conditions = append(conditions, fmt.Sprintf("EXISTS (SELECT 1 FROM supplier sp WHERE sp.id = po.supplier_id AND sp.supplier_name ILIKE $%d)", len(args)))
 	}
 	if v := strings.TrimSpace(c.Query("order_type")); v != "" {
 		if err := validateOrderType(v); err != nil {
@@ -337,7 +342,7 @@ func scanPOListRows(rows pgx.Rows) ([]poListRow, error) {
 // @Security     BearerAuth
 // @Produce      json
 // @Param        status    query  string  false  "status filter — comma-separated for multiple, e.g. PENDING_APPROVAL,PENDING_REAPPROVAL"
-// @Param        supplier  query  string  false  "supplier_id filter"
+// @Param        supplier  query  string  false  "part of the supplier (ร้านค้า) name, case-insensitive"
 // @Param        my        query  bool    false  "when true, only POs created by the current user"
 // @Param        order_type query string  false  "filter: stock | cost | asset_machine | asset_office_equipment | asset_tools"
 // @Param        date_from query  string  false  "po_date >= (YYYY-MM-DD)"
