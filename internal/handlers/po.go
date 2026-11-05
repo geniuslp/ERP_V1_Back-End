@@ -2101,6 +2101,19 @@ func (h *POHandler) Update(c *fiber.Ctx) error {
 		approvalID = &id
 	}
 
+	// Editing a PO that is already PENDING_APPROVAL keeps its open approval_request, but the approver may have been
+	// changed in the form: purchase_order.approver_id was just updated above, so the request the approver's inbox
+	// reads (assigned_to) must follow, otherwise the old approver keeps the document and the new one never sees it.
+	if newStatus == "PENDING_APPROVAL" && currentStatus == "PENDING_APPROVAL" && req.ApproverID != nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE approval_request SET assigned_to=$1, updated_at=NOW()
+			WHERE doc_type='PO' AND doc_id=$2 AND status='PENDING' AND assigned_to IS DISTINCT FROM $1`,
+			*req.ApproverID, poID,
+		); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "failed to reassign approver: "+err.Error())
+		}
+	}
+
 	auditData, _ := json.Marshal(fiber.Map{
 		"supplier_id": req.SupplierID,
 		"pr_id":       req.PRID, "total_amount": totalAmount, "status": newStatus,
