@@ -234,19 +234,37 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 		receivingStatusSelect = poReceivingStatusSelect
 	}
 
+	// AP Voucher No. is a WO-only concept (contractor-log bills); one WO can have several bills.
+	apVoucherSelect := "NULL::text"
+	if f.DocType == "WO" {
+		apVoucherSelect = `(SELECT string_agg(DISTINCT b.ap_voucher_no, ', ' ORDER BY b.ap_voucher_no)
+		                    FROM wo_contractor_log l
+		                    JOIN wo_contractor_log_bill b ON b.log_id = l.id
+		                    WHERE l.wo_id = d.id AND COALESCE(b.ap_voucher_no, '') <> '')`
+	}
+
+	// ผู้ขอเบิก is petty-cash only (requested_by → users; subquery so an unknown user keeps the row).
+	requestedBySelect := "NULL::text"
+	if f.DocType == "PC" {
+		requestedBySelect = `(SELECT u.full_name FROM users u WHERE u.id = d.requested_by)`
+	}
+
 	projCode, projectsExpr := payableProjectSQL(f.DocType)
-	listSQL := fmt.Sprintf(`
+	listSQL :=fmt.Sprintf(`
 		SELECT d.id, d.%s, $1 AS doc_type, %s AS project_code, pj.project_name, d.net_amount, d.status,
 		       COALESCE((SELECT SUM(pl.amount_paid) FROM payment_log pl
 		                 WHERE pl.doc_type = $1 AND pl.doc_id = d.id), 0) AS paid_amount,
 		       %s AS receiving_status,
 		       %s AS projects_json,
-		       %s AS approval_status
+		       %s AS approval_status,
+		       %s AS supplier_name,
+		       %s AS ap_voucher_nos,
+		       %s AS requested_by_name
 		FROM %s d
 		LEFT JOIN project pj ON pj.project_code = %s
 		WHERE %s
 		ORDER BY d.id DESC
-		LIMIT $%d OFFSET $%d`, noCol, projCode, receivingStatusSelect, projectsExpr, payableApprovalStatusSQL, table, projCode,
+		LIMIT $%d OFFSET $%d`, noCol, projCode, receivingStatusSelect, projectsExpr, payableApprovalStatusSQL, payableSupplierSQL(f.DocType), apVoucherSelect, requestedBySelect, table, projCode,
 		listClause, nextIdx, nextIdx+1)
 
 	rows, err := h.db.Query(ctx, listSQL, listArgs...)
@@ -259,7 +277,7 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	for rows.Next() {
 		var p models.PayableDoc
 		var projectsJSON *string
-		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus); err != nil {
+		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus, &p.SupplierName, &p.ApVoucherNos, &p.RequestedByName); err != nil {
 			return err
 		}
 		fillPayableProjects(&p, projectsJSON)
@@ -659,11 +677,12 @@ func (h *FinanceHandler) GetPayableDoc(c *fiber.Ctx) error {
 		                 WHERE pl.doc_type = $1 AND pl.doc_id = d.id), 0) AS paid_amount,
 		       %s AS receiving_status,
 		       %s AS projects_json,
-		       %s AS approval_status
+		       %s AS approval_status,
+		       %s AS supplier_name
 		FROM %s d
 		LEFT JOIN project pj ON pj.project_code = %s
-		WHERE d.id = $2`, noCol, projCode, receiving, projectsExpr, payableApprovalStatusSQL, table, projCode), docType, docID,
-	).Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus)
+		WHERE d.id = $2`, noCol, projCode, receiving, projectsExpr, payableApprovalStatusSQL, payableSupplierSQL(docType), table, projCode), docType, docID,
+	).Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus, &p.SupplierName)
 	if err == pgx.ErrNoRows {
 		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("ไม่พบเอกสาร %s id %d", docType, docID))
 	}
@@ -674,6 +693,19 @@ func (h *FinanceHandler) GetPayableDoc(c *fiber.Ctx) error {
 	p.RemainingToPay = p.NetAmount - p.PaidAmount
 	p.CanRecordPayment = canRecordPayment(p.ReceivingStatus)
 	return c.JSON(fiber.Map{"success": true, "data": p})
+}
+
+// payableSupplierSQL is the supplier (ร้านค้า) name of a payable document: the supplier master name for PO / WO (WO falls
+// back to its own typed supplier_name), NULL for petty cash. Expects the document alias `d`.
+func payableSupplierSQL(docType string) string {
+	switch docType {
+	case "PO":
+		return `(SELECT s.supplier_name FROM supplier s WHERE s.id = d.supplier_id)`
+	case "WO":
+		return `COALESCE((SELECT s.supplier_name FROM supplier s WHERE s.id = d.supplier_id), d.supplier_name)`
+	default:
+		return `NULL::text`
+	}
 }
 
 // poReceivingStatusSelect is the live receiving_status subquery shared by the list and the single-document GET.

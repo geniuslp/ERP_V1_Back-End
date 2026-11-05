@@ -1918,6 +1918,12 @@ type PayableDoc struct {
 	DocType        string  `json:"doc_type"`
 	ProjectCode    *string `json:"project_code,omitempty"`
 	ProjectName    *string `json:"project_name"`
+	// SupplierName: the supplier (ร้านค้า) of a PO / WO; null for petty cash (PC), which has no supplier.
+	SupplierName *string `json:"supplier_name"`
+	// ApVoucherNos: WO list only — distinct AP Voucher No. of the WO's contractor-log bills, comma-joined; null when none.
+	ApVoucherNos *string `json:"ap_voucher_nos"`
+	// RequestedByName: PC list only — full name of the requester (ผู้ขอเบิก); null for PO / WO.
+	RequestedByName *string `json:"requested_by_name"`
 	NetAmount      float64 `json:"net_amount"`
 	Status         string  `json:"status"`
 	// ApprovalStatus is the two-value form of Status for the payment-tracking screen:
