@@ -2402,6 +2402,29 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "PO นี้รับของครบแล้ว ไม่สามารถแก้ไขได้")
 	}
 
+	// Approver: omitted or unchanged keeps the original approver (and is not re-validated, so a PO is not blocked
+	// because that person's role changed since); a different pick must be a real eligible approver.
+	var newApproverID *int64
+	if req.ApproverID != nil {
+		var currentApprover *int64
+		if err := h.db.QueryRow(ctx, `SELECT approver_id FROM purchase_order WHERE id=$1`, poID).Scan(&currentApprover); err != nil {
+			return err
+		}
+		if currentApprover == nil || *currentApprover != *req.ApproverID {
+			if err := requireApprovalReady(ctx, h.db, "PO", req.ApproverID); err != nil {
+				return err
+			}
+			ok, err := isEligibleApproverPick(ctx, h.db, "PO", *req.ApproverID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fiber.NewError(fiber.StatusBadRequest, "ผู้อนุมัติที่เลือกไม่มีสิทธิ์อนุมัติใบสั่งซื้อ กรุณาเลือกใหม่")
+			}
+			newApproverID = req.ApproverID
+		}
+	}
+
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -2470,12 +2493,13 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		    warehouse_code=COALESCE($5, warehouse_code), currency=$6, expected_date=$7,
 		    payment_terms=$8, remarks=$9, receiver_name=$10, receiver_phone=$11, total_amount=$12, vat_amount=$13, net_amount=$14,
 		    use_discount=$15, discount_type=$16, discount_amount=$17, use_vat=$18, use_wht=$19, wht_amount=$20,
+		    approver_id=COALESCE($23, approver_id),
 		    status='PENDING_REAPPROVAL', updated_at=NOW(), updated_by=$21, last_edited_at=NOW(), last_edited_by=$21
 		WHERE id=$22`,
 		req.SupplierID, req.LocationText, req.ProjectCode, req.RequestedBy, req.WarehouseCode, req.Currency, req.ExpectedDate,
 		req.PaymentTerms, req.Remarks, req.ReceiverName, req.ReceiverPhone, totalAmount, vatAmount, netAmount,
 		useDiscount, discountType, discountAmount, useVAT, useWHT, whtAmount,
-		claims.UserID, poID,
+		claims.UserID, poID, newApproverID,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to update PO: "+err.Error())
 	}
@@ -2722,17 +2746,17 @@ func (h *POHandler) EditApprovedPO(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "status log error: "+err.Error())
 	}
 
-	// Reopen the PO's existing approval_request row for re-approval. Same approval_id,
-	// same assigned_to — deliberately not recomputed, since PO approval is role-gated
-	// (RequireRole at the route level), not routed to a specific individual.
+	// Reopen the PO's existing approval_request row for re-approval (same approval_id). assigned_to stays the
+	// original approver unless the editor picked a different one ($2), in which case it moves with
+	// purchase_order.approver_id.
 	tag, err := tx.Exec(ctx, `
 		UPDATE approval_request
-		SET status='PENDING'
+		SET status='PENDING', assigned_to=COALESCE($2, assigned_to)
 		WHERE id = (
 		    SELECT id FROM approval_request
 		    WHERE doc_type='PO' AND doc_id=$1
 		    ORDER BY created_at DESC LIMIT 1
-		)`, poID)
+		)`, poID, newApproverID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "approval_request update error: "+err.Error())
 	}

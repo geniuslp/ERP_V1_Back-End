@@ -367,7 +367,13 @@ swag init -g cmd/server/main.go -o docs --parseDependency --parseInternal
   Memo (`purchase_order.approver_id`), NOT purely role-based. Flow:
   `DRAFT → PENDING_APPROVAL → APPROVED/REJECTED`. Approved POs can still be edited within 1 year
   via `PUT /po/:id/edit-approved` (reason is mandatory) — this transitions the PO to
-  `PENDING_REAPPROVAL` and routes back to the **same** approver, not a fresh pool selection.
+  `PENDING_REAPPROVAL`. **Approver (rule changed 2026-11-05, supersedes "always the same approver"):** the
+  request takes an optional `approver_id`. Omitted, or equal to the current approver → routes back to the
+  **same** original approver (not re-validated). A different one must be an eligible approver
+  (`requireApprovalReady` + `isEligibleApproverPick("PO")`); it then updates both `purchase_order.approver_id`
+  and the reopened `approval_request.assigned_to`. Plain `PUT /po/:id` while `PENDING_APPROVAL` also moves the open
+  `approval_request.assigned_to` when the approver changes (it used to update only `purchase_order.approver_id`,
+  so the old approver kept the document in their inbox).
 
 ### 2. Schema-drift bug class — ~20 instances found this session, check proactively
 - **Symptom**: Go SQL references a column name that doesn't match the real DB schema — e.g.

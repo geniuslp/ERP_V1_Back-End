@@ -1273,8 +1273,11 @@ type EditApprovedPORequest struct {
 	DiscountType  *string              `json:"discount_type,omitempty" validate:"omitempty,oneof=pct amt"`
 	UseVAT        *bool                `json:"use_vat,omitempty"`
 	UseWHT        *bool                `json:"use_wht,omitempty"`
-	Lines         []EditApprovedPOLine `json:"lines" validate:"required,min=1,dive"`
-	Reason        string               `json:"reason" validate:"required"`
+	// ApproverID is optional: omitted (or equal to the current approver) keeps the original approver; a different
+	// one must come from the eligible pool and takes over the re-approval.
+	ApproverID *int64               `json:"approver_id,omitempty"`
+	Lines      []EditApprovedPOLine `json:"lines" validate:"required,min=1,dive"`
+	Reason     string               `json:"reason" validate:"required"`
 }
 
 // ─── GRN ─────────────────────────────────────────────────────────────────────
