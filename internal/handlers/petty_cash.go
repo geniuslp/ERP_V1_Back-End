@@ -1003,7 +1003,7 @@ func (h *PettyCashHandler) Create(c *fiber.Ctx) error {
 }
 
 // Update godoc
-// @Summary      Update a petty cash requisition (only while DRAFT or REJECTED)
+// @Summary      Update a petty cash requisition (creator only; DRAFT, PENDING_APPROVAL or REJECTED)
 // @Description  Head cost codes (cost_subgroup.is_head) are rejected with 400 "Cost Code นี้เป็น Head ไม่สามารถเลือกใช้ได้ …" when the value is NEW or CHANGED vs what the document already stores.
 // @Tags         Petty Cash
 // @Security     BearerAuth
@@ -1048,15 +1048,23 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 	claims := middleware.GetClaims(c)
 
 	var currentStatus string
+	var requestedBy int64
 	if err := h.db.QueryRow(ctx,
-		`SELECT status FROM petty_cash_requisition WHERE id=$1`, id,
-	).Scan(&currentStatus); err != nil {
+		`SELECT status, requested_by FROM petty_cash_requisition WHERE id=$1`, id,
+	).Scan(&currentStatus, &requestedBy); err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "petty cash requisition not found")
 	}
-	if currentStatus != "DRAFT" && currentStatus != "REJECTED" {
-		return fiber.NewError(fiber.StatusBadRequest,
-			fmt.Sprintf("cannot update petty cash requisition with status '%s' — must be DRAFT or REJECTED", currentStatus))
+	// Edit rule: only the creator, and never once the document is APPROVED (or CANCELLED).
+	if claims == nil || claims.UserID != requestedBy {
+		return fiber.NewError(fiber.StatusForbidden, "แก้ไขได้เฉพาะผู้สร้างเอกสารเท่านั้น")
 	}
+	if currentStatus != "DRAFT" && currentStatus != "PENDING_APPROVAL" && currentStatus != "REJECTED" {
+		return fiber.NewError(fiber.StatusBadRequest,
+			fmt.Sprintf("cannot update petty cash requisition with status '%s' — must be DRAFT, PENDING_APPROVAL or REJECTED", currentStatus))
+	}
+	// A document already waiting for approval keeps its approver: the in-flight approval request continues
+	// against the edited content, so the request's approver is not applied here.
+	keepApprover := currentStatus == "PENDING_APPROVAL"
 
 	if req.ApproverID != nil {
 		var approverExists bool
@@ -1088,7 +1096,7 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 		UPDATE petty_cash_requisition
 		SET purpose=COALESCE($1, purpose), currency=COALESCE($2, currency), total_amount=$3,
 		    use_discount=$4, discount_type=$5, discount_amount=$6, use_vat=$7, vat_amount=$8,
-		    use_wht=$9, wht_amount=$10, net_amount=$11, approver_id=$12, remarks=$13,
+		    use_wht=$9, wht_amount=$10, net_amount=$11, approver_id=CASE WHEN $26 THEN approver_id ELSE $12 END, remarks=$13,
 		    doc_type=$14, branch_code=$15, payee_emp_code=$16, payee_name=$17,
 		    project_code=$18, project_name=$19, order_type=$20, dept_code=$21, dept_name=$22, ref_doc_no=$23,
 		    updated_at=NOW(), updated_by=$24
@@ -1099,7 +1107,7 @@ func (h *PettyCashHandler) Update(c *fiber.Ctx) error {
 		req.DocType, pcNilIfEmpty(req.BranchCode), pcNilIfEmpty(req.PayeeEmpCode), pcNilIfEmpty(req.PayeeName),
 		pcNilIfEmpty(req.ProjectCode), pcNilIfEmpty(req.ProjectName),
 		pcNilIfEmpty(req.OrderType), pcNilIfEmpty(req.DeptCode), pcNilIfEmpty(req.DeptName), pcNilIfEmpty(req.RefDocNo),
-		claims.UserID, id,
+		claims.UserID, id, keepApprover,
 	); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "แก้ไขใบเบิกเงินสดย่อยไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
 	}
