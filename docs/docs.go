@@ -10063,7 +10063,7 @@ const docTemplate = `{
                 "tags": [
                     "Petty Cash"
                 ],
-                "summary": "Update a petty cash requisition (only while DRAFT or REJECTED)",
+                "summary": "Update a petty cash requisition (creator only; DRAFT, PENDING_APPROVAL or REJECTED)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -10601,6 +10601,42 @@ const docTemplate = `{
                         }
                     }
                 }
+            }
+        },
+        "/po-report/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Each group = one PO (supplier + PO number) with its non-cancelled lines and the PO subtotal (before VAT);\ngrand_total = sum of the subtotals. Filters: project_code, supplier_id, date_from / date_to (po_date, YYYY-MM-DD).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "POReport"
+                ],
+                "summary": "รายงานประวัติใบสั่ง (PO ทุกสถานะยกเว้น CANCELLED, รวม DRAFT) จัดกลุ่มตามใบสั่ง",
+                "responses": {}
+            }
+        },
+        "/po-report/pending-receipt": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same shape as /po-report/history. Only approved POs (APPROVED / SENT / PARTIALLY_RECEIVED) and only their\nlines that still have quantity to receive; qty and amount are the OUTSTANDING part (ordered - received).\nOverhead order types (asset / office equipment / tool) never go through IC receiving and are left out.\nFilters: project_code, job_code (the line's job), date_from / date_to (po_date).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "POReport"
+                ],
+                "summary": "รายการค้างรับสินค้า (PO ที่อนุมัติแล้วแต่ยังไม่ผ่านกระบวนการรับของ IC) จัดกลุ่มตามใบสั่ง",
+                "responses": {}
             }
         },
         "/po/available-prs": {
@@ -16098,6 +16134,16 @@ const docTemplate = `{
                 }
             }
         },
+        "/wo-contractor-log/by-pc/{pcId}": {
+            "get": {
+                "responses": {}
+            }
+        },
+        "/wo-contractor-log/by-po/{poId}": {
+            "get": {
+                "responses": {}
+            }
+        },
         "/wo-contractor-log/by-wo/{woId}": {
             "get": {
                 "security": [
@@ -16130,6 +16176,16 @@ const docTemplate = `{
                         }
                     }
                 }
+            }
+        },
+        "/wo-contractor-log/summary-pc/{pcId}": {
+            "get": {
+                "responses": {}
+            }
+        },
+        "/wo-contractor-log/summary-po/{poId}": {
+            "get": {
+                "responses": {}
             }
         },
         "/wo-contractor-log/summary/{woId}": {
@@ -17778,6 +17834,14 @@ const docTemplate = `{
         "handlers.woContractorLogRequest": {
             "type": "object",
             "properties": {
+                "pc_id": {
+                    "description": "petty cash requisition (the finance petty cash page uses pc_id)",
+                    "type": "integer"
+                },
+                "po_id": {
+                    "description": "exactly one of wo_id / po_id / pc_id (the finance PO page uses po_id)",
+                    "type": "integer"
+                },
                 "project_code": {
                     "type": "string"
                 },
@@ -19886,6 +19950,10 @@ const docTemplate = `{
                 "supplier_id"
             ],
             "properties": {
+                "approver_id": {
+                    "description": "ApproverID is optional: omitted (or equal to the current approver) keeps the original approver; a different\none must come from the eligible pool and takes over the re-approval.",
+                    "type": "integer"
+                },
                 "currency": {
                     "type": "string"
                 },

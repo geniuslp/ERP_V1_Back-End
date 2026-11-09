@@ -1927,6 +1927,8 @@ type PayableDoc struct {
 	ApVoucherNos *string `json:"ap_voucher_nos"`
 	// RequestedByName: PC list only — full name of the requester (ผู้ขอเบิก); null for PO / WO.
 	RequestedByName *string `json:"requested_by_name"`
+	// PayeeName: PC list only — ผู้รับเงิน (the named payee, else the requester); null for PO / WO.
+	PayeeName *string `json:"payee_name"`
 	NetAmount      float64 `json:"net_amount"`
 	Status         string  `json:"status"`
 	// ApprovalStatus is the two-value form of Status for the payment-tracking screen:
@@ -1956,6 +1958,11 @@ type PayableDocProject struct {
 type PayableDocFilter struct {
 	DocType     string `query:"doc_type"` // required: PO | WO | PC
 	ProjectCode string `query:"project_code"`
+	// WO tab search boxes: supplier name (ร้านค้า) and AP Voucher No., both partial match.
+	Supplier  string `query:"supplier"`
+	ApVoucher string `query:"ap_voucher"`
+	// PC tab search box: requester (ผู้ขอเบิก) full name, partial match.
+	Requester string `query:"requester"`
 	// Status: empty (both), PENDING_APPROVAL or APPROVED — see ListPayableDocs.
 	Status   string `query:"status"`
 	Search   string `query:"search"`

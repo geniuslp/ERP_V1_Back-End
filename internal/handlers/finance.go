@@ -196,10 +196,36 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 			if f.DocType == "PC" {
 				where = append(where, fmt.Sprintf(`(d.project_code = $%d OR EXISTS (SELECT 1 FROM petty_cash_requisition_line pl2
 					WHERE pl2.pc_id = d.id AND pl2.project_code = $%d))`, i, i))
+			} else if f.DocType == "WO" {
+				// WO tab: free text against the project code / name (or the typed project name).
+				where = append(where, fmt.Sprintf(`(d.project_code ILIKE $%d OR d.project_name_text ILIKE $%d OR EXISTS (SELECT 1 FROM project pj3
+					WHERE pj3.project_code = d.project_code AND pj3.project_name ILIKE $%d))`, i, i, i))
 			} else {
 				where = append(where, fmt.Sprintf("d.project_code = $%d", i))
 			}
-			args = append(args, f.ProjectCode)
+			if f.DocType == "WO" {
+				args = append(args, "%"+f.ProjectCode+"%")
+			} else {
+				args = append(args, f.ProjectCode)
+			}
+			i++
+		}
+		// WO only: ร้านค้า (master name, else the WO's own typed name) and AP Voucher No. of its contractor-log bills.
+		if f.DocType == "WO" && f.Supplier != "" {
+			where = append(where, fmt.Sprintf("%s ILIKE $%d", payableSupplierSQL("WO"), i))
+			args = append(args, "%"+f.Supplier+"%")
+			i++
+		}
+		if f.DocType == "PC" && f.Requester != "" {
+			where = append(where, fmt.Sprintf(`EXISTS (SELECT 1 FROM users ru WHERE ru.id = d.requested_by AND ru.full_name ILIKE $%d)`, i))
+			args = append(args, "%"+f.Requester+"%")
+			i++
+		}
+		if f.DocType == "WO" && f.ApVoucher != "" {
+			where = append(where, fmt.Sprintf(`EXISTS (SELECT 1 FROM wo_contractor_log lg
+				JOIN wo_contractor_log_bill b ON b.log_id = lg.id
+				WHERE lg.wo_id = d.id AND b.ap_voucher_no ILIKE $%d)`, i))
+			args = append(args, "%"+f.ApVoucher+"%")
 			i++
 		}
 		if f.Search != "" {
@@ -249,6 +275,11 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 		requestedBySelect = `(SELECT u.full_name FROM users u WHERE u.id = d.requested_by)`
 	}
 
+	payeeSelect := "NULL::text"
+	if f.DocType == "PC" {
+		payeeSelect = `COALESCE(NULLIF(d.payee_name, ''), (SELECT u.full_name FROM users u WHERE u.id = d.requested_by))`
+	}
+
 	projCode, projectsExpr := payableProjectSQL(f.DocType)
 	listSQL :=fmt.Sprintf(`
 		SELECT d.id, d.%s, $1 AS doc_type, %s AS project_code, pj.project_name, d.net_amount, d.status,
@@ -259,12 +290,13 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 		       %s AS approval_status,
 		       %s AS supplier_name,
 		       %s AS ap_voucher_nos,
-		       %s AS requested_by_name
+		       %s AS requested_by_name,
+		       %s AS payee_name
 		FROM %s d
 		LEFT JOIN project pj ON pj.project_code = %s
 		WHERE %s
 		ORDER BY d.id DESC
-		LIMIT $%d OFFSET $%d`, noCol, projCode, receivingStatusSelect, projectsExpr, payableApprovalStatusSQL, payableSupplierSQL(f.DocType), apVoucherSelect, requestedBySelect, table, projCode,
+		LIMIT $%d OFFSET $%d`, noCol, projCode, receivingStatusSelect, projectsExpr, payableApprovalStatusSQL, payableSupplierSQL(f.DocType), apVoucherSelect, requestedBySelect, payeeSelect, table, projCode,
 		listClause, nextIdx, nextIdx+1)
 
 	rows, err := h.db.Query(ctx, listSQL, listArgs...)
@@ -277,7 +309,7 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 	for rows.Next() {
 		var p models.PayableDoc
 		var projectsJSON *string
-		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus, &p.SupplierName, &p.ApVoucherNos, &p.RequestedByName); err != nil {
+		if err := rows.Scan(&p.Id, &p.DocNo, &p.DocType, &p.ProjectCode, &p.ProjectName, &p.NetAmount, &p.Status, &p.PaidAmount, &p.ReceivingStatus, &projectsJSON, &p.ApprovalStatus, &p.SupplierName, &p.ApVoucherNos, &p.RequestedByName, &p.PayeeName); err != nil {
 			return err
 		}
 		fillPayableProjects(&p, projectsJSON)
