@@ -2281,6 +2281,10 @@ type CreatePettyCashLineItem struct {
 	WhtPayDate      string   `json:"wht_pay_date"` // YYYY-MM-DD
 	InvoiceNo       string   `json:"invoice_no"`   // optional plain invoice no (max 50)
 	InvoiceDate     string   `json:"invoice_date"` // optional YYYY-MM-DD
+	// Optional manual overrides. nil = calculate automatically (amount*7% / base*rate%).
+	// Only honoured when the matching has_tax_invoice / has_wht flag is on.
+	VatOverride *float64 `json:"vat_override"`
+	WhtOverride *float64 `json:"wht_override"`
 }
 
 type UpdatePettyCashRequest = CreatePettyCashRequest

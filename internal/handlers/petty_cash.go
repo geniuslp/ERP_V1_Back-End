@@ -382,6 +382,13 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 			}
 			ln.hasTaxInvoice, ln.taxInvoiceNo, ln.taxInvoiceDate = true, &no, d
 			ln.vat = pcRound2(amount * pcVatRate)
+			if l.VatOverride != nil { // manual VAT amount typed by the user
+				v := pcRound2(*l.VatOverride)
+				if v < 0 || v > amount {
+					return nil, tot, bad("ยอดภาษีมูลค่าเพิ่มต้องไม่ติดลบและไม่เกินจำนวนเงิน")
+				}
+				ln.vat = v
+			}
 		}
 
 		// ── withholding tax ──
@@ -423,6 +430,13 @@ func (h *PettyCashHandler) resolveLines(ctx context.Context, req *models.CreateP
 			ln.hasWht, ln.taxForm, ln.whtIncomeTypeID = true, taxForm, l.WhtIncomeTypeID
 			ln.whtBase, ln.whtRate = &base, &rate // rate is the server-side snapshot, never the client's
 			ln.wht = pcRound2(base * rate / 100)
+			if l.WhtOverride != nil { // manual withholding amount typed by the user
+				w := pcRound2(*l.WhtOverride)
+				if w < 0 || w > base {
+					return nil, tot, bad("ยอดหัก ณ ที่จ่ายต้องไม่ติดลบและไม่เกินฐานภาษี")
+				}
+				ln.wht = w
+			}
 		}
 
 		ln.net = pcRound2(amount + ln.vat - ln.wht)

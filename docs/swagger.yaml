@@ -1276,10 +1276,17 @@ definitions:
         type: string
       unit_price:
         type: number
+      vat_override:
+        description: |-
+          Optional manual overrides. nil = calculate automatically (amount*7% / base*rate%).
+          Only honoured when the matching has_tax_invoice / has_wht flag is on.
+        type: number
       wht_base_amount:
         type: number
       wht_income_type_id:
         type: integer
+      wht_override:
+        type: number
       wht_pay_date:
         description: YYYY-MM-DD
         type: string
