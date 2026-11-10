@@ -12,6 +12,12 @@ import (
 )
 
 func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
+	// How-to videos live under <upload root>/howto and must only be reachable through the signed
+	// /api/v1/howto/videos/:id/stream URL — never through the public static route below. Registered BEFORE it.
+	app.Use("/uploads/howto", func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNotFound)
+	})
+
 	// Serve uploaded files as static assets
 	app.Static("/uploads", handlers.UploadRoot())
 
@@ -498,6 +504,22 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	menusRoute := api.Group("/menus")
 	menusRoute.Get("/", roleMenuH.ListMenus)
+
+	// How To use (tutorial videos). Viewer: MENU_HOWTO_VIDEOS read + per-section menu permission (checked in the
+	// handler). Manage: MENU_HOWTO_UPLOAD write/update/delete. The stream route is signed instead of JWT (a
+	// <video> tag cannot send Authorization) and is registered on `api` directly, outside the jwt groups.
+	howToH := handlers.NewHowToHandler(db, cfg)
+	api.Get("/howto/videos/:id/stream", howToH.Stream)
+	howTo := api.Group("/howto", jwt)
+	howTo.Get("/sections", middleware.RequireMenuPermission(db, "MENU_HOWTO_VIDEOS", "read"), howToH.ListSections)
+	howTo.Get("/videos/:id/stream-url", howToH.StreamURL)
+	howTo.Get("/manage/sections", middleware.RequireMenuPermission(db, "MENU_HOWTO_UPLOAD", "read"), howToH.ManageSections)
+	howTo.Post("/sections", middleware.RequireMenuPermission(db, "MENU_HOWTO_UPLOAD", "write"), howToH.CreateSection)
+	howTo.Put("/sections/:id", middleware.RequireMenuPermission(db, "MENU_HOWTO_UPLOAD", "update"), howToH.UpdateSection)
+	howTo.Delete("/sections/:id", middleware.RequireMenuPermission(db, "MENU_HOWTO_UPLOAD", "delete"), howToH.DeleteSection)
+	howTo.Post("/sections/:id/videos", middleware.RequireMenuPermission(db, "MENU_HOWTO_UPLOAD", "write"), howToH.UploadVideo)
+	howTo.Put("/videos/:id", middleware.RequireMenuPermission(db, "MENU_HOWTO_UPLOAD", "update"), howToH.UpdateVideo)
+	howTo.Delete("/videos/:id", middleware.RequireMenuPermission(db, "MENU_HOWTO_UPLOAD", "delete"), howToH.DeleteVideo)
 
 	// Approval Doc Types
 	docTypeH := handlers.NewApprovalDocTypeHandler(db)

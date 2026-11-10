@@ -1963,6 +1963,9 @@ type PayableDocFilter struct {
 	ApVoucher string `query:"ap_voucher"`
 	// PC tab search box: requester (ผู้ขอเบิก) full name, partial match.
 	Requester string `query:"requester"`
+	// PC tab search boxes: payee (ผู้รับเงิน) name / employee code, partial match; branch (สาขา) code, exact.
+	Payee  string `query:"payee"`
+	Branch string `query:"branch"`
 	// Status: empty (both), PENDING_APPROVAL or APPROVED — see ListPayableDocs.
 	Status   string `query:"status"`
 	Search   string `query:"search"`
@@ -2090,6 +2093,7 @@ type PettyCashLine struct {
 	// read-only, joined at read time
 	MatNameTH      *string `json:"mat_name_th,omitempty"`
 	CostCode       *string `json:"cost_code,omitempty"` // subject||job||group||subgroup
+	CostSubgroupName *string `json:"cost_subgroup_name,omitempty"` // the cost code's name (cost_subgroup.subgroup_name)
 	WhtIncomeLabel *string `json:"wht_income_label,omitempty"`
 
 	// display-only, joined at read time (never persisted on this table) — all resolved

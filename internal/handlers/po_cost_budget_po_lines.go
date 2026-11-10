@@ -23,6 +23,10 @@ type costBudgetPOLine struct {
 	Remarks     *string `json:"remarks"`
 	POStatus    string  `json:"po_status"`
 	Amount      float64 `json:"amount"` // PO: qty_ordered * unit_price (reference); PC: amount - line_discount (ex-VAT)
+	// ExpenseAmount (ยอดรายจ่าย) = this row's share of what the finance page has paid on its document (SAVED
+	// contractor-log bills, before VAT / WHT, spread over the document's lines by value); a transfer row carries its
+	// amount (cost moves with the transfer). SUM = the cost code's ac_cost on cost-budget-detail.
+	ExpenseAmount float64 `json:"expense_amount"`
 	Source      string  `json:"source"` // "PO", "WO" (approved work order), "PC" (petty cash) or "TR" (project transfer)
 	// TR rows: po_id / po_no / po_status hold the movement id / TF doc_no / status, project_* is the OTHER
 	// project of the transfer (the source for money coming in, the destination for money going out),
@@ -116,7 +120,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	// rows, one query. src_ord keeps PO first.
 	rows, err := h.db.Query(ctx, `
 		SELECT x.po_id, x.po_no, x.project_code, x.project_name, x.line_no, x.mat_code, x.item_name,
-		       x.quantity, x.unit, x.remarks, x.po_status, x.amount, x.source, x.doc_project_code, x.created_at, x.updated_at, x.updated_by_name
+		       x.quantity, x.unit, x.remarks, x.po_status, x.amount, x.source, x.doc_project_code, x.created_at, x.updated_at, x.updated_by_name, x.expense
 		FROM (
 			SELECT 0 AS src_ord, 'PO' AS source, NULL::text AS doc_project_code, po.id AS po_id, po.po_no, po.project_code, pj.project_name, pol.line_no, pol.mat_code,
 			       COALESCE(
@@ -127,7 +131,8 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       po.status AS po_status,
 			       (pol.qty_ordered * pol.unit_price)::float8 AS amount,
 			       po.created_at AS created_at, po.updated_at AS updated_at,
-			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username) AS updated_by_name
+			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username) AS updated_by_name,
+			       (pol.qty_ordered * pol.unit_price * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT') WHERE lg.po_id = po.id), 0) / NULLIF((SELECT SUM(l2.qty_ordered * l2.unit_price) FROM purchase_order_line l2 WHERE l2.po_id = po.id AND l2.status <> 'CANCELLED'), 0))::float8 AS expense
 			FROM purchase_order_line pol
 			JOIN purchase_order po ON po.id = pol.po_id
 			LEFT JOIN project pj ON pj.project_code = po.project_code
@@ -148,7 +153,8 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       wo.status,
 			       (wol.qty * wol.unit_price)::float8,
 			       wo.created_at, wo.updated_at,
-			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username)
+			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username),
+			       (wol.qty * wol.unit_price * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT') WHERE lg.wo_id = wo.id), 0) / NULLIF((SELECT SUM(l2.qty * l2.unit_price) FROM work_order_line l2 WHERE l2.wo_id = wo.id), 0))::float8
 			FROM work_order_line wol
 			JOIN work_order wo ON wo.id = wol.wo_id AND wo.project_code = $1 AND wo.status = 'APPROVED'
 			`+woLineCostSubgroupJoin()+`
@@ -165,7 +171,8 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       h.status,
 			       `+pcExVatSQL+`::float8,
 			       h.created_at, h.updated_at,
-			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username)
+			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username),
+			       ((`+pcExVatSQL+`) * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT') WHERE lg.pc_id = h.id), 0) / NULLIF((SELECT SUM(`+pcExVatSQL+`) FROM petty_cash_requisition_line l WHERE l.pc_id = h.id), 0))::float8
 			FROM petty_cash_requisition_line l
 			JOIN petty_cash_requisition h ON h.id = l.pc_id
 			LEFT JOIN users uu ON uu.id = COALESCE(h.updated_by, h.created_by)
@@ -188,7 +195,8 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       NULLIF(TRIM(COALESCE(l.remarks, m.remarks)), ''), m.status,
 			       (CASE WHEN l.to_project_code = $1 THEN l.qty ELSE -l.qty END * COALESCE(t.unit_cost, 0))::float8,
 			       m.created_at, m.updated_at,
-			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username)
+			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username),
+			       (CASE WHEN l.to_project_code = $1 THEN l.qty ELSE -l.qty END * COALESCE(t.unit_cost, 0))::float8
 			FROM ic_project_movement_line l
 			JOIN ic_project_movement m ON m.id = l.movement_id AND m.doc_type = 'TRANSFER' AND m.status = 'POSTED'
 			JOIN material_code mc ON mc.mat_code = l.mat_code
@@ -216,7 +224,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	for rows.Next() {
 		var l costBudgetPOLine
 		if err := rows.Scan(&l.POID, &l.PONo, &l.ProjectCode, &l.ProjectName, &l.LineNo, &l.MatCode, &l.ItemName,
-			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount, &l.Source, &l.DocProjectCode, &l.CreatedAt, &l.UpdatedAt, &l.UpdatedByName); err != nil {
+			&l.Quantity, &l.Unit, &l.Remarks, &l.POStatus, &l.Amount, &l.Source, &l.DocProjectCode, &l.CreatedAt, &l.UpdatedAt, &l.UpdatedByName, &l.ExpenseAmount); err != nil {
 			log.Printf("cost-budget po-lines scan: %v", err)
 			return fiber.NewError(fiber.StatusInternalServerError, loadErr)
 		}

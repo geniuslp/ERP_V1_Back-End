@@ -221,6 +221,18 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 			args = append(args, "%"+f.Requester+"%")
 			i++
 		}
+		// PC: ผู้รับเงิน matches what the list shows (the named payee, else the requester) or the payee's employee code.
+		if f.DocType == "PC" && f.Payee != "" {
+			where = append(where, fmt.Sprintf(`(COALESCE(NULLIF(d.payee_name, ''), (SELECT u.full_name FROM users u WHERE u.id = d.requested_by)) ILIKE $%d
+				OR d.payee_emp_code ILIKE $%d)`, i, i))
+			args = append(args, "%"+f.Payee+"%")
+			i++
+		}
+		if f.DocType == "PC" && f.Branch != "" {
+			where = append(where, fmt.Sprintf("d.branch_code = $%d", i))
+			args = append(args, f.Branch)
+			i++
+		}
 		if f.DocType == "WO" && f.ApVoucher != "" {
 			where = append(where, fmt.Sprintf(`EXISTS (SELECT 1 FROM wo_contractor_log lg
 				JOIN wo_contractor_log_bill b ON b.log_id = lg.id

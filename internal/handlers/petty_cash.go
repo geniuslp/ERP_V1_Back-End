@@ -525,6 +525,7 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 		       mn.mat_name AS mat_name_th,
 		       CASE WHEN pcl.cost_subgroup_id IS NULL THEN NULL
 		            ELSE ` + costCodeSQL("csub","cj","cg","csg") + ` END AS cost_code,
+		       csg.subgroup_name,
 		       wit.label_th,
 		       p.project_name, mn.mat_name, COALESCE(NULLIF(pcl.unit, ''), u.unit_name), COALESCE(ps.qty_on_hand, 0)
 		FROM petty_cash_requisition_line pcl
@@ -560,7 +561,7 @@ func (h *PettyCashHandler) getByID(ctx context.Context, id int64) (*models.Petty
 			&l.HasTaxInvoice, &l.TaxInvoiceNo, &l.TaxInvoiceDate,
 			&l.HasWht, &l.WhtBaseAmount, &l.TaxFormCode, &l.WhtIncomeTypeID, &l.WhtPayDate,
 			&l.InvoiceNo, &l.InvoiceDate,
-			&l.MatNameTH, &l.CostCode, &l.WhtIncomeLabel,
+			&l.MatNameTH, &l.CostCode, &l.CostSubgroupName, &l.WhtIncomeLabel,
 			&l.ProjectName, &l.ItemName, &l.Unit, &l.StockOnHand,
 		); err != nil {
 			return nil, err

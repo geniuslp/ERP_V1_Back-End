@@ -95,7 +95,7 @@ type costBudgetPurchaseLine struct {
 // @Description  project_cost_budget (LEFT JOIN, no row => 0). po_cost = SUM(qty_ordered * unit_price); pc_cost = SUM(amount -
 // @Description  line_discount) of APPROVED petty cash lines (header status APPROVED, the LINE's project_code = this project) —
 // @Description  EX-VAT/ex-WHT, unlike spent_amount in GET /master/projects which is line_net (VAT-inclusive). pu_cost = po_cost + pc_cost.
-// @Description  ac_cost is still a 0 placeholder. HEAD = sum of its group's ITEM rows, MAJOR = sum of all ITEM rows of its job
+// @Description  ac_cost = what the finance page has paid (SAVED contractor-log bills of PO / WO / petty cash, before VAT / WHT, spread over the document's lines by value) plus the POSTED transfer amounts (cost moves with a transfer, like pu_cost). HEAD = sum of its group's ITEM rows, MAJOR = sum of all ITEM rows of its job
 // @Description  (computed in the backend; a roll-up row appears only when it has at least one ITEM under it). Order per job: MAJOR,
 // @Description  then each group's HEAD followed by its ITEMs. APPROVED petty cash lines with no cost code are summed into one last
 // @Description  synthetic ITEM row (is_unassigned=true, subgroup_id null, description "ไม่ระบุรหัสต้นทุน", only when the amount is not 0);
@@ -197,10 +197,89 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 			  AND l.project_code = $1
 			  AND l.cost_subgroup_id IS NOT NULL
 			GROUP BY l.cost_subgroup_id
+		), bp_po AS (
+			-- Ac.Cost = what the finance page has paid: the SAVED contractor-log bills of each document
+			-- (ADV + PROGRESS - ADV_DEDUCT), before VAT and before withholding tax.
+			SELECT lg.po_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
+			FROM wo_contractor_log lg
+			JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
+			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+			WHERE lg.po_id IS NOT NULL
+			GROUP BY lg.po_id
+		), bp_wo AS (
+			SELECT lg.wo_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
+			FROM wo_contractor_log lg
+			JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
+			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+			WHERE lg.wo_id IS NOT NULL
+			GROUP BY lg.wo_id
+		), bp_pc AS (
+			SELECT lg.pc_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
+			FROM wo_contractor_log lg
+			JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
+			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+			WHERE lg.pc_id IS NOT NULL
+			GROUP BY lg.pc_id
+		), ac_po AS (
+			-- a PO's payment is spread over its lines by each line's share of the PO's value
+			SELECT x.cost_subgroup_id, SUM(x.share)::float8 AS ac
+			FROM (
+				SELECT pol.cost_subgroup_id,
+				       CASE WHEN SUM(pol.qty_ordered * pol.unit_price) OVER (PARTITION BY po.id) > 0
+				            THEN pol.qty_ordered * pol.unit_price * bp.paid / SUM(pol.qty_ordered * pol.unit_price) OVER (PARTITION BY po.id)
+				            ELSE 0 END AS share
+				FROM purchase_order po
+				JOIN purchase_order_line pol ON pol.po_id = po.id AND pol.status <> 'CANCELLED'
+				JOIN bp_po bp ON bp.doc_id = po.id
+				WHERE po.project_code = $1 AND po.deleted_at IS NULL
+				  AND po.status NOT IN ('DRAFT','REJECTED','CANCELLED')
+			) x
+			WHERE x.cost_subgroup_id IS NOT NULL
+			GROUP BY x.cost_subgroup_id
+		), ac_wo AS (
+			SELECT wom.cost_subgroup_id,
+			       SUM(wol.qty * wol.unit_price * bp.paid / NULLIF(t.tot, 0))::float8 AS ac
+			FROM work_order wo
+			JOIN bp_wo bp ON bp.doc_id = wo.id
+			JOIN LATERAL (SELECT SUM(l2.qty * l2.unit_price) AS tot FROM work_order_line l2 WHERE l2.wo_id = wo.id) t ON true
+			JOIN work_order_line wol ON wol.wo_id = wo.id
+			`+woLineCostSubgroupJoin()+`
+			WHERE wo.project_code = $1 AND wo.status = 'APPROVED'
+			GROUP BY wom.cost_subgroup_id
+		), ac_pc AS (
+			SELECT y.cost_subgroup_id, SUM(y.share)::float8 AS ac
+			FROM (
+				SELECT l.project_code, l.cost_subgroup_id,
+				       CASE WHEN SUM(`+pcExVatSQL+`) OVER (PARTITION BY h.id) > 0
+				            THEN (`+pcExVatSQL+`) * bp.paid / SUM(`+pcExVatSQL+`) OVER (PARTITION BY h.id)
+				            ELSE 0 END AS share
+				FROM petty_cash_requisition h
+				JOIN petty_cash_requisition_line l ON l.pc_id = h.id
+				JOIN bp_pc bp ON bp.doc_id = h.id
+				WHERE h.status = 'APPROVED'
+			) y
+			WHERE y.project_code = $1 AND y.cost_subgroup_id IS NOT NULL
+			GROUP BY y.cost_subgroup_id
+		), ac_c AS (
+			-- Transfers move cost, so the same POSTED transfer amounts used for Pu.Cost (+ destination, - source)
+			-- move Ac.Cost too.
+			SELECT cost_subgroup_id, SUM(ac)::float8 AS ac_cost
+			FROM (
+				SELECT cost_subgroup_id, ac FROM ac_po
+				UNION ALL
+				SELECT cost_subgroup_id, ac FROM ac_wo
+				UNION ALL
+				SELECT cost_subgroup_id, ac FROM ac_pc
+				UNION ALL
+				SELECT cost_subgroup_id, amt FROM tr_amt WHERE project_code = $1 AND cost_subgroup_id IS NOT NULL
+			) z
+			GROUP BY cost_subgroup_id
 		), keys AS (
 			SELECT cost_subgroup_id FROM po_c
 			UNION
 			SELECT cost_subgroup_id FROM pc
+			UNION
+			SELECT cost_subgroup_id FROM ac_c
 			UNION
 			SELECT cost_subgroup_id FROM project_cost_budget WHERE project_id = $2
 		)
@@ -210,7 +289,8 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 		       cs.subgroup_name,
 		       COALESCE(b.budget_amount, 0)::float8,
 		       COALESCE(po_c.po_cost, 0)::float8,
-		       COALESCE(pc.pc_cost, 0)::float8
+		       COALESCE(pc.pc_cost, 0)::float8,
+		       COALESCE(ac_c.ac_cost, 0)::float8
 		FROM keys k
 		JOIN cost_subgroup cs  ON cs.id  = k.cost_subgroup_id
 		JOIN cost_group    cg  ON cg.id  = cs.group_id
@@ -218,6 +298,7 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 		JOIN cost_subject  csb ON csb.id = cj.subject_id
 		LEFT JOIN po_c ON po_c.cost_subgroup_id = cs.id
 		LEFT JOIN pc ON pc.cost_subgroup_id = cs.id
+		LEFT JOIN ac_c ON ac_c.cost_subgroup_id = cs.id
 		LEFT JOIN project_cost_budget b ON b.project_id = $2 AND b.cost_subgroup_id = cs.id
 		WHERE NOT cs.is_head AND NOT cs.is_major`, projectCode, projectID)
 	if err != nil {
@@ -233,12 +314,10 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 		var groupID, jobID int64
 		if err := rows.Scan(&n.subgroupID, &groupID, &jobID,
 			&n.subjectCode, &n.jobCode, &n.groupCode, &n.subgroupCode,
-			&n.costCode, &n.name, &n.budget, &n.po, &n.pc); err != nil {
+			&n.costCode, &n.name, &n.budget, &n.po, &n.pc, &n.ac); err != nil {
 			return err
 		}
 		n.pu = n.po + n.pc
-		// TODO: ac_cost definition not confirmed yet; stays 0.
-		n.ac = 0
 		g := groups[groupID]
 		if g == nil {
 			g = &cbGroup{groupCode: n.groupCode}
@@ -370,14 +449,41 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 		log.Printf("cost-budget-detail unassigned petty cash project=%s: %v", projectCode, err)
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูลงบประมาณต้นทุนได้ กรุณาลองใหม่อีกครั้ง")
 	}
-	if unassigned = cbRound(unassigned); unassigned != 0 {
+	// Paid share of those same petty cash lines (their document's SAVED bills spread by line value).
+	var unassignedAc float64
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(y.share), 0)::float8 FROM (
+			SELECT l.project_code, l.cost_subgroup_id,
+			       CASE WHEN SUM(`+pcExVatSQL+`) OVER (PARTITION BY h.id) > 0
+			            THEN (`+pcExVatSQL+`) * bp.paid / SUM(`+pcExVatSQL+`) OVER (PARTITION BY h.id)
+			            ELSE 0 END AS share
+			FROM petty_cash_requisition h
+			JOIN petty_cash_requisition_line l ON l.pc_id = h.id
+			JOIN (
+				SELECT lg.pc_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
+				FROM wo_contractor_log lg
+				JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
+				JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+				WHERE lg.pc_id IS NOT NULL
+				GROUP BY lg.pc_id
+			) bp ON bp.doc_id = h.id
+			WHERE h.status = 'APPROVED'
+		) y
+		WHERE y.project_code = $1 AND y.cost_subgroup_id IS NULL`, projectCode).Scan(&unassignedAc); err != nil {
+		log.Printf("cost-budget-detail unassigned petty cash paid project=%s: %v", projectCode, err)
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูลงบประมาณต้นทุนได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	unassignedAc = cbRound(unassignedAc)
+	if unassigned = cbRound(unassigned); unassigned != 0 || unassignedAc != 0 {
 		label := costBudgetUnassignedLabel
 		result = append(result, costBudgetDetailRow{
 			RowType: "ITEM", SubgroupID: nil, IsUnassigned: true, CostCode: "", Description: &label,
 			PcCost: unassigned, PuCost: unassigned, PuBal: cbRound(-unassigned),
+			AcCost: unassignedAc, AcBal: cbRound(-unassignedAc),
 		})
 		totals.PcCost += unassigned
 		totals.PuCost += unassigned
+		totals.AcCost += unassignedAc
 	}
 
 	// Grand total: costs = ITEM rows (incl. the unassigned row), never the MAJOR / HEAD roll-ups. Budget = the

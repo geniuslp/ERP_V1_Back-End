@@ -17,10 +17,9 @@ import (
 //   - Pu.Cost (committed) = PO lines (amount - line_discount, ex-VAT/ex-WHT) + WO total_amount (ex-VAT, after
 //     line discounts) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, same basis as the Cost Budget
 //     page; spent_amount in GET /master/projects still uses line_net, VAT-inclusive). Memo excluded.
-//   - Ac.Cost (actual)    = PO received value (qty_received x unit_price less the received share of line_discount,
-//     ex-VAT, returns already netted in qty_received) + WO payments (payment_log, net of reversals; PAYABLE basis,
-//     incl. VAT and net of WHT) + approved petty cash (amount - line_discount, ex-VAT: cash already spent). The IC
-//     ledgers are not used.
+//   - Ac.Cost (actual)    = what the finance page has paid: PO, WO and petty cash alike, from the SAVED contractor-log
+//     bills (ADV + PROGRESS - ADV_DEDUCT), before VAT and before withholding tax. Not the received goods, not the
+//     approved petty cash amount, not the old payment_log rows.
 
 // Statuses of a PO / WO that count as committed. PO also lists the legacy receiving statuses that older rows may
 // still hold in purchase_order.status.
@@ -46,13 +45,13 @@ const overviewStatusList = "NORMAL, NEAR_LIMIT, OVER_BUDGET, NO_BUDGET, CLOSED, 
 // overviewListSQL is one set-based query: every source is aggregated once per project_code in its own CTE and
 // joined to project; status is derived in SQL so the status filter applies before pagination.
 // $1 search (nullable), $2 status filter (nullable), $3 limit, $4 offset.
+// billSignSQL: an ADV_DEDUCT line gives back advance already paid, so it counts negative.
+const billSignSQL = `(CASE bl.line_code WHEN 'ADV_DEDUCT' THEN -1 ELSE 1 END)`
+
 const overviewListSQL = `
 WITH po AS (
 	SELECT o.project_code,
-	       SUM(COALESCE(l.amount, l.qty_ordered * l.unit_price) - COALESCE(l.line_discount, 0)) AS pu,
-	       SUM(CASE WHEN l.qty_ordered > 0
-	                THEN l.qty_received * l.unit_price - COALESCE(l.line_discount, 0) * l.qty_received / l.qty_ordered
-	                ELSE 0 END) AS ac
+	       SUM(COALESCE(l.amount, l.qty_ordered * l.unit_price) - COALESCE(l.line_discount, 0)) AS pu
 	FROM purchase_order_line l
 	JOIN purchase_order o ON o.id = l.po_id
 	WHERE o.deleted_at IS NULL
@@ -66,11 +65,32 @@ WITH po AS (
 	WHERE project_code IS NOT NULL AND status IN (` + overviewWOStatuses + `)
 	GROUP BY project_code
 ), wo_paid AS (
-	SELECT w.project_code, SUM(pl.amount_paid) AS ac
-	FROM payment_log pl
-	JOIN work_order w ON w.id = pl.doc_id
-	WHERE pl.doc_type = 'WO' AND w.project_code IS NOT NULL
+	-- Ac.Cost = what the finance page has actually paid, from the SAVED contractor-log bills (advance + installment -
+	-- advance deducted), before VAT and before withholding tax — the same figure as the finance page's bills_paid_total.
+	-- One CTE per document type; the log row points at exactly one of wo_id / po_id / pc_id.
+	SELECT w.project_code, SUM(bl.amount * ` + billSignSQL + `) AS ac
+	FROM wo_contractor_log lg
+	JOIN work_order w ON w.id = lg.wo_id
+	JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
+	JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id
+	WHERE w.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
 	GROUP BY w.project_code
+), po_paid AS (
+	SELECT o.project_code, SUM(bl.amount * ` + billSignSQL + `) AS ac
+	FROM wo_contractor_log lg
+	JOIN purchase_order o ON o.id = lg.po_id
+	JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
+	JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id
+	WHERE o.deleted_at IS NULL AND o.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+	GROUP BY o.project_code
+), pc_paid AS (
+	SELECT h.project_code, SUM(bl.amount * ` + billSignSQL + `) AS ac
+	FROM wo_contractor_log lg
+	JOIN petty_cash_requisition h ON h.id = lg.pc_id
+	JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
+	JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id
+	WHERE h.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+	GROUP BY h.project_code
 ), pc AS (
 	SELECT l.project_code, SUM(` + pcExVatSQL + `) AS amt
 	FROM petty_cash_requisition_line l
@@ -82,12 +102,14 @@ WITH po AS (
 	       p.status AS project_status, p.is_active, p.project_kind, p.project_tier,
 	       (CASE WHEN p.project_kind = 'VO' THEN p.vo_amount ELSE p.budget_amount END) AS contract_budget,
 	       COALESCE(po.pu, 0) AS pu_po, COALESCE(wo.pu, 0) AS pu_wo, COALESCE(pc.amt, 0) AS pu_pc,
-	       COALESCE(po.ac, 0) AS ac_po, COALESCE(wo_paid.ac, 0) AS ac_wo, COALESCE(pc.amt, 0) AS ac_pc
+	       COALESCE(po_paid.ac, 0) AS ac_po, COALESCE(wo_paid.ac, 0) AS ac_wo, COALESCE(pc_paid.ac, 0) AS ac_pc
 	FROM project p
 	LEFT JOIN customer cu ON cu.cus_id = p.customer_id
 	LEFT JOIN po ON po.project_code = p.project_code
 	LEFT JOIN wo ON wo.project_code = p.project_code
 	LEFT JOIN wo_paid ON wo_paid.project_code = p.project_code
+	LEFT JOIN po_paid ON po_paid.project_code = p.project_code
+	LEFT JOIN pc_paid ON pc_paid.project_code = p.project_code
 	LEFT JOIN pc ON pc.project_code = p.project_code
 	WHERE ($1::text IS NULL
 	       OR p.project_code ILIKE $1 OR p.project_name ILIKE $1 OR cu.customer_name ILIKE $1)
@@ -142,7 +164,7 @@ type overviewRow struct {
 	UsagePct      *float64 `json:"usage_pct"` // Pu.Cost / Contract Budget x 100; null when the budget is 0
 	Status        string   `json:"status"`
 	StatusLabel   string   `json:"status_label"`
-	// Per-source split of pu_cost / ac_cost. ac.wo is the amount paid (payable basis), not ex-VAT.
+	// Per-source split of pu_cost / ac_cost. Every ac.* figure is the amount paid through SAVED contractor-log bills, before VAT / WHT.
 	PuBreakdown overviewBucket `json:"pu_breakdown"`
 	AcBreakdown overviewBucket `json:"ac_breakdown"`
 }
@@ -152,7 +174,7 @@ type overviewRow struct {
 // @Description  One row per project, computed in a single set-based query.
 // @Description  contract_budget = vo_amount for project_kind VO, else budget_amount.
 // @Description  pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, the same basis as the Cost Budget page; NOT line_net, which spent_amount in GET /master/projects still uses). Memo is excluded.
-// @Description  ac_cost (actual) = PO received value (qty_received x unit_price less the received share of line_discount, ex-VAT; returns already netted in qty_received) + WO amount paid (payment_log, net of reversals; this is on the PAYABLE basis, i.e. incl. VAT and net of WHT, NOT ex-VAT) + approved petty cash (amount - line_discount, ex-VAT: cash already spent, NOT the payable basis). IC ledgers are not used.
+// @Description  ac_cost (actual) = what the finance page has paid: for PO, WO and petty cash alike, the SAVED contractor-log bills (ADV + PROGRESS - ADV_DEDUCT), before VAT and before withholding tax. Received goods, approved petty cash and old payment_log rows are NOT counted.
 // @Description  pu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).
 // @Description  status (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
 // @Description  Default list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.

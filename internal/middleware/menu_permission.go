@@ -13,17 +13,10 @@ var menuPermColumns = map[string]string{
 	"read": "can_read", "write": "can_write", "update": "can_update", "delete": "can_delete",
 }
 
-// RequireMenuPermission guards a route by menu_code + action (read|write|update|delete) using the same
-// precedence as the frontend PermissionContext.can(): a per-user row (user_menu_permissions) wins,
-// including an explicit false; otherwise the role layer (role_menu_permissions, OR across the user's
-// roles); otherwise the department layer (dept_menu_permissions); otherwise denied. No role is
-// hardcoded. Must run after JWTProtected.
-func RequireMenuPermission(db *pgxpool.Pool, menuCode, action string) fiber.Handler {
-	col, ok := menuPermColumns[action]
-	if !ok {
-		panic("RequireMenuPermission: unknown action " + action)
-	}
-	query := fmt.Sprintf(`
+// menuPermQuery builds the permission lookup for one column ($1 = menu_code, $2 = user id). col must come
+// from menuPermColumns.
+func menuPermQuery(col string) string {
+	return fmt.Sprintf(`
 		SELECT COALESCE(ump.%[1]s, rp.%[1]s, dmp.%[1]s, false)
 		FROM menus m
 		JOIN users u ON u.id = $2
@@ -36,6 +29,34 @@ func RequireMenuPermission(db *pgxpool.Pool, menuCode, action string) fiber.Hand
 		) rp ON TRUE
 		LEFT JOIN dept_menu_permissions dmp ON dmp.dept_code = u.dept_code AND dmp.menu_id = m.id
 		WHERE m.menu_code = $1 AND m.is_active = true`, col)
+}
+
+// UserCanMenu reports whether userID may perform action (read|write|update|delete) on menuCode, using the
+// same precedence as RequireMenuPermission. An unknown/inactive menu, a missing user or a lookup error all
+// mean "not allowed".
+func UserCanMenu(ctx context.Context, db *pgxpool.Pool, userID int64, menuCode, action string) bool {
+	col, ok := menuPermColumns[action]
+	if !ok {
+		return false
+	}
+	var allowed bool
+	if err := db.QueryRow(ctx, menuPermQuery(col), menuCode, userID).Scan(&allowed); err != nil {
+		return false
+	}
+	return allowed
+}
+
+// RequireMenuPermission guards a route by menu_code + action (read|write|update|delete) using the same
+// precedence as the frontend PermissionContext.can(): a per-user row (user_menu_permissions) wins,
+// including an explicit false; otherwise the role layer (role_menu_permissions, OR across the user's
+// roles); otherwise the department layer (dept_menu_permissions); otherwise denied. No role is
+// hardcoded. Must run after JWTProtected.
+func RequireMenuPermission(db *pgxpool.Pool, menuCode, action string) fiber.Handler {
+	col, ok := menuPermColumns[action]
+	if !ok {
+		panic("RequireMenuPermission: unknown action " + action)
+	}
+	query := menuPermQuery(col)
 
 	return func(c *fiber.Ctx) error {
 		claims := GetClaims(c)

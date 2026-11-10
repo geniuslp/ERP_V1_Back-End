@@ -17,6 +17,8 @@ func NewPOReportHandler(db *pgxpool.Pool) *POReportHandler { return &POReportHan
 type poReportLine struct {
 	LineNo      int     `json:"line_no"`
 	JobCode     *string `json:"job_code"`
+	CostCode    *string `json:"cost_code"` // combined cost code of the line (subject+job+group+subgroup), nil when none
+	MatCode     *string `json:"mat_code"`
 	Description string  `json:"description"`
 	Qty         float64 `json:"qty"`
 	UnitName    *string `json:"unit_name"`
@@ -48,9 +50,10 @@ const poReportLineJobSQL = `(CASE
 END)`
 
 // History godoc
-// @Summary      รายงานประวัติใบสั่ง (PO ทุกสถานะยกเว้น CANCELLED, รวม DRAFT) จัดกลุ่มตามใบสั่ง
-// @Description  Each group = one PO (supplier + PO number) with its non-cancelled lines and the PO subtotal (before VAT);
-// @Description  grand_total = sum of the subtotals. Filters: project_code, supplier_id, date_from / date_to (po_date, YYYY-MM-DD).
+// @Summary      รายงานประวัติใบสั่ง (PO เท่านั้น ทุกสถานะ ไม่สนสถานะ) จัดกลุ่มตามใบสั่ง
+// @Description  Each group = one PO (supplier + PO number) with ALL its lines (any PO / line status) and the PO subtotal
+// @Description  (before VAT); grand_total = sum of the subtotals. project_code is required.
+// @Description  Filters: project_code, job_code (the line's job), supplier_id, date_from / date_to (po_date, YYYY-MM-DD).
 // @Tags         POReport
 // @Security     BearerAuth
 // @Produce      json
@@ -62,7 +65,7 @@ func (h *POReportHandler) History(c *fiber.Ctx) error { return h.report(c, false
 // @Description  Same shape as /po-report/history. Only approved POs (APPROVED / SENT / PARTIALLY_RECEIVED) and only their
 // @Description  lines that still have quantity to receive; qty and amount are the OUTSTANDING part (ordered - received).
 // @Description  Overhead order types (asset / office equipment / tool) never go through IC receiving and are left out.
-// @Description  Filters: project_code, job_code (the line's job), date_from / date_to (po_date).
+// @Description  project_code is required. Filters: project_code, job_code (the line's job), date_from / date_to (po_date).
 // @Tags         POReport
 // @Security     BearerAuth
 // @Produce      json
@@ -70,7 +73,12 @@ func (h *POReportHandler) History(c *fiber.Ctx) error { return h.report(c, false
 func (h *POReportHandler) PendingReceipt(c *fiber.Ctx) error { return h.report(c, true) }
 
 func (h *POReportHandler) report(c *fiber.Ctx, pending bool) error {
-	where := []string{"po.status <> 'CANCELLED'", "po.deleted_at IS NULL", "pol.status <> 'CANCELLED'"}
+	// The project is mandatory for both reports (the screen validates it too).
+	if strings.TrimSpace(c.Query("project_code")) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "กรุณาเลือกโครงการ")
+	}
+	// History: every PO regardless of status (only soft-deleted ones are left out) and every line.
+	where := []string{"po.deleted_at IS NULL"}
 	qtyExpr := "COALESCE(pol.qty_ordered, 0)::float8"
 	amountExpr := "COALESCE(pol.amount, pol.qty_ordered * pol.unit_price, 0)::float8"
 	if pending {
@@ -94,7 +102,7 @@ func (h *POReportHandler) report(c *fiber.Ctx, pending bool) error {
 	if v := strings.TrimSpace(c.Query("supplier_id")); v != "" {
 		add("po.supplier_id = ?::bigint", v)
 	}
-	if v := strings.TrimSpace(c.Query("job_code")); v != "" && pending {
+	if v := strings.TrimSpace(c.Query("job_code")); v != "" {
 		add(poReportLineJobSQL+" = ?", v)
 	}
 	if v := strings.TrimSpace(c.Query("date_from")); v != "" {
@@ -107,6 +115,7 @@ func (h *POReportHandler) report(c *fiber.Ctx, pending bool) error {
 	rows, err := h.db.Query(context.Background(), `
 		SELECT po.id, po.po_no, to_char(po.po_date, 'YYYY-MM-DD'), po.status, s.supplier_name, po.project_code, p.project_name,
 		       pol.line_no, `+poReportLineJobSQL+`,
+		       `+costCodeSQL("csub", "cj", "cg", "csg")+`, pol.mat_code,
 		       COALESCE(NULLIF(btrim(COALESCE(mn.mat_name, '') || ' ' || COALESCE(ss.spec_description, '')), ''), pol.description, ''),
 		       `+qtyExpr+`, u.unit_name, COALESCE(pol.unit_price, 0)::float8,
 		       `+amountExpr+`, pol.remarks
@@ -136,7 +145,7 @@ func (h *POReportHandler) report(c *fiber.Ctx, pending bool) error {
 		var g poReportGroup
 		var l poReportLine
 		if err := rows.Scan(&g.POID, &g.PONo, &g.PODate, &g.Status, &g.SupplierName, &g.ProjectCode, &g.ProjectName,
-			&l.LineNo, &l.JobCode, &l.Description, &l.Qty, &l.UnitName, &l.UnitPrice, &l.Amount, &l.Remarks); err != nil {
+			&l.LineNo, &l.JobCode, &l.CostCode, &l.MatCode, &l.Description, &l.Qty, &l.UnitName, &l.UnitPrice, &l.Amount, &l.Remarks); err != nil {
 			return err
 		}
 		cur, ok := byID[g.POID]
