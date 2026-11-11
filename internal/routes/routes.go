@@ -270,6 +270,15 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	approvals.Get("/logs", approvalH.Logs)
 	approvals.Get("/audit", approvalH.AuditLogs)
 
+	// Notifications (bell): REST + live WebSocket. The socket authenticates with ?token= (no headers on a browser WS).
+	notificationH := handlers.NewNotificationHandler(db, cfg)
+	notificationH.StartListener()
+	notifications := api.Group("/notifications", jwt)
+	notifications.Get("/", notificationH.List)
+	notifications.Put("/read-all", notificationH.MarkAllRead) // static route before /:id/read
+	notifications.Put("/:id/read", notificationH.MarkRead)
+	api.Get("/ws/notifications", notificationH.WSAuth, notificationH.WS())
+
 	// Approval Request — my-status (backs Approve/Reject button gating on the frontend)
 	approvalReq := api.Group("/approval-request", jwt)
 	approvalReq.Get("/:docType/:docId/my-status", approvalH.MyApprovalStatus)

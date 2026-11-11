@@ -10276,6 +10276,39 @@ paths:
       summary: List menus as parent/child tree
       tags:
       - Role-Menu Permissions
+  /notifications:
+    get:
+      parameters:
+      - description: only unread
+        in: query
+        name: unread_only
+        type: boolean
+      - description: default 30, max 100
+        in: query
+        name: limit
+        type: integer
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: My notifications (newest first)
+      tags:
+      - Notifications
+  /notifications/{id}/read:
+    put:
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Mark one notification as read
+      tags:
+      - Notifications
+  /notifications/read-all:
+    put:
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Mark all my notifications as read
+      tags:
+      - Notifications
   /permissions/effective:
     get:
       parameters:
