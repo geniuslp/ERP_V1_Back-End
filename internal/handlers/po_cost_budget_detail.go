@@ -199,25 +199,25 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 			GROUP BY l.cost_subgroup_id
 		), bp_po AS (
 			-- Ac.Cost = what the finance page has paid: the SAVED contractor-log bills of each document
-			-- (ADV + PROGRESS - ADV_DEDUCT), before VAT and before withholding tax.
+			-- (ADV + PROGRESS - ADV_DEDUCT - RETENTION held back, + RETENTION paid out later), before VAT and before withholding tax.
 			SELECT lg.po_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
 			FROM wo_contractor_log lg
 			JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
-			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION')
 			WHERE lg.po_id IS NOT NULL
 			GROUP BY lg.po_id
 		), bp_wo AS (
 			SELECT lg.wo_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
 			FROM wo_contractor_log lg
 			JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
-			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION')
 			WHERE lg.wo_id IS NOT NULL
 			GROUP BY lg.wo_id
 		), bp_pc AS (
 			SELECT lg.pc_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
 			FROM wo_contractor_log lg
 			JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
-			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+			JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION')
 			WHERE lg.pc_id IS NOT NULL
 			GROUP BY lg.pc_id
 		), ac_po AS (
@@ -463,7 +463,7 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 				SELECT lg.pc_id AS doc_id, SUM(bl.amount * `+billSignSQL+`) AS paid
 				FROM wo_contractor_log lg
 				JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
-				JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+				JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION')
 				WHERE lg.pc_id IS NOT NULL
 				GROUP BY lg.pc_id
 			) bp ON bp.doc_id = h.id

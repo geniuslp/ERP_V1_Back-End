@@ -18,7 +18,7 @@ import (
 //     line discounts) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, same basis as the Cost Budget
 //     page; spent_amount in GET /master/projects still uses line_net, VAT-inclusive). Memo excluded.
 //   - Ac.Cost (actual)    = what the finance page has paid: PO, WO and petty cash alike, from the SAVED contractor-log
-//     bills (ADV + PROGRESS - ADV_DEDUCT), before VAT and before withholding tax. Not the received goods, not the
+//     bills (ADV + PROGRESS - ADV_DEDUCT - RETENTION held back, + RETENTION paid out later), before VAT and before withholding tax. Not the received goods, not the
 //     approved petty cash amount, not the old payment_log rows.
 
 // Statuses of a PO / WO that count as committed. PO also lists the legacy receiving statuses that older rows may
@@ -45,8 +45,10 @@ const overviewStatusList = "NORMAL, NEAR_LIMIT, OVER_BUDGET, NO_BUDGET, CLOSED, 
 // overviewListSQL is one set-based query: every source is aggregated once per project_code in its own CTE and
 // joined to project; status is derived in SQL so the status filter applies before pagination.
 // $1 search (nullable), $2 status filter (nullable), $3 limit, $4 offset.
-// billSignSQL: an ADV_DEDUCT line gives back advance already paid, so it counts negative.
-const billSignSQL = `(CASE bl.line_code WHEN 'ADV_DEDUCT' THEN -1 ELSE 1 END)`
+// billSignSQL: an ADV_DEDUCT line gives back advance already paid, and a RETENTION line is money withheld from the
+// contractor (not yet paid out), so both count negative. The retention is paid later by a bill of type RETENTION whose
+// PROGRESS line adds it back. Net: Ac.Cost = what has really been paid to the contractor, before VAT/WHT.
+const billSignSQL = `(CASE WHEN bl.line_code IN ('ADV_DEDUCT', 'RETENTION') THEN -1 ELSE 1 END)`
 
 const overviewListSQL = `
 WITH po AS (
@@ -73,7 +75,7 @@ WITH po AS (
 	JOIN work_order w ON w.id = lg.wo_id
 	JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
 	JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id
-	WHERE w.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+	WHERE w.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION')
 	GROUP BY w.project_code
 ), po_paid AS (
 	SELECT o.project_code, SUM(bl.amount * ` + billSignSQL + `) AS ac
@@ -81,7 +83,7 @@ WITH po AS (
 	JOIN purchase_order o ON o.id = lg.po_id
 	JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
 	JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id
-	WHERE o.deleted_at IS NULL AND o.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+	WHERE o.deleted_at IS NULL AND o.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION')
 	GROUP BY o.project_code
 ), pc_paid AS (
 	SELECT h.project_code, SUM(bl.amount * ` + billSignSQL + `) AS ac
@@ -89,7 +91,7 @@ WITH po AS (
 	JOIN petty_cash_requisition h ON h.id = lg.pc_id
 	JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED'
 	JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id
-	WHERE h.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT')
+	WHERE h.project_code IS NOT NULL AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION')
 	GROUP BY h.project_code
 ), pc AS (
 	SELECT l.project_code, SUM(` + pcExVatSQL + `) AS amt
@@ -174,7 +176,7 @@ type overviewRow struct {
 // @Description  One row per project, computed in a single set-based query.
 // @Description  contract_budget = vo_amount for project_kind VO, else budget_amount.
 // @Description  pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, the same basis as the Cost Budget page; NOT line_net, which spent_amount in GET /master/projects still uses). Memo is excluded.
-// @Description  ac_cost (actual) = what the finance page has paid: for PO, WO and petty cash alike, the SAVED contractor-log bills (ADV + PROGRESS - ADV_DEDUCT), before VAT and before withholding tax. Received goods, approved petty cash and old payment_log rows are NOT counted.
+// @Description  ac_cost (actual) = what the finance page has paid: for PO, WO and petty cash alike, the SAVED contractor-log bills (ADV + PROGRESS - ADV_DEDUCT - RETENTION held back, + RETENTION paid out later), before VAT and before withholding tax. Received goods, approved petty cash and old payment_log rows are NOT counted.
 // @Description  pu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).
 // @Description  status (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
 // @Description  Default list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.

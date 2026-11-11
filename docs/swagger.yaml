@@ -12384,7 +12384,7 @@ paths:
         One row per project, computed in a single set-based query.
         contract_budget = vo_amount for project_kind VO, else budget_amount.
         pu_cost (committed, ex-VAT/ex-WHT) = PO lines (amount - line_discount; PO status APPROVED / PENDING_REAPPROVAL / legacy SENT, PARTIALLY_RECEIVED, RECEIVED; not deleted; line not CANCELLED) + WO total_amount (status APPROVED / PENDING_REAPPROVAL) + approved petty cash (amount - line_discount, ex-VAT/ex-WHT, the same basis as the Cost Budget page; NOT line_net, which spent_amount in GET /master/projects still uses). Memo is excluded.
-        ac_cost (actual) = what the finance page has paid: for PO, WO and petty cash alike, the SAVED contractor-log bills (ADV + PROGRESS - ADV_DEDUCT), before VAT and before withholding tax. Received goods, approved petty cash and old payment_log rows are NOT counted.
+        ac_cost (actual) = what the finance page has paid: for PO, WO and petty cash alike, the SAVED contractor-log bills (ADV + PROGRESS - ADV_DEDUCT - RETENTION held back, + RETENTION paid out later), before VAT and before withholding tax. Received goods, approved petty cash and old payment_log rows are NOT counted.
         pu_balance = contract_budget - pu_cost; ac_balance = contract_budget - ac_cost (NULL sources count as 0, no rounding).
         status (from pu_cost / contract_budget): CLOSED (project.status) first, then INACTIVE (project.status INACTIVE or is_active=false), NO_BUDGET (budget <= 0), OVER_BUDGET (> 100%), NEAR_LIMIT (>= 90%), NORMAL. usage_pct is that ratio in percent (null when the budget is 0).
         Default list hides INACTIVE projects (only ACTIVE and CLOSED ones are listed); pass status=INACTIVE to see them. Ordered by project_code; page_size max 200.

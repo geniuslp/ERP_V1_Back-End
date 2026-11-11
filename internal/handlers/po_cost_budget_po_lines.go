@@ -132,7 +132,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       (pol.qty_ordered * pol.unit_price)::float8 AS amount,
 			       po.created_at AS created_at, po.updated_at AS updated_at,
 			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username) AS updated_by_name,
-			       (pol.qty_ordered * pol.unit_price * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT') WHERE lg.po_id = po.id), 0) / NULLIF((SELECT SUM(l2.qty_ordered * l2.unit_price) FROM purchase_order_line l2 WHERE l2.po_id = po.id AND l2.status <> 'CANCELLED'), 0))::float8 AS expense
+			       (pol.qty_ordered * pol.unit_price * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION') WHERE lg.po_id = po.id), 0) / NULLIF((SELECT SUM(l2.qty_ordered * l2.unit_price) FROM purchase_order_line l2 WHERE l2.po_id = po.id AND l2.status <> 'CANCELLED'), 0))::float8 AS expense
 			FROM purchase_order_line pol
 			JOIN purchase_order po ON po.id = pol.po_id
 			LEFT JOIN project pj ON pj.project_code = po.project_code
@@ -154,7 +154,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       (wol.qty * wol.unit_price)::float8,
 			       wo.created_at, wo.updated_at,
 			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username),
-			       (wol.qty * wol.unit_price * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT') WHERE lg.wo_id = wo.id), 0) / NULLIF((SELECT SUM(l2.qty * l2.unit_price) FROM work_order_line l2 WHERE l2.wo_id = wo.id), 0))::float8
+			       (wol.qty * wol.unit_price * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION') WHERE lg.wo_id = wo.id), 0) / NULLIF((SELECT SUM(l2.qty * l2.unit_price) FROM work_order_line l2 WHERE l2.wo_id = wo.id), 0))::float8
 			FROM work_order_line wol
 			JOIN work_order wo ON wo.id = wol.wo_id AND wo.project_code = $1 AND wo.status = 'APPROVED'
 			`+woLineCostSubgroupJoin()+`
@@ -172,7 +172,7 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 			       `+pcExVatSQL+`::float8,
 			       h.created_at, h.updated_at,
 			       COALESCE(NULLIF(TRIM(uu.full_name), ''), uu.username),
-			       ((`+pcExVatSQL+`) * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT') WHERE lg.pc_id = h.id), 0) / NULLIF((SELECT SUM(`+pcExVatSQL+`) FROM petty_cash_requisition_line l WHERE l.pc_id = h.id), 0))::float8
+			       ((`+pcExVatSQL+`) * COALESCE((SELECT SUM(bl.amount * `+billSignSQL+`) FROM wo_contractor_log lg JOIN wo_contractor_log_bill b ON b.log_id = lg.id AND b.status = 'SAVED' JOIN wo_contractor_log_bill_line bl ON bl.bill_id = b.id AND bl.line_code IN ('ADV', 'PROGRESS', 'ADV_DEDUCT', 'RETENTION') WHERE lg.pc_id = h.id), 0) / NULLIF((SELECT SUM(`+pcExVatSQL+`) FROM petty_cash_requisition_line l WHERE l.pc_id = h.id), 0))::float8
 			FROM petty_cash_requisition_line l
 			JOIN petty_cash_requisition h ON h.id = l.pc_id
 			LEFT JOIN users uu ON uu.id = COALESCE(h.updated_by, h.created_by)
