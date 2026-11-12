@@ -306,14 +306,14 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// wo_no is generated internally from wo_seq inside this transaction — the frontend's
-	// create-WO page does not call reserve-number, unlike PR/PO. wo_seq (a real Postgres
-	// sequence) replaces the old unlocked MAX(id)+1 read, so this stays race-safe.
-	var seq int64
-	if err := tx.QueryRow(ctx, `SELECT nextval('wo_seq')`).Scan(&seq); err != nil {
+	// wo_no (WO-YYYYMM-NNNN) is allocated inside this transaction from the monthly wo_number_counter, like PO:
+	// concurrent creates serialize on the counter row and a rolled-back create gives its number back.
+	now := bangkokNow()
+	seq, err := nextMonthlyNumber(ctx, tx, "wo_number_counter", now)
+	if err != nil {
 		return err
 	}
-	woNo := fmt.Sprintf("WO-%s-%06d", time.Now().Format("2006"), seq)
+	woNo := formatWONo(now, seq)
 
 	woDate := time.Now().Format("2006-01-02")
 	if req.WoDate != nil && *req.WoDate != "" {
@@ -401,20 +401,29 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 }
 
 // ReserveWONumber godoc
-// @Summary      Reserve the next Work Order number (consumes wo_seq)
-// @Description  Calls nextval('wo_seq') and formats it immediately as the real wo_no (WO-<YYYY>-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-WO page opens, then submits the returned wo_no as part of POST /work-order.
+// @Summary      Reserve the next Work Order number (consumes wo_number_counter)
+// @Description  Takes the next number of the monthly wo_number_counter and formats it as the real wo_no (WO-<YYYYMM>-NNNN). This actually consumes the number right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-WO page opens, then submits the returned wo_no as part of POST /work-order.
 // @Tags         WorkOrder
 // @Security     BearerAuth
 // @Produce      json
 // @Success      200  {object}  fiber.Map
 // @Router       /work-order/reserve-number [get]
 func (h *WorkOrderHandler) ReserveWONumber(c *fiber.Ctx) error {
-	var seq int64
-	if err := h.db.QueryRow(context.Background(), `SELECT nextval('wo_seq')`).Scan(&seq); err != nil {
+	ctx := context.Background()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	woNo := fmt.Sprintf("WO-%s-%06d", time.Now().Format("2006"), seq)
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"wo_no": woNo}})
+	defer tx.Rollback(ctx)
+	now := bangkokNow()
+	seq, err := nextMonthlyNumber(ctx, tx, "wo_number_counter", now)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"wo_no": formatWONo(now, seq)}})
 }
 
 // WhtDefaults godoc
@@ -735,6 +744,8 @@ func (h *WorkOrderHandler) Get(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดข้อมูลหนังสือสั่งจ้างได้ กรุณาลองใหม่อีกครั้ง")
 	}
 	w.Lines = lines
+
+	h.fillWOPrintSignature(ctx, id, w)
 
 	return c.JSON(fiber.Map{"success": true, "data": w})
 }
@@ -1724,4 +1735,43 @@ func openWorkOrderApproval(ctx context.Context, tx pgx.Tx, woID int64, woNo stri
 		return fiber.NewError(fiber.StatusNotFound, "ไม่พบหนังสือสั่งจ้าง")
 	}
 	return nil
+}
+
+// fillWOPrintSignature fills what the signature block of the WO print needs, the same way PO's print-data does:
+// created_by_username, and approval_signature (resolvePOApprovalSignature: latest APPROVE in approval_log, falling back
+// to the assigned approver; nil unless APPROVED and the approver has a signature file). Best effort: a failure here
+// only means an empty signature box, never a failed load.
+func (h *WorkOrderHandler) fillWOPrintSignature(ctx context.Context, id int64, w *models.WorkOrder) {
+	var createdBy, approverID *int64
+	var username *string
+	if err := h.db.QueryRow(ctx, `SELECT wo.created_by, wo.approver_id, cu.username
+		FROM work_order wo LEFT JOIN users cu ON cu.id = wo.created_by WHERE wo.id = $1`, id).Scan(&createdBy, &approverID, &username); err != nil {
+		log.Printf("[WO Get] id=%d step=print-signature err=%v", id, err)
+		return
+	}
+	w.CreatedByUsername = username
+	if w.Status != "APPROVED" {
+		return
+	}
+	var approvedAt *time.Time
+	var approvedByID *int64
+	var approvedByName, approvedBySigPath, approvedBySigMime, fbName, fbSigPath, fbSigMime *string
+	if err := h.db.QueryRow(ctx, `
+		SELECT al.action_at, al.action_by, au.full_name, au.signature_path, au.signature_mime,
+		       fb.full_name, fb.signature_path, fb.signature_mime
+		FROM work_order wo
+		LEFT JOIN LATERAL (
+		    SELECT action_at, action_by FROM approval_log
+		    WHERE doc_type = 'WO' AND doc_id = wo.id AND action = 'APPROVE'
+		    ORDER BY action_at DESC LIMIT 1
+		) al ON true
+		LEFT JOIN users au ON au.id = al.action_by
+		LEFT JOIN users fb ON fb.id = wo.approver_id
+		WHERE wo.id = $1`, id).Scan(&approvedAt, &approvedByID, &approvedByName, &approvedBySigPath, &approvedBySigMime,
+		&fbName, &fbSigPath, &fbSigMime); err != nil {
+		log.Printf("[WO Get] id=%d step=approval-signature err=%v", id, err)
+		return
+	}
+	w.ApprovalSignature = resolvePOApprovalSignature(w.Status, approverID, approvedAt, approvedByID, approvedByName,
+		approvedBySigPath, approvedBySigMime, fbName, fbSigPath, fbSigMime)
 }

@@ -1661,6 +1661,10 @@ type WorkOrder struct {
 	RefNo                   *string   `json:"ref_no"`
 	OtherTerms              *string   `json:"other_terms"`
 	Status                  string    `json:"status"` // DRAFT|PENDING_APPROVAL|APPROVED|REJECTED|CANCELLED
+	// Print only (GET /work-order/:id): same as PO's print-data — the creator's username (first signature box) and,
+	// once APPROVED, the approver's signature image / name / approval time (null when not approved or no signature).
+	CreatedByUsername *string             `json:"created_by_username,omitempty"`
+	ApprovalSignature *UserSignatureInfo `json:"approval_signature"`
 	EnteredBy               *int64    `json:"entered_by"`
 	EnteredByName           *string   `json:"entered_by_name,omitempty"`
 	SectionHeadID           *int64    `json:"section_head_id"`

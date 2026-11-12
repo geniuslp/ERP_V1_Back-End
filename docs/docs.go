@@ -17106,14 +17106,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Calls nextval('wo_seq') and formats it immediately as the real wo_no (WO-\u003cYYYY\u003e-NNNNNN). Unlike the old MAX(id)+1 generation, this actually consumes the sequence right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-WO page opens, then submits the returned wo_no as part of POST /work-order.",
+                "description": "Takes the next number of the monthly wo_number_counter and formats it as the real wo_no (WO-\u003cYYYYMM\u003e-NNNN). This actually consumes the number right away — the number is reserved even if the create is never submitted (a gap is expected and fine). The frontend calls this once when the create-WO page opens, then submits the returned wo_no as part of POST /work-order.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "WorkOrder"
                 ],
-                "summary": "Reserve the next Work Order number (consumes wo_seq)",
+                "summary": "Reserve the next Work Order number (consumes wo_number_counter)",
                 "responses": {
                     "200": {
                         "description": "OK",

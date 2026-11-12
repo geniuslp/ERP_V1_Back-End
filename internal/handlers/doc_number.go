@@ -21,6 +21,7 @@ var monthlyCounterTables = map[string]bool{
 	"po_number_counter":   true,
 	"memo_number_counter": true,
 	"pc_number_counter":   true,
+	"wo_number_counter":   true, // work order (WO-YYYYMM-NNNN)
 	"ret_number_counter":  true, // PO return (RT-YYYYMM-NNNN): its own series, separate from por_number_counter
 }
 
@@ -61,6 +62,9 @@ func nextMonthlyNumber(ctx context.Context, tx pgx.Tx, counterTable string, now 
 func formatPRNo(now time.Time, seq int64) string   { return fmt.Sprintf("PR%s-%04d", now.Format("200601"), seq) }
 func formatPONo(now time.Time, seq int64) string   { return fmt.Sprintf("PO-%s-%04d", now.Format("200601"), seq) }
 func formatMemoNo(now time.Time, seq int64) string { return fmt.Sprintf("MEM-%s-%04d", now.Format("0601"), seq) }
+
+// Work order: WO-YYYYMM-NNNN. Pre-existing rows (WO-YYYY-NNNNNN) are left untouched.
+func formatWONo(now time.Time, seq int64) string { return fmt.Sprintf("WO-%s-%04d", now.Format("200601"), seq) }
 
 // Petty cash: PC-YYYYMM-NNNN. Pre-existing rows (PC-YYYY-NNNNNN) are left untouched.
 func formatPCNo(now time.Time, seq int64) string { return fmt.Sprintf("PC-%s-%04d", now.Format("200601"), seq) }
