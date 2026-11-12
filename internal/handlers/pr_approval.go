@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -147,6 +148,17 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 		}
 		if cond, a := approvalListCond(claims, "PR", "pr", listArgs); cond != "" {
 			listArgs, scopeList = a, " AND "+cond
+		}
+	}
+
+	if !c.QueryBool("my_approvals", false) { // Project-department users: only their projects (own PRs stay visible)
+		if claims := middleware.GetClaims(c); claims != nil {
+			countArgs = append(countArgs, claims.UserID)
+			cp := fmt.Sprintf("$%d", len(countArgs))
+			scopeCount += " AND " + projectScopeSQL(cp, "pr.project_code", "pr.requested_by = "+cp)
+			listArgs = append(listArgs, claims.UserID)
+			lp := fmt.Sprintf("$%d", len(listArgs))
+			scopeList += " AND " + projectScopeSQL(lp, "pr.project_code", "pr.requested_by = "+lp)
 		}
 	}
 

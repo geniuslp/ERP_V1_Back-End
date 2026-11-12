@@ -17831,6 +17831,17 @@ const docTemplate = `{
                     "description": "1-5 from the project value (DB-generated); null when no value/contract amount",
                     "type": "integer"
                 },
+                "related_usernames": {
+                    "description": "usernames joined by \", \" (list + detail)",
+                    "type": "string"
+                },
+                "related_users": {
+                    "description": "detail/create/update only: people involved in the project",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectResponsibleUser"
+                    }
+                },
                 "remaining_amount": {
                     "type": "number"
                 },
@@ -19622,6 +19633,13 @@ const docTemplate = `{
                 "project_owner_name": {
                     "type": "string"
                 },
+                "related_user_ids": {
+                    "description": "people involved in the project (users.id). nil/absent = keep current; [] = clear",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
                 "responsible_person_name": {
                     "description": "\"ผู้รับผิดชอบหลัก\" — required free text",
                     "type": "string"
@@ -20008,6 +20026,10 @@ const docTemplate = `{
                 "department": {
                     "type": "string"
                 },
+                "dept_code": {
+                    "description": "departments.dept_code; empty = none",
+                    "type": "string"
+                },
                 "email": {
                     "type": "string"
                 },
@@ -20033,6 +20055,13 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "type": "string"
+                    }
+                },
+                "role_ids": {
+                    "description": "roles.id (what the user form sends); combined with role_codes",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
                     }
                 },
                 "username": {
@@ -21960,6 +21989,13 @@ const docTemplate = `{
                 },
                 "project_owner_name": {
                     "type": "string"
+                },
+                "related_user_ids": {
+                    "description": "people involved in the project (users.id). nil/absent = keep current; [] = clear",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 },
                 "responsible_person_name": {
                     "description": "\"ผู้รับผิดชอบหลัก\" — required free text",

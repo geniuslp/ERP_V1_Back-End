@@ -43,6 +43,9 @@ const projectSelectCols = `p.id, p.project_code, p.project_name, p.location_code
 	COALESCE((SELECT string_agg(ru.username, ', ' ORDER BY ru.username)
 		FROM project_responsible_person prp JOIN users ru ON ru.id = prp.user_id
 		WHERE prp.project_id = p.id), '') AS responsible_usernames,
+	COALESCE((SELECT string_agg(ru.username, ', ' ORDER BY ru.username)
+		FROM project_related_person prl JOIN users ru ON ru.id = prl.user_id
+		WHERE prl.project_id = p.id), '') AS related_usernames,
 	COALESCE((SELECT SUM(po.net_amount) FROM purchase_order po
 		WHERE po.project_code = p.project_code
 		  AND po.status = 'APPROVED'), 0)
@@ -82,7 +85,7 @@ func scanProjectFull(p *models.ProjectFull, row pgx.Row) error {
 		&p.OwnerID, &p.OwnerName, &p.ProjectOwnerName,
 		&p.CustomerID, &p.CustomerName,
 		&p.ResponsiblePersonName, &p.JobCodes,
-		&p.BudgetAmount, &p.VOAmount, &p.CostAmount, &p.ProjectKind, &p.ProjectTier, &p.ResponsibleUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
+		&p.BudgetAmount, &p.VOAmount, &p.CostAmount, &p.ProjectKind, &p.ProjectTier, &p.ResponsibleUsernames, &p.RelatedUsernames, &p.SpentAmount, &p.PaidAmount, &p.RemainingAmount, &p.ConsultantName, &p.ConsultantPhone,
 		&p.StartDate, &p.EndDate, &p.Status, &p.IsActive,
 		&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 }
@@ -238,6 +241,60 @@ func replaceResponsibleUsers(ctx context.Context, tx pgx.Tx, projectID int64, id
 	return err
 }
 
+// resolveRelatedUsers de-duplicates the picked ids and checks every id is an active user. An empty list is allowed.
+func (h *ProjectHandler) resolveRelatedUsers(ctx context.Context, ids []int64) ([]int64, error) {
+	seen := map[int64]bool{}
+	uniq := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "บุคคลที่เกี่ยวข้องที่เลือกไม่ถูกต้อง")
+		}
+		if !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	if len(uniq) == 0 {
+		return uniq, nil
+	}
+	var n int
+	if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE id = ANY($1) AND is_active = true`, uniq).Scan(&n); err != nil {
+		return nil, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบบุคคลที่เกี่ยวข้องได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if n != len(uniq) {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "บุคคลที่เกี่ยวข้องที่เลือกไม่ถูกต้อง")
+	}
+	return uniq, nil
+}
+
+// loadRelatedUsers returns the people involved in the project (id + username only).
+func (h *ProjectHandler) loadRelatedUsers(ctx context.Context, projectID int64) []models.ProjectResponsibleUser {
+	out := []models.ProjectResponsibleUser{}
+	rows, err := h.db.Query(ctx, `SELECT u.id, u.username FROM project_related_person prl
+		JOIN users u ON u.id = prl.user_id WHERE prl.project_id = $1 ORDER BY u.username`, projectID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r models.ProjectResponsibleUser
+		if rows.Scan(&r.ID, &r.Username) == nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// replaceRelatedUsers sets the project's related persons inside the caller's transaction.
+func replaceRelatedUsers(ctx context.Context, tx pgx.Tx, projectID int64, ids []int64, by int64) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM project_related_person WHERE project_id = $1`, projectID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO project_related_person (project_id, user_id, created_by)
+		SELECT $1, x, $3 FROM unnest($2::bigint[]) AS x`, projectID, ids, by)
+	return err
+}
+
 // List godoc
 // @Summary      List projects
 // @Description  Every item also carries in_use (bool) and in_use_by (Thai doc names, e.g. "ใบขอซื้อ (PR)", "ใบสั่งซื้อ (PO)", "หนังสือสั่งจ้าง (WO)", "Memo"; [] when unused) — true once the project_code is referenced by any work document (see projectUsageSources in project_usage.go). Computed for the whole page with one query.
@@ -291,6 +348,17 @@ func (h *ProjectHandler) List(c *fiber.Ctx) error {
 		i++
 	}
 
+	if claims := middleware.GetClaims(c); claims != nil { // Project-department users: only their projects
+		up := fmt.Sprintf("$%d", i)
+		if c.Query("scope") == "budget" { // Cost Budget project picker: own projects only, no warehouse projects
+			where += " AND " + projectBudgetScopeSQL(up, "p.project_code")
+		} else {
+			where += " AND " + projectScopeSQL(up, "p.project_code", "")
+		}
+		args = append(args, claims.UserID)
+		i++
+	}
+
 	var total int64
 	if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM project p `+where, args...).Scan(&total); err != nil {
 		return err
@@ -315,6 +383,7 @@ func (h *ProjectHandler) List(c *fiber.Ctx) error {
 			return err
 		}
 		p.ResponsibleUsers = []models.ProjectResponsibleUser{} // list carries responsible_usernames only
+			p.RelatedUsers = []models.ProjectResponsibleUser{}
 		items = append(items, p)
 	}
 	rows.Close()
@@ -356,6 +425,7 @@ func (h *ProjectHandler) GetByID(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "project not found")
 	}
 	p.ResponsibleUsers = h.loadResponsibleUsers(context.Background(), int64(p.Id))
+	p.RelatedUsers = h.loadRelatedUsers(context.Background(), int64(p.Id))
 	h.fillProjectUsage(context.Background(), []*models.ProjectFull{&p})
 	shares, err := h.loadJobShares(context.Background(), int64(p.Id))
 	if err != nil {
@@ -466,6 +536,14 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		}
 		responsibleIDs, req.ResponsiblePersonName = ids, names // legacy name = selected usernames
 	}
+	var relatedIDs []int64
+	if req.RelatedUserIDs != nil {
+		ids, rerr := h.resolveRelatedUsers(context.Background(), req.RelatedUserIDs)
+		if rerr != nil {
+			return rerr
+		}
+		relatedIDs = ids
+	}
 	kind, budgetAmount, voAmount, verr := resolveProjectValues(req.ProjectKind, "NEW", req.BudgetAmount, req.VOAmount)
 	if verr != nil {
 		return fiber.NewError(fiber.StatusBadRequest, verr.Error())
@@ -565,6 +643,11 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
 		}
 	}
+	if relatedIDs != nil {
+		if err := replaceRelatedUsers(ctx, tx, id, relatedIDs, claims.UserID); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, failMsg)
+		}
+	}
 	if err := replaceJobShares(ctx, tx, id, jobShares); err != nil {
 		if mapped := jobShareDBError(err, jobShares); mapped != nil {
 			return mapped
@@ -586,6 +669,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 	p.ResponsibleUsers = h.loadResponsibleUsers(ctx, int64(p.Id))
+	p.RelatedUsers = h.loadRelatedUsers(ctx, int64(p.Id))
 	h.fillProjectUsage(ctx, []*models.ProjectFull{&p})
 	shares, err := h.loadJobShares(ctx, int64(p.Id))
 	if err != nil {
@@ -648,6 +732,14 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 			return rerr
 		}
 		responsibleIDs, req.ResponsiblePersonName = ids, names // legacy name = selected usernames
+	}
+	var relatedIDs []int64
+	if req.RelatedUserIDs != nil {
+		ids, rerr := h.resolveRelatedUsers(ctx, req.RelatedUserIDs)
+		if rerr != nil {
+			return rerr
+		}
+		relatedIDs = ids
 	}
 
 	// Validation only (no writes yet): a blank project_kind keeps the project's current kind.
@@ -784,6 +876,11 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกผู้รับผิดชอบได้ กรุณาลองใหม่อีกครั้ง")
 		}
 	}
+	if relatedIDs != nil {
+		if err := replaceRelatedUsers(ctx, tx, int64(id), relatedIDs, claims.UserID); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถบันทึกบุคคลที่เกี่ยวข้องได้ กรุณาลองใหม่อีกครั้ง")
+		}
+	}
 	if err := replaceJobShares(ctx, tx, int64(id), jobShares); err != nil {
 		if mapped := jobShareDBError(err, jobShares); mapped != nil {
 			return mapped
@@ -805,6 +902,7 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 	p.ResponsibleUsers = h.loadResponsibleUsers(ctx, int64(p.Id))
+	p.RelatedUsers = h.loadRelatedUsers(ctx, int64(p.Id))
 	h.fillProjectUsage(ctx, []*models.ProjectFull{&p})
 	shares, err := h.loadJobShares(ctx, int64(p.Id))
 	if err != nil {

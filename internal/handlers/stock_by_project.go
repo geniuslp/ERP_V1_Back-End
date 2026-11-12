@@ -167,6 +167,8 @@ func (h *StockByProjectHandler) ListProjects(c *fiber.Ctx) error {
 		args = append(args, "%"+search+"%")
 		where = append(where, fmt.Sprintf("(p.project_code ILIKE $%[1]d OR p.project_name ILIKE $%[1]d OR c.customer_name ILIKE $%[1]d)", len(args)))
 	}
+	args = append(args, searchUserID(c)) // Project-department users: only their projects
+	where = append(where, projectScopeSQL(fmt.Sprintf("$%d", len(args)), "p.project_code", ""))
 	whereStr := strings.Join(where, " AND ")
 	from := `FROM project p LEFT JOIN customer c ON c.cus_id = p.customer_id`
 

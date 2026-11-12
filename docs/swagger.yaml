@@ -147,6 +147,14 @@ definitions:
         description: 1-5 from the project value (DB-generated); null when no value/contract
           amount
         type: integer
+      related_usernames:
+        description: usernames joined by ", " (list + detail)
+        type: string
+      related_users:
+        description: 'detail/create/update only: people involved in the project'
+        items:
+          $ref: '#/definitions/models.ProjectResponsibleUser'
+        type: array
       remaining_amount:
         type: number
       responsible_person_name:
@@ -1392,6 +1400,12 @@ definitions:
         type: string
       project_owner_name:
         type: string
+      related_user_ids:
+        description: people involved in the project (users.id). nil/absent = keep
+          current; [] = clear
+        items:
+          type: integer
+        type: array
       responsible_person_name:
         description: '"ผู้รับผิดชอบหลัก" — required free text'
         type: string
@@ -1653,6 +1667,9 @@ definitions:
     properties:
       department:
         type: string
+      dept_code:
+        description: departments.dept_code; empty = none
+        type: string
       email:
         type: string
       employee_code:
@@ -1671,6 +1688,11 @@ definitions:
       role_codes:
         items:
           type: string
+        type: array
+      role_ids:
+        description: roles.id (what the user form sends); combined with role_codes
+        items:
+          type: integer
         type: array
       username:
         maxLength: 50
@@ -3020,6 +3042,12 @@ definitions:
         type: string
       project_owner_name:
         type: string
+      related_user_ids:
+        description: people involved in the project (users.id). nil/absent = keep
+          current; [] = clear
+        items:
+          type: integer
+        type: array
       responsible_person_name:
         description: '"ผู้รับผิดชอบหลัก" — required free text'
         type: string

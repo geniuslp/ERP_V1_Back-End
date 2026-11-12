@@ -50,7 +50,7 @@ const overviewStatusList = "NORMAL, NEAR_LIMIT, OVER_BUDGET, NO_BUDGET, CLOSED, 
 // PROGRESS line adds it back. Net: Ac.Cost = what has really been paid to the contractor, before VAT/WHT.
 const billSignSQL = `(CASE WHEN bl.line_code IN ('ADV_DEDUCT', 'RETENTION') THEN -1 ELSE 1 END)`
 
-const overviewListSQL = `
+var overviewListSQL = `
 WITH po AS (
 	SELECT o.project_code,
 	       SUM(COALESCE(l.amount, l.qty_ordered * l.unit_price) - COALESCE(l.line_discount, 0)) AS pu
@@ -115,6 +115,7 @@ WITH po AS (
 	LEFT JOIN pc ON pc.project_code = p.project_code
 	WHERE ($1::text IS NULL
 	       OR p.project_code ILIKE $1 OR p.project_name ILIKE $1 OR cu.customer_name ILIKE $1)
+	  AND ` + projectBudgetScopeSQL("$5", "p.project_code") + `
 ), calc AS (
 	SELECT b.*,
 	       b.pu_po + b.pu_wo + b.pu_pc AS pu_cost,
@@ -214,7 +215,8 @@ func (h *ProjectOverviewHandler) List(c *fiber.Ctx) error {
 		statusFilter = st
 	}
 
-	rows, err := h.db.Query(context.Background(), overviewListSQL, search, statusFilter, size, (page-1)*size)
+	userID := searchUserID(c)
+	rows, err := h.db.Query(context.Background(), overviewListSQL, search, statusFilter, size, (page-1)*size, userID)
 	if err != nil {
 		log.Printf("project overview list: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดภาพรวมโครงการได้ กรุณาลองใหม่อีกครั้ง")

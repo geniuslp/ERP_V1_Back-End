@@ -55,6 +55,9 @@ func (h *POHandler) CostBudgetPOLines(c *fiber.Ctx) error {
 	if projectCode == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "กรุณาระบุรหัสโครงการ")
 	}
+	if err := requireProjectAccess(c, h.db, projectCode); err != nil {
+		return err
+	}
 	// nil = the "none" row: petty cash lines of the project that carry no cost code.
 	var subgroupID *int64
 	if raw := strings.TrimSpace(c.Params("costSubgroupId")); !strings.EqualFold(raw, "none") {

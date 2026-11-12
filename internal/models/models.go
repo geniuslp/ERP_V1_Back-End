@@ -37,7 +37,9 @@ type CreateUserRequest struct {
 	LocationCode *string  `json:"location_code,omitempty"`
 	EmployeeCode *string  `json:"employee_code,omitempty"`
 	Department   *string  `json:"department,omitempty"`
+	DeptCode     *string  `json:"dept_code,omitempty"` // departments.dept_code; empty = none
 	RoleCodes    []string `json:"role_codes,omitempty"`
+	RoleIDs      []int64  `json:"role_ids,omitempty"` // roles.id (what the user form sends); combined with role_codes
 }
 
 type UpdateUserRequest struct {
@@ -117,6 +119,8 @@ type ProjectFull struct {
 	BudgetAmount          float64    `json:"budget_amount"`
 	ResponsibleUsers      []ProjectResponsibleUser `json:"responsible_users"`     // detail/create/update only; username only
 	ResponsibleUsernames  string     `json:"responsible_usernames"` // usernames joined by ", " (list + detail)
+	RelatedUsers          []ProjectResponsibleUser `json:"related_users"` // detail/create/update only: people involved in the project
+	RelatedUsernames      string     `json:"related_usernames"`     // usernames joined by ", " (list + detail)
 	InUse                 bool       `json:"in_use"`                // project_code already referenced by any work document (owner is then locked)
 	InUseBy               []string   `json:"in_use_by"`             // Thai doc-type names behind in_use; [] when unused
 	ProjectKind           string     `json:"project_kind"` // NEW | VO — decides which of budget_amount / vo_amount applies
@@ -221,6 +225,7 @@ type CreateProjectReq struct {
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MS/EE/SN/FF/GS/AC/G — validated server-side
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
+	RelatedUserIDs        []int64  `json:"related_user_ids"`     // people involved in the project (users.id). nil/absent = keep current; [] = clear
 	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
 	BudgetAmount          *AmountInput `json:"budget_amount"` // optional; blank/null -> 0; forced to 0 for VO
@@ -244,6 +249,7 @@ type UpdateProjectReq struct {
 	ResponsiblePersonName string   `json:"responsible_person_name" validate:"required"` // "ผู้รับผิดชอบหลัก" — required free text
 	JobCodes              []string `json:"job_codes,omitempty"`                         // subset of MS/EE/SN/FF/GS/AC/G — validated server-side
 	ResponsibleUserIDs    []int64  `json:"responsible_user_ids"` // main responsible persons (users.id). nil/absent = legacy responsible_person_name path
+	RelatedUserIDs        []int64  `json:"related_user_ids"`     // people involved in the project (users.id). nil/absent = keep current; [] = clear
 	JobShares             []ProjectJobShareInput `json:"job_shares"` // share of budget_amount per job in job_codes; see handlers.JobNeedsShare for the exempt codes
 	ProjectKind           string   `json:"project_kind"`  // NEW | VO (create: blank -> NEW; update: blank -> keep current)
 	BudgetAmount          *AmountInput `json:"budget_amount"` // optional; blank/null -> 0; forced to 0 for VO

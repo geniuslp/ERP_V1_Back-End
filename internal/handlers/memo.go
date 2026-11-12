@@ -315,6 +315,12 @@ func (h *MemoHandler) List(c *fiber.Ctx) error {
 		args = append(args, claims.UserID)
 		i++
 	}
+	if !isMyApprovals { // Project-department users: only their projects (own memos always stay visible)
+		up := fmt.Sprintf("$%d", i)
+		where += " AND " + projectScopeSQL(up, "m.project_code", "m.requested_by = "+up)
+		args = append(args, claims.UserID)
+		i++
+	}
 
 	ctx := context.Background()
 

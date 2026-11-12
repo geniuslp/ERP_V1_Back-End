@@ -49,9 +49,10 @@ func (h *ProjectOverviewHandler) Search(c *fiber.Ctx) error {
 		           WHERE pl.doc_type = 'WO' AND wo.project_code = p.project_code), 0)
 		       + ` + pcProjectPaidSQL + ` AS paid_amount
 		FROM project p
-		WHERE p.project_code ILIKE $1 OR p.project_name ILIKE $1
+		WHERE (p.project_code ILIKE $1 OR p.project_name ILIKE $1)
+		  AND `+projectBudgetScopeSQL("$2", "p.project_code")+`
 		ORDER BY p.created_at DESC
-		LIMIT 20`, like)
+		LIMIT 20`, like, searchUserID(c))
 	if err != nil {
 		return err
 	}

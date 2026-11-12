@@ -117,6 +117,13 @@ func (h *ICHandler) ListProjects(c *fiber.Ctx) error {
 		idx++
 	}
 
+	if claims := middleware.GetClaims(c); claims != nil { // Project-department users: only their projects
+		up := fmt.Sprintf("$%d", idx)
+		where = append(where, projectScopeSQL(up, "p.project_code", ""))
+		args = append(args, claims.UserID)
+		idx++
+	}
+
 	whereStr := strings.Join(where, " AND ")
 	fromJoin := `FROM project p LEFT JOIN customer c ON p.customer_id = c.cus_id`
 

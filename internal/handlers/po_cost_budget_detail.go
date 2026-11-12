@@ -113,6 +113,9 @@ func (h *POHandler) CostBudgetDetail(c *fiber.Ctx) error {
 	if projectCode == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "project code is required")
 	}
+	if err := requireProjectAccess(c, h.db, projectCode); err != nil {
+		return err
+	}
 	ctx := context.Background()
 
 	var p costBudgetDetailProject
@@ -595,6 +598,9 @@ func (h *POHandler) CostBudgetDetailPurchases(c *fiber.Ctx) error {
 	projectCode := strings.TrimSpace(c.Params("projectCode"))
 	if projectCode == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "project code is required")
+	}
+	if err := requireProjectAccess(c, h.db, projectCode); err != nil {
+		return err
 	}
 	subgroupID, err := strconv.ParseInt(c.Params("subgroupId"), 10, 64)
 	if err != nil {

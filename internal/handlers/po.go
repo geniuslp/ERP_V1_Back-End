@@ -263,6 +263,13 @@ func buildPOListFilters(c *fiber.Ctx) (string, []any, error) {
 			conditions = append(conditions, cond)
 		}
 	}
+	if !c.QueryBool("my_approvals", false) { // Project-department users: only their projects (own POs stay visible)
+		if claims := middleware.GetClaims(c); claims != nil {
+			args = append(args, claims.UserID)
+			up := fmt.Sprintf("$%d", len(args))
+			conditions = append(conditions, projectScopeSQL(up, "po.project_code", "po.created_by = "+up))
+		}
+	}
 	if v := strings.TrimSpace(c.Query("status")); v != "" {
 		var statuses []string
 		for _, s := range strings.Split(v, ",") {
@@ -738,6 +745,9 @@ func (h *POHandler) CostBudget(c *fiber.Ctx) error {
 	projectCode := c.Query("project_code")
 	if strings.TrimSpace(projectCode) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "project_code is required")
+	}
+	if err := requireProjectAccess(c, h.db, projectCode); err != nil {
+		return err
 	}
 
 	ctx := context.Background()

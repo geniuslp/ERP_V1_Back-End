@@ -348,6 +348,29 @@ func (h *UsersHandler) Create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to hash password")
 	}
 
+	var deptCodeVal *string // NULL when absent or empty
+	if req.DeptCode != nil {
+		if d := strings.TrimSpace(*req.DeptCode); d != "" {
+			var n int
+			if err := h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM departments WHERE dept_code=$1`, d).Scan(&n); err != nil {
+				return err
+			}
+			if n == 0 {
+				return fiber.NewError(fiber.StatusBadRequest, "invalid dept_code")
+			}
+			deptCodeVal = &d
+		}
+	}
+	if len(req.RoleIDs) > 0 {
+		var n int
+		if err := h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM roles WHERE id = ANY($1)`, req.RoleIDs).Scan(&n); err != nil {
+			return err
+		}
+		if n != len(uniqueInt64(req.RoleIDs)) {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid role_ids")
+		}
+	}
+
 	tx, err := h.db.Begin(context.Background())
 	if err != nil {
 		return err
@@ -356,18 +379,26 @@ func (h *UsersHandler) Create(c *fiber.Ctx) error {
 
 	var userID int64
 	err = tx.QueryRow(context.Background(), `
-		INSERT INTO users (username, password_hash, full_name, full_name_th, email, location_code, employee_code, department, is_active, created_at, updated_at)
-		VALUES ($1,$2,$3,$8,$4,$5,$6,$7,true,NOW(),NOW())
+		INSERT INTO users (username, password_hash, full_name, full_name_th, email, location_code, employee_code, department, dept_code, is_active, created_at, updated_at)
+		VALUES ($1,$2,$3,$8,$4,$5,$6,$7,$9,true,NOW(),NOW())
 		RETURNING id`,
-		req.Username, hash, req.FullName, req.Email, req.LocationCode, employeeCodeVal, req.Department, fullNameTHVal).Scan(&userID)
+		req.Username, hash, req.FullName, req.Email, req.LocationCode, employeeCodeVal, req.Department, fullNameTHVal, deptCodeVal).Scan(&userID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusConflict, "username already exists or constraint error")
+	}
+
+	for _, roleID := range uniqueInt64(req.RoleIDs) {
+		if _, err := tx.Exec(context.Background(), `
+			INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid role_ids")
+		}
 	}
 
 	for _, roleCode := range req.RoleCodes {
 		if _, err := tx.Exec(context.Background(), `
 			INSERT INTO user_roles (user_id, role_id)
-			SELECT $1, id FROM roles WHERE role_code = $2`, userID, roleCode); err != nil {
+			SELECT $1, id FROM roles WHERE role_code = $2
+			ON CONFLICT DO NOTHING`, userID, roleCode); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "invalid role_code: "+roleCode)
 		}
 	}
@@ -635,4 +666,17 @@ func (h *UsersHandler) Delete(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"success": true, "message": "user deactivated"})
+}
+
+// uniqueInt64 drops duplicates, keeping order.
+func uniqueInt64(in []int64) []int64 {
+	seen := make(map[int64]bool, len(in))
+	out := make([]int64, 0, len(in))
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }

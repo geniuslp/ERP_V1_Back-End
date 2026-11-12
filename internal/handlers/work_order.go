@@ -617,6 +617,14 @@ func (h *WorkOrderHandler) List(c *fiber.Ctx) error {
 			i = len(args) + 1
 		}
 	}
+	if !c.QueryBool("my_approvals", false) { // Project-department users: only their projects (own WOs stay visible)
+		if claims := middleware.GetClaims(c); claims != nil {
+			up := fmt.Sprintf("$%d", i)
+			where = append(where, projectScopeSQL(up, "wo.project_code", "wo.created_by = "+up))
+			args = append(args, claims.UserID)
+			i++
+		}
+	}
 	if f.ProjectCode != "" {
 		where = append(where, fmt.Sprintf("wo.project_code = $%d", i))
 		args = append(args, f.ProjectCode)
