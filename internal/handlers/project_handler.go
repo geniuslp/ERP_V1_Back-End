@@ -364,9 +364,15 @@ func (h *ProjectHandler) List(c *fiber.Ctx) error {
 		return err
 	}
 
+	// sort=code_desc (Master > Project page): by the trailing running number of the project code (2026-XXX-005 -> 5),
+	// largest first; codes without one go last. Default order is newest first.
+	orderBy := "p.created_at DESC"
+	if c.Query("sort") == "code_desc" {
+		orderBy = "NULLIF(substring(p.project_code from '[0-9]+$'), '')::bigint DESC NULLS LAST, p.created_at DESC, p.id DESC"
+	}
 	dataSQL := `SELECT ` + projectSelectCols + projectSelectFrom + `
 		` + where + `
-		ORDER BY p.created_at DESC
+		ORDER BY ` + orderBy + `
 		LIMIT $` + fmt.Sprintf("%d", i) + ` OFFSET $` + fmt.Sprintf("%d", i+1)
 	args = append(args, f.PageSize, offset)
 

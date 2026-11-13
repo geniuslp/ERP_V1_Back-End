@@ -38,7 +38,12 @@ func (h *StockByProjectHandler) ListWarehouseItems(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	showPrice := canViewStockPrice(c, h.db)
+	if !showPrice {
+		maskStockPrices(items)
+	}
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"show_price":     showPrice,
 		"warehouse_code": wh,
 		"data":           items,
 		"total":          total,

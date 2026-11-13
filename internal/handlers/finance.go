@@ -210,9 +210,9 @@ func (h *FinanceHandler) ListPayableDocs(c *fiber.Ctx) error {
 			}
 			i++
 		}
-		// WO only: ร้านค้า (master name, else the WO's own typed name) and AP Voucher No. of its contractor-log bills.
-		if f.DocType == "WO" && f.Supplier != "" {
-			where = append(where, fmt.Sprintf("%s ILIKE $%d", payableSupplierSQL("WO"), i))
+		// WO and PO: ร้านค้า (master name; for WO else its own typed name). WO also: AP Voucher No. of its contractor-log bills.
+		if (f.DocType == "WO" || f.DocType == "PO") && f.Supplier != "" {
+			where = append(where, fmt.Sprintf("%s ILIKE $%d", payableSupplierSQL(f.DocType), i))
 			args = append(args, "%"+f.Supplier+"%")
 			i++
 		}

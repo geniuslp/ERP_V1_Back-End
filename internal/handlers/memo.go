@@ -503,6 +503,12 @@ func (h *MemoHandler) Create(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	// A Project-department user (not Board / admin) may only pick a project they are responsible for or involved in.
+	if claims := middleware.GetClaims(c); claims != nil {
+		if err := requireRelatedProjectAccess(ctx, h.db, claims.UserID, req.ProjectCode); err != nil {
+			return err
+		}
+	}
 
 	status := req.Status
 	if status == "" {
@@ -632,7 +638,8 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 	var currentStatus string
 	var oldApproverID *int64
 	var ownerID int64
-	if err := h.db.QueryRow(ctx, `SELECT status, approver_id, requested_by FROM public.memo WHERE id=$1`, id).Scan(&currentStatus, &oldApproverID, &ownerID); err != nil {
+	var oldProject *string
+	if err := h.db.QueryRow(ctx, `SELECT status, approver_id, requested_by, project_code FROM public.memo WHERE id=$1`, id).Scan(&currentStatus, &oldApproverID, &ownerID, &oldProject); err != nil {
 		if err == pgx.ErrNoRows {
 			return fiber.NewError(fiber.StatusNotFound, "memo not found")
 		}
@@ -651,6 +658,13 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 	jobCode, err := validateMemoJobCode(ctx, h.db, req.ProjectCode, req.JobCode)
 	if err != nil {
 		return err
+	}
+	// Picking a different project: a Project-department user (not Board / admin) may only choose one they are
+	// responsible for or involved in. Re-saving the memo's existing project is never blocked.
+	if claims != nil && derefStr(req.ProjectCode) != derefStr(oldProject) {
+		if err := requireRelatedProjectAccess(ctx, h.db, claims.UserID, req.ProjectCode); err != nil {
+			return err
+		}
 	}
 
 	// Only a *changed* approver is validated against the eligible pool, so re-saving an

@@ -20,23 +20,29 @@ const projectDeptCode = "PJ"
 //   - ownExpr: optional extra condition that always lets a row through (e.g. the user's own document:
 //     "m.created_by = $3"); "" for none
 func projectScopeSQL(userParam, projectCol, ownExpr string) string {
-	return projectScopeCore(userParam, projectCol, ownExpr, true)
+	return projectScopeCore(userParam, projectCol, ownExpr, true, false)
 }
 
 // projectBudgetScopeSQL is the Budget variant: the dedicated warehouse projects (WH family) are hidden from a
 // restricted Project-department user even when linked to one. Everyone else (other departments, admin, Board)
 // is unrestricted and still sees them.
 func projectBudgetScopeSQL(userParam, projectCol string) string {
-	return projectScopeCore(userParam, projectCol, "", false)
+	return projectScopeCore(userParam, projectCol, "", false, true)
 }
 
-func projectScopeCore(userParam, projectCol, ownExpr string, warehouseVisible bool) string {
+// projectRelatedScopeSQL: only the projects the user is responsible for or involved in (no warehouse-project exemption,
+// warehouse projects they are linked to stay). Used where a Project-department user may only pick their own projects (Memo).
+func projectRelatedScopeSQL(userParam, projectCol string) string {
+	return projectScopeCore(userParam, projectCol, "", false, false)
+}
+
+func projectScopeCore(userParam, projectCol, ownExpr string, warehouseVisible, hideWarehouse bool) string {
 	whExempt := ""
 	whHide := ""
 	if warehouseVisible {
 		whExempt = `
 			   OR NULLIF(sp.warehouse_code, '') IS NOT NULL`
-	} else {
+	} else if hideWarehouse {
 		whHide = ` AND NULLIF(sp.warehouse_code, '') IS NULL AND sp.project_code NOT LIKE '%-WH-%'`
 	}
 	s := `(NOT EXISTS (SELECT 1 FROM users su WHERE su.id = ` + userParam + ` AND su.dept_code = '` + projectDeptCode + `')
@@ -73,6 +79,22 @@ func requireProjectAccess(c *fiber.Ctx, db *pgxpool.Pool, projectCode string) er
 	}
 	if !ok {
 		return fiber.NewError(fiber.StatusForbidden, "คุณไม่มีสิทธิ์เข้าถึงโครงการนี้")
+	}
+	return nil
+}
+
+// requireRelatedProjectAccess answers 403 when a Project-department user (not Board / admin) picks a project they are
+// neither responsible for nor involved in. An empty project code is fine (checked elsewhere).
+func requireRelatedProjectAccess(ctx context.Context, db *pgxpool.Pool, userID int64, projectCode *string) error {
+	if projectCode == nil || *projectCode == "" || userID == 0 {
+		return nil
+	}
+	var ok bool
+	if err := db.QueryRow(ctx, `SELECT `+projectRelatedScopeSQL("$1", "$2::text"), userID, *projectCode).Scan(&ok); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถตรวจสอบสิทธิ์โครงการได้ กรุณาลองใหม่อีกครั้ง")
+	}
+	if !ok {
+		return fiber.NewError(fiber.StatusForbidden, "คุณเลือกได้เฉพาะโครงการที่คุณรับผิดชอบหรือเกี่ยวข้อง")
 	}
 	return nil
 }

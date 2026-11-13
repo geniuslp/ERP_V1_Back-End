@@ -265,7 +265,7 @@ type stockBalanceRow struct {
 	CostCode       *string `json:"cost_code"`
 	Unit           *string `json:"unit"`
 	QtyOnHand      float64 `json:"qty_on_hand"`
-	UnitCost       float64 `json:"unit_cost"`
+	UnitCost       *float64 `json:"unit_cost"` // nil (JSON null) when the caller may not see prices, see stock_price_access.go
 	LocationCode   *string `json:"location_code,omitempty"`
 	// StoreDescription is stock_item.description_store (the warehouse's own wording); WAREHOUSE source only.
 	StoreDescription *string `json:"store_description,omitempty"`
@@ -310,8 +310,13 @@ func (h *StockByProjectHandler) GetBalance(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	// Both sources (warehouse stock_item and project ic_project_cost_item) hide prices from users who may not see them.
+	showPrice := canViewStockPrice(c, h.db)
+	if !showPrice {
+		maskStockPrices(items)
+	}
 	return c.JSON(fiber.Map{"success": true, "data": stockPageData(info, items, total, page, size,
-		fiber.Map{"no_stock": total == 0, "only_with_stock": onlyWithStock})})
+		fiber.Map{"no_stock": total == 0, "only_with_stock": onlyWithStock, "show_price": showPrice})})
 }
 
 // orHasCostCode (with onlyWithStock) also keeps rows that have no stock but a Cost Code - the Master warehouse page rule:
@@ -364,10 +369,12 @@ func (h *StockByProjectHandler) warehouseBalance(ctx context.Context, wh, search
 	out := []stockBalanceRow{}
 	for rows.Next() {
 		var r stockBalanceRow
+		var uc float64
 		if err := rows.Scan(&r.ID, &r.MatCode, &r.MatName, &r.CostSubgroupID, &r.CostCode,
-			&r.Unit, &r.QtyOnHand, &r.UnitCost, &r.LocationCode, &r.StoreDescription, &r.UpdatedAt); err != nil {
+			&r.Unit, &r.QtyOnHand, &uc, &r.LocationCode, &r.StoreDescription, &r.UpdatedAt); err != nil {
 			return nil, 0, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดยอดคงเหลือได้")
 		}
+		r.UnitCost = &uc
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -424,10 +431,12 @@ func (h *StockByProjectHandler) projectBalance(ctx context.Context, projectCode,
 	out := []stockBalanceRow{}
 	for rows.Next() {
 		var r stockBalanceRow
+		var uc float64
 		if err := rows.Scan(&r.ID, &r.MatCode, &r.MatName, &r.CostSubgroupID, &r.CostCode,
-			&r.Unit, &r.QtyOnHand, &r.UnitCost, &r.UpdatedAt); err != nil {
+			&r.Unit, &r.QtyOnHand, &uc, &r.UpdatedAt); err != nil {
 			return nil, 0, fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดยอดคงเหลือได้")
 		}
+		r.UnitCost = &uc
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

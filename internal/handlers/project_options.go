@@ -45,6 +45,13 @@ func (h *ProjectHandler) Options(c *fiber.Ctx) error {
 	warehouseOnly := c.QueryBool("warehouse_only", false)
 	excludeWarehouse := c.QueryBool("exclude_warehouse", false)
 
+	// scope=related (Memo form): a Project-department user (not Board / admin) only gets the projects they are
+	// responsible for or involved in. $6 is the caller (0 = unrestricted).
+	related := c.Query("scope") == "related"
+	var uid int64
+	if related {
+		uid = searchUserID(c)
+	}
 	rows, err := h.db.Query(context.Background(), `
 		SELECT p.id, p.project_code, p.project_name, p.customer_id, cu.customer_name,
 		       COALESCE(p.job_codes, '{}'), p.project_kind, p.status, p.is_active,
@@ -58,8 +65,9 @@ func (h *ProjectHandler) Options(c *fiber.Ctx) error {
 		  AND (p.is_active OR $3::bool)
 		  AND (NOT $4::bool OR COALESCE(NULLIF(p.linked_warehouse_code, ''), NULLIF(p.warehouse_code, '')) IS NOT NULL)
 		  AND (NOT $5::bool OR COALESCE(NULLIF(p.linked_warehouse_code, ''), NULLIF(p.warehouse_code, '')) IS NULL)
+		  AND (NOT $7::bool OR `+projectRelatedScopeSQL("$6", "p.project_code")+`)
 		ORDER BY p.project_code`,
-		search, includeClosed, includeInactive, warehouseOnly, excludeWarehouse)
+		search, includeClosed, includeInactive, warehouseOnly, excludeWarehouse, uid, related)
 	if err != nil {
 		log.Printf("project options: %v", err)
 		return fiber.NewError(fiber.StatusInternalServerError, "ไม่สามารถโหลดรายชื่อโครงการได้ กรุณาลองใหม่อีกครั้ง")
