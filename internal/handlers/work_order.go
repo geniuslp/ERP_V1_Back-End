@@ -626,10 +626,10 @@ func (h *WorkOrderHandler) List(c *fiber.Ctx) error {
 			i = len(args) + 1
 		}
 	}
-	if !c.QueryBool("my_approvals", false) { // Project-department users: only their projects (own WOs stay visible)
+	if !c.QueryBool("my_approvals", false) { // Project-department users (not Board / admin): only projects they are responsible for or involved in
 		if claims := middleware.GetClaims(c); claims != nil {
 			up := fmt.Sprintf("$%d", i)
-			where = append(where, projectScopeSQL(up, "wo.project_code", "wo.created_by = "+up))
+			where = append(where, projectRelatedScopeSQL(up, "wo.project_code"))
 			args = append(args, claims.UserID)
 			i++
 		}

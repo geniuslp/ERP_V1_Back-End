@@ -263,11 +263,11 @@ func buildPOListFilters(c *fiber.Ctx) (string, []any, error) {
 			conditions = append(conditions, cond)
 		}
 	}
-	if !c.QueryBool("my_approvals", false) { // Project-department users: only their projects (own POs stay visible)
+	if !c.QueryBool("my_approvals", false) { // Project-department users (not Board / admin): only projects they are responsible for or involved in
 		if claims := middleware.GetClaims(c); claims != nil {
 			args = append(args, claims.UserID)
 			up := fmt.Sprintf("$%d", len(args))
-			conditions = append(conditions, projectScopeSQL(up, "po.project_code", "po.created_by = "+up))
+			conditions = append(conditions, projectRelatedScopeSQL(up, "po.project_code"))
 		}
 	}
 	if v := strings.TrimSpace(c.Query("status")); v != "" {
