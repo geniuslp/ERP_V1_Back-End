@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -65,6 +66,7 @@ func (p *Pusher) Send(ctx context.Context, userID int64, it Item) {
 	}
 	rows.Close()
 	if len(subs) == 0 {
+		log.Printf("push: user %d has no subscription, notification %d not pushed", userID, it.ID)
 		return
 	}
 
@@ -104,8 +106,11 @@ func (p *Pusher) Send(ctx context.Context, userID int64, it Item) {
 				return
 			}
 			if resp.StatusCode >= 300 {
-				log.Printf("push send (sub %d): push service answered %d", s.id, resp.StatusCode)
+				b, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+				log.Printf("push send (sub %d): push service answered %d %s", s.id, resp.StatusCode, string(b))
+				return
 			}
+			log.Printf("push: sent notification %d to sub %d (push service answered %d)", it.ID, s.id, resp.StatusCode)
 		}(s)
 	}
 	wg.Wait()
