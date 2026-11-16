@@ -52,13 +52,6 @@ func NewHub() *Hub { return &Hub{users: map[int64]map[Sender]struct{}{}} }
 // SetPusher turns on Web Push: a notification for a user with no open socket is also sent as a push message.
 func (h *Hub) SetPusher(p *Pusher) { h.pusher = p }
 
-// Online reports whether the user has at least one open socket (the page is open and shows the toast itself).
-func (h *Hub) Online(userID int64) bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return len(h.users[userID]) > 0
-}
-
 func (h *Hub) Add(userID int64, s Sender) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -159,13 +152,10 @@ func (h *Hub) listenOnce(ctx context.Context, dsn string, pool *pgxpool.Pool) er
 		}
 		b, _ := json.Marshal(map[string]any{"event": "notification", "data": it})
 		h.Publish(p.UserID, b)
-		// Nobody has the page open: reach the phone / desktop through Web Push instead.
+		// Also reach every phone / desktop the user subscribed to, even while a page is open on another device.
+		// (A device that is looking at the page skips the banner itself, see public/sw.js.)
 		if h.pusher != nil {
-			if h.Online(p.UserID) && !h.pusher.always {
-				log.Printf("push: skipped notification %d for user %d (page is open, the toast shows it)", it.ID, p.UserID)
-			} else {
-				go h.pusher.Send(context.Background(), p.UserID, it)
-			}
+			go h.pusher.Send(context.Background(), p.UserID, it)
 		}
 	}
 }

@@ -11,24 +11,21 @@ import (
 )
 
 type Config struct {
-	Port            string
-	DatabaseURL     string
-	JWTSecret       string
-	JWTExpiry       time.Duration
-	RefreshExpiry   time.Duration
-	CORSOrigins     string
-	Environment     string
-	BcryptCost      int
-	PublicBaseURL   string
+	Port          string
+	DatabaseURL   string
+	JWTSecret     string
+	JWTExpiry     time.Duration
+	RefreshExpiry time.Duration
+	CORSOrigins   string
+	Environment   string
+	BcryptCost    int
+	PublicBaseURL string
 
 	// Web Push (phone / desktop notifications). Empty keys = push disabled; the bell + WebSocket keep working.
 	// Generate a pair once with `go run ./cmd/vapidkeys`; never change them later (every subscription would break).
 	VAPIDPublicKey  string
 	VAPIDPrivateKey string
 	VAPIDSubject    string // "mailto:..." or an https URL identifying the sender to the push service
-	// PushAlways = send a push even when the user has the page open (normally skipped: the toast already shows it).
-	// For testing push with one account only; keep it off in real use or the user gets every alert twice.
-	PushAlways bool
 }
 
 func Load() *Config {
@@ -50,7 +47,6 @@ func Load() *Config {
 		VAPIDPublicKey:  getEnv("VAPID_PUBLIC_KEY", ""),
 		VAPIDPrivateKey: getEnv("VAPID_PRIVATE_KEY", ""),
 		VAPIDSubject:    getEnv("VAPID_SUBJECT", "mailto:admin@example.com"),
-		PushAlways:      getEnv("PUSH_ALWAYS", "") == "true",
 	}
 }
 
