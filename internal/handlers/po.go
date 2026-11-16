@@ -1599,6 +1599,14 @@ const sqlPRHasOrderableLine = `EXISTS (
 // sqlPRPickerStatuses: statuses a PR may be in and still be offered to the PO-create pickers.
 const sqlPRPickerStatuses = `pr.status IN ('COMPLETED','PARTIALLY_FILLED')`
 
+// sqlPRNotUsedByWO excludes a PR that a live work order was opened from (work_order.pr_id). A CANCELLED / REJECTED WO
+// frees the PR again — the same rule sqlWOEligiblePR applies from the WO side, so a PR is offered to either a PO or
+// a WO, never both. Boolean expression over a purchase_request aliased `pr`.
+const sqlPRNotUsedByWO = `NOT EXISTS (
+	SELECT 1 FROM work_order w
+	WHERE w.pr_id = pr.id AND w.status NOT IN ('CANCELLED','REJECTED')
+)`
+
 // GetAvailablePRs godoc
 // @Summary      List PRs eligible to be linked to a new PO
 // @Description  Each row also carries project_code and project_name (LEFT JOIN project; null when the PR has no project). Returns COMPLETED and PARTIALLY_FILLED PRs that still have at least one line with remaining (qty_requested - qty_reserved - qty_ordered) > 0 — same rule as GET /po/pr-lines/{pr_id}. A PR can appear here even if it already has an active PO — split ordering lets the same PR line be divided across multiple POs/suppliers as long as some quantity is left; see GET /po/pr-lines/{pr_id} for the per-line remaining breakdown.
@@ -1623,6 +1631,7 @@ func (h *POHandler) GetAvailablePRs(c *fiber.Ctx) error {
 		LEFT JOIN project p ON p.project_code = pr.project_code
 		WHERE `+sqlPRPickerStatuses+` AND pr.deleted_at IS NULL
 		  AND `+sqlPRHasOrderableLine+`
+		  AND `+sqlPRNotUsedByWO+`
 		ORDER BY pr.created_at DESC`)
 	if err != nil {
 		return err

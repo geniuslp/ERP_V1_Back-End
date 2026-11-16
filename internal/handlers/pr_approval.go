@@ -130,7 +130,7 @@ func (h *PRApprovalHandler) List(c *fiber.Ctx) error {
 	availableForPOFilter := "TRUE"
 	if availableForPO {
 		statusFilter = nil
-		availableForPOFilter = sqlPRPickerStatuses + ` AND ` + sqlPRHasOrderableLine
+		availableForPOFilter = sqlPRPickerStatuses + ` AND ` + sqlPRHasOrderableLine + ` AND ` + sqlPRNotUsedByWO
 	}
 
 	countArgs := []any{statusFilter, searchFilter, dateFromFilter, dateToFilter, jobCodeFilter, orderTypeFilter}

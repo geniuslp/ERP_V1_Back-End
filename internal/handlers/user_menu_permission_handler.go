@@ -58,6 +58,40 @@ func (h *UserMenuPermissionHandler) BatchUpsert(c *fiber.Ctx) error {
 			p.CanUpdate = false
 			p.CanDelete = false
 		}
+		// An override identical to what the user already inherits (role first, then department; same
+		// per-column precedence as RequireMenuPermission) adds nothing and, once saved, would shadow any
+		// later change made at the role/department level. Store nothing and drop any existing row instead.
+		var inhRead, inhWrite, inhUpdate, inhDelete bool
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(rp.can_read,   dmp.can_read,   false),
+			       COALESCE(rp.can_write,  dmp.can_write,  false),
+			       COALESCE(rp.can_update, dmp.can_update, false),
+			       COALESCE(rp.can_delete, dmp.can_delete, false)
+			FROM menus m
+			JOIN users u ON u.id = $1
+			LEFT JOIN LATERAL (
+				SELECT BOOL_OR(rmp.can_read)   AS can_read,
+				       BOOL_OR(rmp.can_write)  AS can_write,
+				       BOOL_OR(rmp.can_update) AS can_update,
+				       BOOL_OR(rmp.can_delete) AS can_delete
+				FROM user_roles ur
+				JOIN role_menu_permissions rmp ON rmp.role_id = ur.role_id AND rmp.menu_id = m.id
+				WHERE ur.user_id = u.id
+			) rp ON TRUE
+			LEFT JOIN dept_menu_permissions dmp ON dmp.dept_code = u.dept_code AND dmp.menu_id = m.id
+			WHERE m.id = $2`,
+			body.UserID, p.MenuID,
+		).Scan(&inhRead, &inhWrite, &inhUpdate, &inhDelete); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unknown user or menu"})
+		}
+		if p.CanRead == inhRead && p.CanWrite == inhWrite && p.CanUpdate == inhUpdate && p.CanDelete == inhDelete {
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM user_menu_permissions WHERE user_id = $1 AND menu_id = $2`,
+				body.UserID, p.MenuID); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			}
+			continue
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO user_menu_permissions (user_id, menu_id, can_read, can_write, can_update, can_delete)
 			VALUES ($1, $2, $3, $4, $5, $6)
