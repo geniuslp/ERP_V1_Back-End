@@ -384,7 +384,7 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 
 	rows, err := h.db.Query(context.Background(), `
 		SELECT pol.mat_code, mn.mat_name, ss.spec_description AS spec_name, br.brand_name, s.supplier_name, po.po_date, pol.unit_price, po.po_no,
-		       NULLIF(po.project_code, '') AS project_code, NULLIF(p.project_name, '') AS project_name
+		       pol.qty_ordered, NULLIF(po.project_code, '') AS project_code, NULLIF(p.project_name, '') AS project_name
 		FROM purchase_order_line pol
 		JOIN purchase_order po       ON po.id = pol.po_id
 		JOIN material_code mc        ON mc.mat_code = pol.mat_code
@@ -415,6 +415,7 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 		PODate       time.Time `json:"po_date"`
 		UnitPrice    float64   `json:"unit_price"`
 		PONo         string    `json:"po_no"`
+		QtyOrdered   float64   `json:"qty_ordered"`  // quantity ordered on that PO line
 		ProjectCode  *string   `json:"project_code"` // purchasing project of the PO header; null when none
 		ProjectName  *string   `json:"project_name"`
 	}
@@ -422,7 +423,7 @@ func (h *MasterHandler) GetMaterialPriceHistory(c *fiber.Ctx) error {
 	items := []PriceHistoryRow{}
 	for rows.Next() {
 		var r PriceHistoryRow
-		if err := rows.Scan(&r.MatCode, &r.MatName, &r.SpecName, &r.BrandName, &r.SupplierName, &r.PODate, &r.UnitPrice, &r.PONo, &r.ProjectCode, &r.ProjectName); err != nil {
+		if err := rows.Scan(&r.MatCode, &r.MatName, &r.SpecName, &r.BrandName, &r.SupplierName, &r.PODate, &r.UnitPrice, &r.PONo, &r.QtyOrdered, &r.ProjectCode, &r.ProjectName); err != nil {
 			return c.Status(500).JSON(fiber.Map{"success": false, "message": err.Error()})
 		}
 		items = append(items, r)
