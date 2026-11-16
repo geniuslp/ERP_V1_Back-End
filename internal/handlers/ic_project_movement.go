@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -552,10 +553,17 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 		return c.JSON(fiber.Map{"success": true, "data": result})
 	}
 
-	// ISSUE draws from the receipt pool (received - issued); TRANSFER from cost-item on-hand.
+	// ISSUE draws from the receipt pool (received - issued); TRANSFER from cost-item on-hand plus the pool's
+	// remaining (received via PO, not yet issued), summed per (project, mat_code, cost_subgroup).
 	table, qtyExpr := "ic_project_receipt_pool", "(ici.qty_received - ici.qty_issued)"
 	if docType == "TRANSFER" {
-		table, qtyExpr = "ic_project_cost_item", "ici.qty_on_hand"
+		table = `(SELECT u.project_code, u.mat_code, u.cost_subgroup_id, SUM(u.q) AS qty
+			FROM (
+				SELECT project_code, mat_code, cost_subgroup_id, GREATEST(qty_on_hand, 0) AS q FROM ic_project_cost_item
+				UNION ALL
+				SELECT project_code, mat_code, cost_subgroup_id, GREATEST(qty_received - qty_issued, 0) AS q FROM ic_project_receipt_pool
+			) u GROUP BY u.project_code, u.mat_code, u.cost_subgroup_id)`
+		qtyExpr = "ici.qty"
 	}
 
 	args := []interface{}{projectCode}
@@ -639,7 +647,11 @@ func (h *IcProjectMovementHandler) ListProjectCostCodes(c *fiber.Ctx) error {
 		JOIN cost_job cj    ON cj.id = cg.job_id
 		JOIN cost_subject csub ON csub.id = cj.subject_id
 		JOIN project p      ON p.project_code = $1
-		WHERE (csub.subject_code || cj.job_code) = ANY(ARRAY(SELECT job_cost_key(jc) FROM unnest(p.job_codes) jc))
+		WHERE ((csub.subject_code || cj.job_code) = ANY(ARRAY(SELECT job_cost_key(jc) FROM unnest(p.job_codes) jc))
+		       -- General Code: job_cost_key('G') is just 'G', but its cost rows live under subject OH (key 'OHG'),
+		       -- so the concatenation above never matches them. Match them explicitly (subject OH only: job 'G'
+		       -- also exists under subjects L, M, S).
+		       OR ('G' = ANY(p.job_codes) AND csub.subject_code = 'OH' AND cj.job_code = 'G'))
 		  AND NOT csg.is_head AND NOT csg.is_major -- Head / Major (roll-up) subgroups are never selectable
 		ORDER BY 2`, projectCode)
 	if err != nil {
@@ -763,22 +775,36 @@ func (h *IcProjectMovementHandler) AddMovementLine(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "TRANSFER source and destination are identical")
 	}
 
-	// ISSUE draws from the receipt pool; TRANSFER from the project's cost-item balance.
-	availSQL := `
-		SELECT qty_received - qty_issued FROM ic_project_receipt_pool
-		WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3
-		FOR UPDATE`
-	if docType == "TRANSFER" {
-		availSQL = `
-		SELECT qty_on_hand FROM ic_project_cost_item
-		WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3
-		FOR UPDATE`
-	}
+	// ISSUE draws from the receipt pool; TRANSFER from the project's cost-item balance plus its receipt pool
+	// remaining (pool first locked, then cost item — same order as postMovementTx).
 	var qtyOnHand float64
 	if linkedWH != "" {
 		err = tx.QueryRow(ctx, `SELECT qty FROM stock_item WHERE mat_code = $1 FOR UPDATE`, req.MatCode).Scan(&qtyOnHand)
 	} else {
-		err = tx.QueryRow(ctx, availSQL, projectCode, req.MatCode, req.CostSubgroupID).Scan(&qtyOnHand)
+		var poolQty, itemQty float64
+		perr := tx.QueryRow(ctx, `
+			SELECT qty_received - qty_issued FROM ic_project_receipt_pool
+			WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3
+			FOR UPDATE`, projectCode, req.MatCode, req.CostSubgroupID).Scan(&poolQty)
+		if perr != nil && perr != pgx.ErrNoRows {
+			return fiber.NewError(fiber.StatusInternalServerError, perr.Error())
+		}
+		if docType == "TRANSFER" {
+			ierr := tx.QueryRow(ctx, `
+				SELECT qty_on_hand FROM ic_project_cost_item
+				WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3
+				FOR UPDATE`, projectCode, req.MatCode, req.CostSubgroupID).Scan(&itemQty)
+			if ierr != nil && ierr != pgx.ErrNoRows {
+				return fiber.NewError(fiber.StatusInternalServerError, ierr.Error())
+			}
+			if perr == pgx.ErrNoRows && ierr == pgx.ErrNoRows {
+				err = pgx.ErrNoRows
+			} else {
+				qtyOnHand = math.Max(itemQty, 0) + math.Max(poolQty, 0)
+			}
+		} else {
+			err, qtyOnHand = perr, poolQty
+		}
 	}
 	if err == pgx.ErrNoRows {
 		return fiber.NewError(fiber.StatusBadRequest, "qty exceeds available (0.0000)")
@@ -1219,17 +1245,30 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 			if srcKey == dstKey {
 				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: TRANSFER source and destination are identical", l.MatCode))
 			}
+			// The source is the project's cost item and/or its receipt pool (received via PO, not yet issued):
+			// the cost item is used first, the pool covers the rest (see the deduction below). At least one of
+			// the two rows must exist.
 			var srcItemID int64
+			haveItem := true
 			if err := tx.QueryRow(ctx, `
 				SELECT id FROM ic_project_cost_item
 				WHERE project_code = $1 AND mat_code = $2 AND cost_subgroup_id = $3`,
 				srcKey.ProjectCode, srcKey.MatCode, srcKey.CostSubgroupID,
 			).Scan(&srcItemID); err == pgx.ErrNoRows {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: source cost item not found", l.MatCode))
+				haveItem = false
 			} else if err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 			}
-			itemIDByKey[srcKey] = srcItemID
+			if haveItem {
+				itemIDByKey[srcKey] = srcItemID
+			}
+			if _, perr := resolvePoolID(srcKey); perr == pgx.ErrNoRows {
+				if !haveItem {
+					return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: source cost item not found", l.MatCode))
+				}
+			} else if perr != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, perr.Error())
+			}
 		} else if _, err := resolvePoolID(srcKey); err == pgx.ErrNoRows {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: source receipt pool row not found", l.MatCode))
 		} else if err != nil {
@@ -1266,7 +1305,12 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 		if linkedWH != "" {
 			// no pool / source cost item to lock
 		} else if docType == "TRANSFER" {
-			itemIDSet[itemIDByKey[r.srcKey]] = true
+			if id, ok := itemIDByKey[r.srcKey]; ok {
+				itemIDSet[id] = true
+			}
+			if id, ok := poolIDByKey[r.srcKey]; ok {
+				poolIDSet[id] = true
+			}
 		} else {
 			poolIDSet[poolIDByKey[r.srcKey]] = true
 		}
@@ -1358,24 +1402,72 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 				unitCost = dstState.UnitCost
 			}
 		} else if docType == "TRANSFER" {
-			srcID := itemIDByKey[r.srcKey]
-			src := itemStateByID[srcID]
-			if src.QtyOnHand < r.line.Qty {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: qty exceeds available (%.4f)", r.line.MatCode, src.QtyOnHand))
+			// Source = the cost item first (the original TRANSFER behaviour, unchanged when it covers the
+			// qty), then the receipt pool for whatever is left (goods received via PO, not yet issued).
+			srcID, haveItem := itemIDByKey[r.srcKey]
+			var src *icCostItemState
+			var itemAvail, itemCost float64
+			if haveItem {
+				src = itemStateByID[srcID]
+				if src != nil {
+					itemAvail, itemCost = src.QtyOnHand, src.UnitCost
+				}
 			}
-			qtyBeforeSrc := src.QtyOnHand
-			src.QtyOnHand -= r.line.Qty
-			unitCost = src.UnitCost
-			if _, err := tx.Exec(ctx, `UPDATE ic_project_cost_item SET qty_on_hand = $1, updated_at = NOW() WHERE id = $2`, src.QtyOnHand, srcID); err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			poolID, havePool := poolIDByKey[r.srcKey]
+			var pool *poolState
+			var poolAvail float64
+			if havePool {
+				pool = poolStateByID[poolID]
+				if pool != nil {
+					poolAvail = pool.Remaining
+				}
 			}
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO ic_project_cost_item_transaction
-				    (project_cost_item_id, qty, qty_before, qty_after, unit_cost, remarks, txn_date, movement_id, movement_line_id, ref_type, created_by)
-				VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
-				srcID, -r.line.Qty, qtyBeforeSrc, src.QtyOnHand, unitCost, r.line.Remarks, movementID, r.line.ID, refType, claims.UserID,
-			); err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			if itemAvail+poolAvail < r.line.Qty {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("%s: qty exceeds available (%.4f)", r.line.MatCode, itemAvail+poolAvail))
+			}
+			fromItem := r.line.Qty
+			if itemAvail < fromItem {
+				fromItem = itemAvail
+			}
+			fromPool := r.line.Qty - fromItem
+
+			var poolCost float64
+			if pool != nil {
+				poolCost = pool.UnitCost
+			}
+			unitCost = (fromItem*itemCost + fromPool*poolCost) / r.line.Qty
+
+			if fromItem > 0 {
+				qtyBeforeSrc := src.QtyOnHand
+				src.QtyOnHand -= fromItem
+				if _, err := tx.Exec(ctx, `UPDATE ic_project_cost_item SET qty_on_hand = $1, updated_at = NOW() WHERE id = $2`, src.QtyOnHand, srcID); err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				}
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO ic_project_cost_item_transaction
+					    (project_cost_item_id, qty, qty_before, qty_after, unit_cost, remarks, txn_date, movement_id, movement_line_id, ref_type, created_by)
+					VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)`,
+					srcID, -fromItem, qtyBeforeSrc, src.QtyOnHand, itemCost, r.line.Remarks, movementID, r.line.ID, refType, claims.UserID,
+				); err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				}
+			}
+			if fromPool > 0 {
+				pool.Remaining -= fromPool
+				if _, err := tx.Exec(ctx, `
+					UPDATE ic_project_receipt_pool SET qty_issued = qty_issued + $1, updated_at = NOW() WHERE id = $2`,
+					fromPool, poolID,
+				); err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				}
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO ic_project_receipt_pool_transaction
+					    (receipt_pool_id, txn_type, qty, ref_type, movement_id, movement_line_id, created_by)
+					VALUES ($1, 'ISSUE_OUT', $2, 'MOVEMENT', $3, $4, $5)`,
+					poolID, fromPool, movementID, r.line.ID, claims.UserID,
+				); err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+				}
 			}
 		} else {
 			poolID := poolIDByKey[r.srcKey]
