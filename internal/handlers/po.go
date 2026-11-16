@@ -3772,10 +3772,13 @@ func firstNonNil(vals ...*string) *string {
 // so the two never drift apart.
 const poApprovalSignatureJoins = `
 		LEFT JOIN LATERAL (
-		    SELECT action_at, action_by
-		    FROM approval_log
-		    WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
-		    ORDER BY action_at DESC LIMIT 1
+		    SELECT x.action_at, x.action_by FROM (
+		        SELECT action_at, action_by FROM approval_log
+		        WHERE doc_type = 'PO' AND doc_id = po.id AND action = 'APPROVE'
+		        UNION ALL
+		        SELECT changed_at, changed_by FROM po_status_log
+		        WHERE po_id = po.id AND to_status = 'APPROVED'
+		    ) x ORDER BY x.action_at DESC LIMIT 1
 		) al ON true
 		LEFT JOIN users au ON au.id = al.action_by
 		LEFT JOIN users fb ON fb.id = po.approver_id`

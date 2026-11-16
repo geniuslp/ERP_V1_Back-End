@@ -1761,9 +1761,13 @@ func (h *WorkOrderHandler) fillWOPrintSignature(ctx context.Context, id int64, w
 		       fb.full_name, fb.signature_path, fb.signature_mime
 		FROM work_order wo
 		LEFT JOIN LATERAL (
-		    SELECT action_at, action_by FROM approval_log
-		    WHERE doc_type = 'WO' AND doc_id = wo.id AND action = 'APPROVE'
-		    ORDER BY action_at DESC LIMIT 1
+		    SELECT x.action_at, x.action_by FROM (
+		        SELECT action_at, action_by FROM approval_log
+		        WHERE doc_type = 'WO' AND doc_id = wo.id AND action = 'APPROVE'
+		        UNION ALL
+		        SELECT changed_at, changed_by FROM work_order_status_log
+		        WHERE wo_id = wo.id AND to_status = 'APPROVED'
+		    ) x ORDER BY x.action_at DESC LIMIT 1
 		) al ON true
 		LEFT JOIN users au ON au.id = al.action_by
 		LEFT JOIN users fb ON fb.id = wo.approver_id
