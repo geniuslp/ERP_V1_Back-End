@@ -30,7 +30,7 @@ type NotificationHandler struct {
 
 func NewNotificationHandler(db *pgxpool.Pool, cfg *config.Config) *NotificationHandler {
 	h := &NotificationHandler{db: db, cfg: cfg, Hub: notify.NewHub(), auth: auth.NewService(cfg)}
-	h.pusher = notify.NewPusher(db, cfg.VAPIDPublicKey, cfg.VAPIDPrivateKey, cfg.VAPIDSubject)
+	h.pusher = notify.NewPusher(db, cfg.VAPIDPublicKey, cfg.VAPIDPrivateKey, cfg.VAPIDSubject, cfg.PushAlways)
 	h.Hub.SetPusher(h.pusher)
 	if h.pusher == nil {
 		log.Println("web push: VAPID keys not set, push notifications are off")

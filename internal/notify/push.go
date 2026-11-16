@@ -20,14 +20,15 @@ type Pusher struct {
 	pub     string
 	priv    string
 	subject string
+	always  bool // push even when the user's page is open (testing only)
 }
 
 // NewPusher returns nil when the VAPID keys are not configured (push is then simply off).
-func NewPusher(db *pgxpool.Pool, pub, priv, subject string) *Pusher {
+func NewPusher(db *pgxpool.Pool, pub, priv, subject string, always bool) *Pusher {
 	if pub == "" || priv == "" {
 		return nil
 	}
-	return &Pusher{db: db, pub: pub, priv: priv, subject: subject}
+	return &Pusher{db: db, pub: pub, priv: priv, subject: subject, always: always}
 }
 
 // PublicKey is what the browser needs to subscribe.

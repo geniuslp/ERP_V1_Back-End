@@ -161,7 +161,7 @@ func (h *Hub) listenOnce(ctx context.Context, dsn string, pool *pgxpool.Pool) er
 		h.Publish(p.UserID, b)
 		// Nobody has the page open: reach the phone / desktop through Web Push instead.
 		if h.pusher != nil {
-			if h.Online(p.UserID) {
+			if h.Online(p.UserID) && !h.pusher.always {
 				log.Printf("push: skipped notification %d for user %d (page is open, the toast shows it)", it.ID, p.UserID)
 			} else {
 				go h.pusher.Send(context.Background(), p.UserID, it)
