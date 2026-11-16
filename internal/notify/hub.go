@@ -42,11 +42,22 @@ type Sender interface {
 }
 
 type Hub struct {
-	mu    sync.RWMutex
-	users map[int64]map[Sender]struct{}
+	mu     sync.RWMutex
+	users  map[int64]map[Sender]struct{}
+	pusher *Pusher // nil = Web Push off
 }
 
 func NewHub() *Hub { return &Hub{users: map[int64]map[Sender]struct{}{}} }
+
+// SetPusher turns on Web Push: a notification for a user with no open socket is also sent as a push message.
+func (h *Hub) SetPusher(p *Pusher) { h.pusher = p }
+
+// Online reports whether the user has at least one open socket (the page is open and shows the toast itself).
+func (h *Hub) Online(userID int64) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.users[userID]) > 0
+}
 
 func (h *Hub) Add(userID int64, s Sender) {
 	h.mu.Lock()
@@ -148,5 +159,9 @@ func (h *Hub) listenOnce(ctx context.Context, dsn string, pool *pgxpool.Pool) er
 		}
 		b, _ := json.Marshal(map[string]any{"event": "notification", "data": it})
 		h.Publish(p.UserID, b)
+		// Nobody has the page open: reach the phone / desktop through Web Push instead.
+		if h.pusher != nil && !h.Online(p.UserID) {
+			go h.pusher.Send(context.Background(), p.UserID, it)
+		}
 	}
 }

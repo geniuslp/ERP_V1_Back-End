@@ -275,6 +275,9 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 	notificationH.StartListener()
 	notifications := api.Group("/notifications", jwt)
 	notifications.Get("/", notificationH.List)
+	notifications.Get("/push/public-key", notificationH.PushPublicKey)
+	notifications.Post("/push/subscribe", notificationH.PushSubscribe)
+	notifications.Post("/push/unsubscribe", notificationH.PushUnsubscribe)
 	notifications.Put("/read-all", notificationH.MarkAllRead) // static route before /:id/read
 	notifications.Put("/:id/read", notificationH.MarkRead)
 	api.Get("/ws/notifications", notificationH.WSAuth, notificationH.WS())

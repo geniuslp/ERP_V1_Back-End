@@ -20,6 +20,12 @@ type Config struct {
 	Environment     string
 	BcryptCost      int
 	PublicBaseURL   string
+
+	// Web Push (phone / desktop notifications). Empty keys = push disabled; the bell + WebSocket keep working.
+	// Generate a pair once with `go run ./cmd/vapidkeys`; never change them later (every subscription would break).
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	VAPIDSubject    string // "mailto:..." or an https URL identifying the sender to the push service
 }
 
 func Load() *Config {
@@ -37,6 +43,10 @@ func Load() *Config {
 		Environment:   getEnv("APP_ENV", "development"),
 		BcryptCost:    getInt("BCRYPT_COST", 12),
 		PublicBaseURL: strings.TrimRight(getEnv("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
+
+		VAPIDPublicKey:  getEnv("VAPID_PUBLIC_KEY", ""),
+		VAPIDPrivateKey: getEnv("VAPID_PRIVATE_KEY", ""),
+		VAPIDSubject:    getEnv("VAPID_SUBJECT", "mailto:admin@example.com"),
 	}
 }
 

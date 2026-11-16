@@ -10329,6 +10329,31 @@ paths:
       summary: Mark one notification as read
       tags:
       - Notifications
+  /notifications/push/public-key:
+    get:
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: VAPID public key the browser needs to subscribe to Web Push (enabled=false
+        when push is off)
+      tags:
+      - Notifications
+  /notifications/push/subscribe:
+    post:
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Save this device's Web Push subscription for the current user
+      tags:
+      - Notifications
+  /notifications/push/unsubscribe:
+    post:
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Remove this device's Web Push subscription
+      tags:
+      - Notifications
   /notifications/read-all:
     put:
       responses: {}

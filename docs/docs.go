@@ -10186,6 +10186,48 @@ const docTemplate = `{
                 "responses": {}
             }
         },
+        "/notifications/push/public-key": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "VAPID public key the browser needs to subscribe to Web Push (enabled=false when push is off)",
+                "responses": {}
+            }
+        },
+        "/notifications/push/subscribe": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Save this device's Web Push subscription for the current user",
+                "responses": {}
+            }
+        },
+        "/notifications/push/unsubscribe": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Remove this device's Web Push subscription",
+                "responses": {}
+            }
+        },
         "/notifications/read-all": {
             "put": {
                 "security": [

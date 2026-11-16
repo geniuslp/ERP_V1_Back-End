@@ -24,10 +24,97 @@ type NotificationHandler struct {
 	cfg  *config.Config
 	Hub  *notify.Hub
 	auth *auth.Service
+
+	pusher *notify.Pusher // nil when VAPID keys are not configured
 }
 
 func NewNotificationHandler(db *pgxpool.Pool, cfg *config.Config) *NotificationHandler {
-	return &NotificationHandler{db: db, cfg: cfg, Hub: notify.NewHub(), auth: auth.NewService(cfg)}
+	h := &NotificationHandler{db: db, cfg: cfg, Hub: notify.NewHub(), auth: auth.NewService(cfg)}
+	h.pusher = notify.NewPusher(db, cfg.VAPIDPublicKey, cfg.VAPIDPrivateKey, cfg.VAPIDSubject)
+	h.Hub.SetPusher(h.pusher)
+	if h.pusher == nil {
+		log.Println("web push: VAPID keys not set, push notifications are off")
+	}
+	return h
+}
+
+// PushPublicKey godoc
+// @Summary      VAPID public key the browser needs to subscribe to Web Push (enabled=false when push is off)
+// @Tags         Notifications
+// @Security     BearerAuth
+// @Router       /notifications/push/public-key [get]
+func (h *NotificationHandler) PushPublicKey(c *fiber.Ctx) error {
+	if h.pusher == nil {
+		return c.JSON(fiber.Map{"success": true, "enabled": false, "public_key": ""})
+	}
+	return c.JSON(fiber.Map{"success": true, "enabled": true, "public_key": h.pusher.PublicKey()})
+}
+
+type pushSubscribeReq struct {
+	Endpoint string `json:"endpoint"`
+	Keys     struct {
+		P256dh string `json:"p256dh"`
+		Auth   string `json:"auth"`
+	} `json:"keys"`
+}
+
+// PushSubscribe godoc
+// @Summary      Save this device's Web Push subscription for the current user
+// @Tags         Notifications
+// @Security     BearerAuth
+// @Router       /notifications/push/subscribe [post]
+func (h *NotificationHandler) PushSubscribe(c *fiber.Ctx) error {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+	if h.pusher == nil {
+		return fiber.NewError(fiber.StatusServiceUnavailable, "ระบบยังไม่เปิดใช้การแจ้งเตือนบนมือถือ")
+	}
+	var req pushSubscribeReq
+	if err := c.BodyParser(&req); err != nil || req.Endpoint == "" || req.Keys.P256dh == "" || req.Keys.Auth == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "ข้อมูลการสมัครรับแจ้งเตือนไม่ถูกต้อง")
+	}
+	ua := c.Get("User-Agent")
+	if len(ua) > 300 {
+		ua = ua[:300]
+	}
+	// The same browser can be used by another account later: the endpoint then moves to the user who is signed in now.
+	_, err := h.db.Exec(context.Background(), `
+		INSERT INTO push_subscription (user_id, endpoint, p256dh, auth, user_agent)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (endpoint) DO UPDATE
+		   SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, user_agent = EXCLUDED.user_agent`,
+		claims.UserID, req.Endpoint, req.Keys.P256dh, req.Keys.Auth, ua)
+	if err != nil {
+		log.Printf("push subscribe: %v", err)
+		return fiber.NewError(fiber.StatusInternalServerError, "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// PushUnsubscribe godoc
+// @Summary      Remove this device's Web Push subscription
+// @Tags         Notifications
+// @Security     BearerAuth
+// @Router       /notifications/push/unsubscribe [post]
+func (h *NotificationHandler) PushUnsubscribe(c *fiber.Ctx) error {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+	var req struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.Endpoint == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+	}
+	if _, err := h.db.Exec(context.Background(), `DELETE FROM push_subscription WHERE endpoint = $1 AND user_id = $2`,
+		req.Endpoint, claims.UserID); err != nil {
+		log.Printf("push unsubscribe: %v", err)
+		return fiber.NewError(fiber.StatusInternalServerError, "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
+	}
+	return c.JSON(fiber.Map{"success": true})
 }
 
 // StartListener begins the pg LISTEN loop in the background.
