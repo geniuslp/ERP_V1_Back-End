@@ -986,8 +986,8 @@ func (h *WorkOrderHandler) Update(c *fiber.Ctx) error { return h.update(c, false
 // @Description  updated exactly like the normal edit (`lines` omitted = lines and totals kept; present = replaced
 // @Description  and recomputed), status becomes PENDING_REAPPROVAL, a row is added to work_order_edit_log
 // @Description  (this is what revision_round counts) and to work_order_status_log, and the document's existing
-// @Description  approval_request is reopened (status PENDING) — same request, same assigned_to, so it goes
-// @Description  back to the SAME approver. A sent approver_id and status are ignored. At least one line is
+// @Description  approval_request is reopened (status PENDING) — same request; assigned_to stays unless a different approver_id is sent (then approver_id and assigned_to move to the new, eligible approver), otherwise it goes
+// @Description  back to the SAME approver. A sent status is ignored. At least one line is
 // @Description  required. wo_no never changes; the response/detail/list carry revision_round instead.
 // @Tags         WorkOrder
 // @Security     BearerAuth
@@ -1021,8 +1021,7 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 		if reason == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "กรุณาระบุเหตุผลในการแก้ไข")
 		}
-		// Re-approval goes back to the same approver / same approval_request: nothing sent here may re-route it.
-		req.ApproverID = nil
+		// Re-approval reopens the same approval_request. A sent approver_id is honoured (like PO): omitted or unchanged keeps the original approver, a different eligible pick moves the re-approval to them (see below).
 		req.Status = nil
 	}
 	if err := h.validateWorkOrderRequest(context.Background(), &req); err != nil {
@@ -1130,6 +1129,11 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 	}
 	if approverChanged || submitting {
 		if err := requireWOApprover(ctx, h.db, effectiveApprover); err != nil {
+			return err
+		}
+	}
+	if editApproved && approverChanged {
+		if err := requireApprovalReady(ctx, h.db, "WO", effectiveApprover); err != nil {
 			return err
 		}
 	}
@@ -1252,14 +1256,19 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 			VALUES ($1,$2,'PENDING_REAPPROVAL',$3,$4)`, id, currentStatus, claims.UserID, reason); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "status log error: "+err.Error())
 		}
-		// Reopen the document's existing approval_request (same id / assigned_to — routing is not recomputed).
+		// Reopen the document's existing approval_request. Same assigned_to unless a different approver was picked
+		// (work_order.approver_id was updated above, so the request the approver's inbox reads must follow it).
+		var reassignTo *int64
+		if approverChanged {
+			reassignTo = effectiveApprover
+		}
 		tag, err := tx.Exec(ctx, `
-			UPDATE approval_request SET status='PENDING', updated_at=NOW()
+			UPDATE approval_request SET status='PENDING', assigned_to=COALESCE($2, assigned_to), updated_at=NOW()
 			WHERE id = (
 				SELECT id FROM approval_request
 				WHERE doc_type='WO' AND doc_id=$1
 				ORDER BY created_at DESC, id DESC LIMIT 1
-			)`, id)
+			)`, id, reassignTo)
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "approval_request update error: "+err.Error())
 		}
