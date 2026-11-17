@@ -753,7 +753,7 @@ func (h *WorkOrderHandler) Get(c *fiber.Ctx) error {
 func fetchWorkOrderLines(ctx context.Context, db *pgxpool.Pool, woID int64) ([]models.WorkOrderLine, error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, wo_id, sort_order, cost_code, description, qty, unit_price, amount,
-		       disc, disc_type, vat_rate, wht_rate, created_at, created_by, remarks
+		       disc, disc_type, vat_rate, wht_rate, created_at, created_by, remarks, unit
 		FROM work_order_line
 		WHERE wo_id=$1
 		ORDER BY sort_order`, woID)
@@ -767,7 +767,7 @@ func fetchWorkOrderLines(ctx context.Context, db *pgxpool.Pool, woID int64) ([]m
 		var l models.WorkOrderLine
 		if err := rows.Scan(
 			&l.ID, &l.WoID, &l.SortOrder, &l.CostCode, &l.Description, &l.Qty, &l.UnitPrice, &l.Amount,
-			&l.Disc, &l.DiscType, &l.VatRate, &l.WhtRate, &l.CreatedAt, &l.CreatedBy, &l.Remarks,
+			&l.Disc, &l.DiscType, &l.VatRate, &l.WhtRate, &l.CreatedAt, &l.CreatedBy, &l.Remarks, &l.Unit,
 		); err != nil {
 			return nil, err
 		}
@@ -839,9 +839,9 @@ func insertWorkOrderLines(ctx context.Context, tx pgx.Tx, woID int64, lines []mo
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO work_order_line
-			  (wo_id, sort_order, cost_code, description, qty, unit_price, disc, disc_type, vat_rate, wht_rate, created_by, remarks)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-			woID, i+1, l.CostCode, l.Description, l.Qty, l.UnitPrice, disc, discType, l.VatRate, l.WhtRate, userID, l.Remarks,
+			  (wo_id, sort_order, cost_code, description, qty, unit_price, disc, disc_type, vat_rate, wht_rate, created_by, remarks, unit)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			woID, i+1, l.CostCode, l.Description, l.Qty, l.UnitPrice, disc, discType, l.VatRate, l.WhtRate, userID, l.Remarks, l.Unit,
 		); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("lines[%d]: insert error: %s", i, err.Error()))
 		}

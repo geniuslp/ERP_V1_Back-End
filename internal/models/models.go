@@ -1764,6 +1764,7 @@ type WorkOrderLineInput struct {
 	VatRate     *float64 `json:"vat_rate"`
 	WhtRate     *float64 `json:"wht_rate" validate:"omitempty,oneof=1 3 5"`
 	Remarks     *string  `json:"remarks"` // per-line รายละเอียด (free text)
+	Unit        *string  `json:"unit" validate:"omitempty,max=20"` // per-line หน่วย (เหมา, งาน, รอบ, ครั้ง, ตรม, เครื่อง)
 }
 
 // WorkOrderLine mirrors the work_order_line table (db row + response shape).
@@ -1783,6 +1784,7 @@ type WorkOrderLine struct {
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   *int64    `json:"created_by"`
 	Remarks     *string   `json:"remarks"`
+	Unit        *string   `json:"unit"`
 }
 
 // UpdateWorkOrderLinesRequest replaces the full set of lines (+ discount/VAT/WHT flags) for a WO.

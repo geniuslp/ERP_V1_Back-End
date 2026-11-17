@@ -3298,6 +3298,10 @@ definitions:
       remarks:
         description: per-line รายละเอียด (free text)
         type: string
+      unit:
+        description: per-line หน่วย (เหมา, งาน, รอบ, ครั้ง, ตรม, เครื่อง)
+        maxLength: 20
+        type: string
       unit_price:
         minimum: 0
         type: number

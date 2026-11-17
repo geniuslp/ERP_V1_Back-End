@@ -22414,6 +22414,11 @@ const docTemplate = `{
                     "description": "per-line รายละเอียด (free text)",
                     "type": "string"
                 },
+                "unit": {
+                    "description": "per-line หน่วย (เหมา, งาน, รอบ, ครั้ง, ตรม, เครื่อง)",
+                    "type": "string",
+                    "maxLength": 20
+                },
                 "unit_price": {
                     "type": "number",
                     "minimum": 0
