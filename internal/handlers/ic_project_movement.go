@@ -570,7 +570,8 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 	where := " WHERE ici.project_code = $1 AND " + qtyExpr + " > 0"
 	if jc := c.Query("job_code"); jc != "" {
 		args = append(args, jc)
-		where += fmt.Sprintf(" AND csub.subject_code = LEFT(job_cost_key($%d::text), 1) AND cj.job_code = SUBSTRING(job_cost_key($%d::text) FROM 2)", len(args), len(args))
+		// Match on the job part only; M (Material), S (Subcontract) and L (Labour) are all cost codes of the same job.
+		where += fmt.Sprintf(" AND csub.subject_code IN ('M','S','L') AND cj.job_code = SUBSTRING(job_cost_key($%d::text) FROM 2)", len(args))
 	}
 	if v := c.QueryInt("subgroup_id", 0); v > 0 {
 		args = append(args, v)
@@ -1767,7 +1768,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 	}
 	if jobCode != "" {
 		args = append(args, jobCode)
-		where = append(where, fmt.Sprintf("csub.subject_code = LEFT(job_cost_key($%[1]d::text), 1) AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)", len(args)))
+		where = append(where, fmt.Sprintf("csub.subject_code IN ('M','S','L') AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)", len(args)))
 	}
 	if search != "" {
 		args = append(args, "%"+search+"%")

@@ -391,7 +391,7 @@ func (h *StockByProjectHandler) projectBalance(ctx context.Context, projectCode,
 	}
 	if jobCode != "" {
 		args = append(args, jobCode)
-		where = append(where, fmt.Sprintf("csub.subject_code = LEFT(job_cost_key($%[1]d::text), 1) AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)", len(args)))
+		where = append(where, fmt.Sprintf("csub.subject_code IN ('M','S','L') AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)", len(args)))
 	}
 	if search != "" {
 		args = append(args, "%"+search+"%")
