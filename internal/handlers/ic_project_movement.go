@@ -1577,7 +1577,7 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 
 	// asset/office PO types never belong in IC (po join below is a LEFT JOIN, so MOVEMENT/PR rows
 	// with no po_id are unaffected)
-	where := []string{"ici.project_code = $1", "(t.po_id IS NULL OR po.order_type IN ('stock','cost'))"}
+	where := []string{"(t.po_id IS NULL OR po.order_type IN ('stock','cost'))"}
 	args := []interface{}{projectCode}
 	i := 2
 
@@ -1597,20 +1597,54 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 		i++
 	}
 	if f.Search != "" {
-		where = append(where, fmt.Sprintf("(ici.mat_code ILIKE $%d OR mn.mat_name ILIKE $%d)", i, i))
+		where = append(where, fmt.Sprintf("(t.mat_code ILIKE $%d OR mn.mat_name ILIKE $%d)", i, i))
 		args = append(args, "%"+f.Search+"%")
 		i++
 	}
 	whereClause := strings.Join(where, " AND ")
 
+	// One ledger of everything that changed the project's stock of a material:
+	//   * receipt pool: PO receive (+), PO return (stored negative), ISSUE / TRANSFER taken from the pool (-)
+	//   * cost item: TRANSFER in/out, PR, PO — but NOT the old MOVEMENT_ISSUE credit (ISSUE now means "consumed",
+	//     the old rows moved the goods pool -> cost item, which would double count against the pool's ISSUE_OUT)
+	// qty_after is a running balance per (material, cost code) over the project's whole history, computed before
+	// the filters / paging below so a filtered page still shows the true balance. Pool row ids are negated so
+	// they never collide with cost-item ids.
+	ledgerCTE := `
+		WITH ledger AS (
+			SELECT -x.id AS id, p.project_code, p.mat_code, p.cost_subgroup_id,
+			       CASE WHEN x.txn_type = 'ISSUE_OUT' THEN -x.qty ELSE x.qty END AS qty,
+			       COALESCE(p.last_unit_cost, 0) AS unit_cost,
+			       ml.remarks, x.created_at, x.created_at::date AS txn_date, x.created_by,
+			       CASE WHEN x.txn_type = 'RECEIVE' THEN 'PO'
+			            WHEN x.txn_type = 'RETURN' THEN 'PO_RETURN'
+			            WHEN mv.doc_type = 'TRANSFER' THEN 'MOVEMENT_TRANSFER'
+			            ELSE 'MOVEMENT_ISSUE' END AS ref_type,
+			       x.po_id, x.movement_id
+			FROM ic_project_receipt_pool_transaction x
+			JOIN ic_project_receipt_pool p ON p.id = x.receipt_pool_id
+			LEFT JOIN ic_project_movement mv ON mv.id = x.movement_id
+			LEFT JOIN ic_project_movement_line ml ON ml.id = x.movement_line_id
+			WHERE p.project_code = $1
+			UNION ALL
+			SELECT t.id, ici.project_code, ici.mat_code, ici.cost_subgroup_id, t.qty, t.unit_cost,
+			       t.remarks, t.created_at, t.txn_date, t.created_by, t.ref_type, t.po_id, t.movement_id
+			FROM ic_project_cost_item_transaction t
+			JOIN ic_project_cost_item ici ON ici.id = t.project_cost_item_id
+			WHERE ici.project_code = $1 AND t.ref_type <> 'MOVEMENT_ISSUE'
+		), running AS (
+			SELECT l.*, SUM(l.qty) OVER (PARTITION BY l.mat_code, l.cost_subgroup_id
+			                             ORDER BY l.created_at, l.id
+			                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS qty_after
+			FROM ledger l
+		)`
 	joinClause := `
-		FROM ic_project_cost_item_transaction t
-		JOIN ic_project_cost_item ici ON ici.id = t.project_cost_item_id
-		JOIN material_code mc         ON mc.mat_code = ici.mat_code
+		FROM running t
+		JOIN material_code mc         ON mc.mat_code = t.mat_code
 		LEFT JOIN mat_name mn         ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp        ON sp.id = mc.spec_id
 		LEFT JOIN brand br ON br.id = mc.brand_id
-		JOIN cost_subgroup csg        ON csg.id = ici.cost_subgroup_id
+		JOIN cost_subgroup csg        ON csg.id = t.cost_subgroup_id
 		JOIN cost_group cg            ON cg.id = csg.group_id
 		JOIN cost_job cj              ON cj.id = cg.job_id
 		JOIN cost_subject csub        ON csub.id = cj.subject_id
@@ -1619,26 +1653,26 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 		LEFT JOIN users u             ON u.id = t.created_by`
 
 	var total int64
-	if err := db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) %s WHERE %s`, joinClause, whereClause), args...).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, fmt.Sprintf(`%s SELECT COUNT(*) %s WHERE %s`, ledgerCTE, joinClause, whereClause), args...).Scan(&total); err != nil {
 		return nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to count cost transactions: "+err.Error())
 	}
 
 	args = append(args, size, offset)
-	rows, err := db.Query(ctx, fmt.Sprintf(`
-		SELECT t.id, t.qty, t.qty_before, t.qty_after, t.unit_cost, t.remarks, t.txn_date::text, t.ref_type,
-		       ici.mat_code,
-		       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), ici.mat_code),
-		       ici.cost_subgroup_id,
+	rows, err := db.Query(ctx, fmt.Sprintf(`%s
+		SELECT t.id, t.qty, (t.qty_after - t.qty), t.qty_after, t.unit_cost, t.remarks, t.txn_date::text, t.ref_type,
+		       t.mat_code,
+		       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), t.mat_code),
+		       t.cost_subgroup_id,
 		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       csg.subgroup_name,
-		       CASE WHEN t.ref_type = 'PO' THEN po.po_no ELSE m.doc_no END,
+		       CASE WHEN t.ref_type IN ('PO','PO_RETURN') THEN po.po_no ELSE m.doc_no END,
 		       COALESCE(u.full_name, ''),
 		       COALESCE(u.username, ''),
 		       TO_CHAR(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
 		%s
 		WHERE %s
-		ORDER BY t.txn_date DESC, t.id DESC
-		LIMIT $%d OFFSET $%d`, joinClause, whereClause, i, i+1), args...)
+		ORDER BY t.txn_date DESC, t.created_at DESC, t.id DESC
+		LIMIT $%d OFFSET $%d`, ledgerCTE, joinClause, whereClause, i, i+1), args...)
 	if err != nil {
 		return nil, 0, 0, 0, fiber.NewError(fiber.StatusInternalServerError, "failed to list cost transactions: "+err.Error())
 	}
