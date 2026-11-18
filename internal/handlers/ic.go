@@ -1380,6 +1380,14 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 				return fiber.NewError(fiber.StatusBadRequest,
 					fmt.Sprintf("line_no %d: PO has no project_code set — cannot receive into a project cost item", lineNo))
 			}
+			// A warehouse-linked project (project.linked_warehouse_code) holds its goods in the general stock
+			// (stock_item), not in a project receipt pool: receive straight into stock.
+			if icProjectIsWarehouseLinked(ctx, tx, *projectCode) {
+				if err := icReceiveToStock(ctx, tx, matCode, lineNo, in.ReceiveQty, unitPrice, poID, claims.UserID, req.ReceiveDocumentID); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := icReceiveToProjectCost(ctx, tx, *projectCode, matCode, *costSubgroupID, in.ReceiveQty, unitPrice, poID, in.LineID, claims.UserID, req.ReceiveDocumentID); err != nil {
 				return err
 			}
@@ -1528,13 +1536,17 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 			lines = append(lines, l)
 		}
 
-		return c.JSON(fiber.Map{
-			"success": true,
-			"data": fiber.Map{
-				"scoped_by_document": true,
-				"lines":              lines,
-			},
-		})
+		// A cost PO of a warehouse-linked project is received into stock, not the pool: no pool rows here, so
+		// fall through to the stock_transaction query below.
+		if len(lines) > 0 {
+			return c.JSON(fiber.Map{
+				"success": true,
+				"data": fiber.Map{
+					"scoped_by_document": true,
+					"lines":              lines,
+				},
+			})
+		}
 	}
 
 	// order_type == 'stock': scoped query first — stock_transaction.receive_document_id now
@@ -1624,6 +1636,13 @@ func (h *ICHandler) GetReceiveDocumentLines(c *fiber.Ctx) error {
 			"lines":              lines,
 		},
 	})
+}
+
+// icProjectIsWarehouseLinked reports whether the project has project.linked_warehouse_code set (its goods live in the
+// general stock, stock_item, instead of a project receipt pool). An unknown project is simply "not linked".
+func icProjectIsWarehouseLinked(ctx context.Context, q icRowQuerier, projectCode string) bool {
+	code, err := linkedWarehouseCode(ctx, q, projectCode)
+	return err == nil && code != ""
 }
 
 // icReceiveToStock posts a PO-line receive into stock_item/stock_transaction. Every mat_code is
@@ -2121,6 +2140,11 @@ func (h *ICHandler) SubmitReturnLines(c *fiber.Ctx) error {
 		}
 
 		if orderType == "stock" {
+			if err := icReturnFromStock(ctx, tx, p.matCode, p.lineNo, in.ReturnQty, poID, claims.UserID, req.Remarks, returnID); err != nil {
+				return err
+			}
+		} else if icProjectIsWarehouseLinked(ctx, tx, *projectCode) {
+			// Received into general stock (see the receive path), so the return comes out of stock too.
 			if err := icReturnFromStock(ctx, tx, p.matCode, p.lineNo, in.ReturnQty, poID, claims.UserID, req.Remarks, returnID); err != nil {
 				return err
 			}
