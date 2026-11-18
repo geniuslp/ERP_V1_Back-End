@@ -533,10 +533,7 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	if linkedWH != "" {
-		if docType == "ISSUE" {
-			return errLinkedIssueErr()
-		}
-		// Warehouse-linked TRANSFER source: flat stock_item.qty per mat_code (global, no
+		// Warehouse-linked ISSUE / TRANSFER source: flat stock_item.qty per mat_code (global, no
 		// per-warehouse breakdown).
 		items, err := queryLinkedWarehouseStock(context.Background(), h.db,
 			c.QueryInt("mat_name_id", 0), strings.TrimSpace(c.Query("q")), true)
@@ -726,9 +723,6 @@ func (h *IcProjectMovementHandler) AddMovementLine(c *fiber.Ctx) error {
 	linkedWH, err := linkedWarehouseCode(ctx, tx, projectCode)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-	}
-	if linkedWH != "" && docType == "ISSUE" {
-		return errLinkedIssueErr()
 	}
 	if linkedWH == "" && req.CostSubgroupID == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "cost_subgroup_id is required")
@@ -1079,9 +1073,6 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
-	if linkedWH != "" && docType == "ISSUE" {
-		return errLinkedIssueErr()
-	}
 	if len(bodyLines) > 0 {
 		claims := middleware.GetClaims(c)
 		if docType == "TRANSFER" {
@@ -1288,7 +1279,8 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 				return errLinkedToLinked(fmt.Sprintf("%s: both source and destination are warehouse-linked; use Stock Transfer instead", l.MatCode))
 			}
 		}
-		if dstWH == "" {
+		// ISSUE consumes the goods: there is no destination cost item to resolve or credit.
+		if docType == "TRANSFER" && dstWH == "" {
 			if _, err := resolveOrCreateItemID(dstKey); err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("%s: failed to resolve destination cost item: %s", l.MatCode, err.Error()))
 			}
@@ -1315,7 +1307,7 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 		} else {
 			poolIDSet[poolIDByKey[r.srcKey]] = true
 		}
-		if r.dstWH == "" {
+		if docType == "TRANSFER" && r.dstWH == "" {
 			itemIDSet[itemIDByKey[r.dstKey]] = true
 		}
 	}
@@ -1399,7 +1391,7 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 			// The goods leave the warehouse at the stock item's own cost; using the destination's
 			// (new, so 0) cost item made the transferred value 0.
 			unitCost = itemUnitCost
-			if unitCost == 0 {
+			if unitCost == 0 && dstState != nil {
 				unitCost = dstState.UnitCost
 			}
 		} else if docType == "TRANSFER" {
@@ -1493,6 +1485,12 @@ func (h *IcProjectMovementHandler) postMovementTx(c *fiber.Ctx, ctx context.Cont
 			); err != nil {
 				return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 			}
+		}
+
+		if docType == "ISSUE" {
+			// ISSUE = consumed: the source (receipt pool, or stock_item for a warehouse-linked project) was
+			// already deducted above and nothing is credited anywhere — the cost arose at the PO.
+			continue
 		}
 
 		if r.dstWH != "" {
