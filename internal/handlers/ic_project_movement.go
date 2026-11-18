@@ -1651,16 +1651,79 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 			                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS qty_after
 			FROM ledger l
 		)`
+	// Warehouse-linked project: the goods live in the general stock (stock_item), not in a pool / cost item, so its
+	// history is the PO receipts / returns of this project plus the posted movements that leave it (ISSUE / TRANSFER,
+	// -) or arrive in it (TRANSFER from another project, +). Pre-change pool receipts are kept; the internal
+	// POOL_TO_STOCK move is not shown. Every row takes the cost code of the material master (0 = none).
+	if wh, lerr := linkedWarehouseCode(ctx, db, projectCode); lerr == nil && wh != "" {
+		ledgerCTE = `
+		WITH ledger AS (
+			SELECT st.id, si.mat_code, COALESCE(mc.cost_subgroup_id, 0) AS cost_subgroup_id,
+			       CASE WHEN st.txn_type = 'IN' THEN st.qty ELSE -st.qty END AS qty,
+			       COALESCE(si.unit_cost, 0) AS unit_cost, st.remarks, st.created_at, st.txn_date, st.created_by,
+			       CASE WHEN st.ref_doc_type = 'PO' THEN 'PO' ELSE 'PO_RETURN' END AS ref_type,
+			       st.ref_doc_id AS po_id, NULL::bigint AS movement_id, st.qty_after AS after_override
+			FROM stock_transaction st
+			JOIN stock_item si ON si.id = st.item_id
+			JOIN purchase_order po ON po.id = st.ref_doc_id AND po.project_code = $1
+			LEFT JOIN material_code mc ON mc.mat_code = si.mat_code
+			WHERE st.ref_doc_type IN ('PO', 'PO_RETURN')
+			UNION ALL
+			SELECT -x.id, p.mat_code, COALESCE(mc.cost_subgroup_id, 0),
+			       x.qty, COALESCE(p.last_unit_cost, 0), NULL::text, x.created_at, x.created_at::date, x.created_by,
+			       CASE WHEN x.txn_type = 'RECEIVE' THEN 'PO' ELSE 'PO_RETURN' END, x.po_id, NULL::bigint, NULL::numeric
+			FROM ic_project_receipt_pool_transaction x
+			JOIN ic_project_receipt_pool p ON p.id = x.receipt_pool_id
+			LEFT JOIN material_code mc ON mc.mat_code = p.mat_code
+			WHERE p.project_code = $1 AND x.txn_type IN ('RECEIVE', 'RETURN')
+			UNION ALL
+			SELECT -(1000000000 + ml.id), ml.mat_code, COALESCE(mc.cost_subgroup_id, 0), -ml.qty,
+			       COALESCE(si.unit_cost, 0), ml.remarks, m.updated_at, COALESCE(m.doc_date, m.updated_at::date), m.updated_by,
+			       CASE WHEN m.doc_type = 'TRANSFER' THEN 'MOVEMENT_TRANSFER' ELSE 'MOVEMENT_ISSUE' END, NULL::bigint, m.id,
+			       (SELECT s2.qty_after FROM stock_transaction s2 WHERE s2.ref_doc_type = 'IC_MOVEMENT' AND s2.ref_doc_id = m.id
+			           AND s2.item_id = si.id AND s2.txn_type = 'OUT' ORDER BY s2.id LIMIT 1)
+			FROM ic_project_movement_line ml
+			JOIN ic_project_movement m ON m.id = ml.movement_id
+			LEFT JOIN material_code mc ON mc.mat_code = ml.mat_code
+			LEFT JOIN stock_item si ON si.mat_code = ml.mat_code
+			WHERE m.project_code = $1 AND m.status = 'POSTED'
+			UNION ALL
+			SELECT -(2000000000 + ml.id), ml.mat_code, COALESCE(mc.cost_subgroup_id, 0), ml.qty,
+			       COALESCE(si.unit_cost, 0), ml.remarks, m.updated_at, COALESCE(m.doc_date, m.updated_at::date), m.updated_by,
+			       'MOVEMENT_TRANSFER', NULL::bigint, m.id,
+			       (SELECT s2.qty_after FROM stock_transaction s2 WHERE s2.ref_doc_type = 'IC_MOVEMENT' AND s2.ref_doc_id = m.id
+			           AND s2.item_id = si.id AND s2.txn_type = 'IN' ORDER BY s2.id LIMIT 1)
+			FROM ic_project_movement_line ml
+			JOIN ic_project_movement m ON m.id = ml.movement_id
+			LEFT JOIN material_code mc ON mc.mat_code = ml.mat_code
+			LEFT JOIN stock_item si ON si.mat_code = ml.mat_code
+			WHERE ml.to_project_code = $1 AND m.doc_type = 'TRANSFER' AND m.status = 'POSTED'
+		), run AS (
+			SELECT l.*, SUM(l.qty) OVER (PARTITION BY l.mat_code, l.cost_subgroup_id
+			                             ORDER BY l.created_at, l.id
+			                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run
+			FROM ledger l
+		), running AS (
+			-- qty_after = the real stock level after the posting when the stock ledger has it. Otherwise the running sum,
+			-- shifted by the opening balance this project's history does not show (goods received outside this
+			-- project's own POs), so a balance can never go below 0.
+			SELECT r.id, r.mat_code, r.cost_subgroup_id, r.qty, r.unit_cost, r.remarks, r.created_at, r.txn_date, r.created_by,
+			       r.ref_type, r.po_id, r.movement_id,
+			       COALESCE(r.after_override,
+			                r.run + GREATEST(0, -MIN(r.run) OVER (PARTITION BY r.mat_code, r.cost_subgroup_id))) AS qty_after
+			FROM run r
+		)`
+	}
 	joinClause := `
 		FROM running t
 		JOIN material_code mc         ON mc.mat_code = t.mat_code
 		LEFT JOIN mat_name mn         ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp        ON sp.id = mc.spec_id
 		LEFT JOIN brand br ON br.id = mc.brand_id
-		JOIN cost_subgroup csg        ON csg.id = t.cost_subgroup_id
-		JOIN cost_group cg            ON cg.id = csg.group_id
-		JOIN cost_job cj              ON cj.id = cg.job_id
-		JOIN cost_subject csub        ON csub.id = cj.subject_id
+		LEFT JOIN cost_subgroup csg   ON csg.id = t.cost_subgroup_id
+		LEFT JOIN cost_group cg       ON cg.id = csg.group_id
+		LEFT JOIN cost_job cj         ON cj.id = cg.job_id
+		LEFT JOIN cost_subject csub   ON csub.id = cj.subject_id
 		LEFT JOIN purchase_order po   ON po.id = t.po_id
 		LEFT JOIN ic_project_movement m ON m.id = t.movement_id
 		LEFT JOIN users u             ON u.id = t.created_by`
@@ -1676,8 +1739,8 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 		       t.mat_code,
 		       NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), t.mat_code),
 		       t.cost_subgroup_id,
-		       ` + costCodeSQL("csub","cj","cg","csg") + `,
-		       csg.subgroup_name,
+		       COALESCE(` + costCodeSQL("csub","cj","cg","csg") + `, ''),
+		       COALESCE(csg.subgroup_name, ''),
 		       CASE WHEN t.ref_type IN ('PO','PO_RETURN') THEN po.po_no ELSE m.doc_no END,
 		       COALESCE(u.full_name, ''),
 		       COALESCE(u.username, ''),

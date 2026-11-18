@@ -1383,6 +1383,14 @@ func (h *ICHandler) SubmitReceiveLines(c *fiber.Ctx) error {
 			// A warehouse-linked project (project.linked_warehouse_code) holds its goods in the general stock
 			// (stock_item), not in a project receipt pool: receive straight into stock.
 			if icProjectIsWarehouseLinked(ctx, tx, *projectCode) {
+				// Same as the stock-type receive: the PO line's cost code goes onto the material master when it has none, so
+				// the received item shows a cost code in the stock lists and pickers (an existing master code is never replaced).
+				if _, err := tx.Exec(ctx, `
+					UPDATE material_code SET cost_subgroup_id = $1 WHERE mat_code = $2 AND cost_subgroup_id IS NULL`,
+					*costSubgroupID, matCode,
+				); err != nil {
+					return fmt.Errorf("mat_code %s: failed to set cost_subgroup_id: %w", matCode, err)
+				}
 				if err := icReceiveToStock(ctx, tx, matCode, lineNo, in.ReceiveQty, unitPrice, poID, claims.UserID, req.ReceiveDocumentID); err != nil {
 					return err
 				}
