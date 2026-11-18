@@ -1626,6 +1626,19 @@ func queryProjectCostTransactions(ctx context.Context, db *pgxpool.Pool, project
 			LEFT JOIN ic_project_movement mv ON mv.id = x.movement_id
 			LEFT JOIN ic_project_movement_line ml ON ml.id = x.movement_line_id
 			WHERE p.project_code = $1
+			  AND NOT (x.txn_type = 'ISSUE_OUT' AND mv.doc_type = 'ISSUE')
+			UNION ALL
+			-- ISSUE rows come from the posted document lines, not from pool transactions: ISSUEs posted before the
+			-- pool wrote ISSUE_OUT rows have none, and the lines exist for old and new documents alike.
+			SELECT -(1000000000 + ml.id), m.project_code, ml.mat_code, ml.cost_subgroup_id, -ml.qty,
+			       COALESCE((SELECT pp.last_unit_cost FROM ic_project_receipt_pool pp
+			                  WHERE pp.project_code = m.project_code AND pp.mat_code = ml.mat_code
+			                    AND pp.cost_subgroup_id = ml.cost_subgroup_id), 0),
+			       ml.remarks, m.updated_at, COALESCE(m.doc_date, m.updated_at::date), m.updated_by,
+			       'MOVEMENT_ISSUE', NULL::bigint, m.id
+			FROM ic_project_movement_line ml
+			JOIN ic_project_movement m ON m.id = ml.movement_id
+			WHERE m.project_code = $1 AND m.doc_type = 'ISSUE' AND m.status = 'POSTED' AND ml.cost_subgroup_id IS NOT NULL
 			UNION ALL
 			SELECT t.id, ici.project_code, ici.mat_code, ici.cost_subgroup_id, t.qty, t.unit_cost,
 			       t.remarks, t.created_at, t.txn_date, t.created_by, t.ref_type, t.po_id, t.movement_id
@@ -1738,6 +1751,25 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 
 // ─── Project stock balance ──────────────────────────────────────────────────
 
+// sqlProjectStockBase is the project's real stock per (material, cost code): what is left in the PO receipt pool
+// (received - issued) plus what sits in the cost item (goods transferred in). ISSUE no longer credits the cost item
+// (it consumes the goods), so reading ic_project_cost_item alone would hide everything received and not yet issued.
+// Use as `FROM ` + sqlProjectStockBase + ` ici`; $1 must be the project code. Columns mirror ic_project_cost_item;
+// id is negated for pool-only rows.
+const sqlProjectStockBase = `(
+	SELECT COALESCE(i.id, -p.id) AS id,
+	       COALESCE(i.project_code, p.project_code) AS project_code,
+	       COALESCE(i.mat_code, p.mat_code) AS mat_code,
+	       COALESCE(i.cost_subgroup_id, p.cost_subgroup_id) AS cost_subgroup_id,
+	       COALESCE(i.unit, p.unit) AS unit,
+	       GREATEST(COALESCE(i.qty_on_hand, 0), 0) + GREATEST(COALESCE(p.qty_received - p.qty_issued, 0), 0) AS qty_on_hand,
+	       COALESCE(NULLIF(i.last_unit_cost, 0), p.last_unit_cost, 0) AS last_unit_cost,
+	       GREATEST(COALESCE(i.updated_at, p.updated_at), COALESCE(p.updated_at, i.updated_at)) AS updated_at
+	FROM (SELECT * FROM ic_project_cost_item WHERE project_code = $1) i
+	FULL OUTER JOIN (SELECT * FROM ic_project_receipt_pool WHERE project_code = $1) p
+	  ON p.mat_code = i.mat_code AND p.cost_subgroup_id = i.cost_subgroup_id
+)`
+
 // ListProjectStock godoc
 // @Summary      Current cost-item balance list for a project
 // @Description  Reads ic_project_cost_item (the destination-side balance table) for this project, joined to material_code for the display name (mat_name + spec_description, same pattern as available-materials) and to the 4-level cost code hierarchy. only_with_stock defaults to true (qty_on_hand > 0); pass only_with_stock=false to also see zero-balance rows. job_code (e.g. "MP") uses the same decomposition as available-materials (cost_subject.subject_code = first character, cost_job.job_code = the rest). search matches mat_code or the composed mat_name (case-insensitive). Note this is the cost-item balance only — received-but-not-yet-issued quantity lives in ic_project_receipt_pool and is not included here.
@@ -1816,7 +1848,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 		       ` + costCodeSQL("csub","cj","cg","csg") + `,
 		       COALESCE(u.unit_name, ici.unit),
 		       ici.qty_on_hand, ici.last_unit_cost, TO_CHAR(ici.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"+07:00"')
-		FROM ic_project_cost_item ici
+		FROM ` + sqlProjectStockBase + ` ici
 		JOIN material_code mc      ON mc.mat_code = ici.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp     ON sp.id = mc.spec_id

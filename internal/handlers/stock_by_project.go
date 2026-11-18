@@ -399,7 +399,7 @@ func (h *StockByProjectHandler) projectBalance(ctx context.Context, projectCode,
 			"(ici.mat_code ILIKE $%[1]d OR NULLIF(TRIM(CONCAT_WS(' ', NULLIF(TRIM(mn.mat_name), ''), NULLIF(TRIM(sp.spec_description), ''), NULLIF(REGEXP_REPLACE(TRIM(br.brand_name), '^-+$', ''), ''))), '') ILIKE $%[1]d)", len(args)))
 	}
 	whereStr := strings.Join(where, " AND ")
-	join := `FROM ic_project_cost_item ici
+	join := `FROM ` + sqlProjectStockBase + ` ici
 		JOIN material_code mc      ON mc.mat_code = ici.mat_code
 		LEFT JOIN mat_name mn      ON mn.id = mc.mat_name_id
 		LEFT JOIN spec_size sp     ON sp.id = mc.spec_id
