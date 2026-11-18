@@ -352,7 +352,7 @@ func (h *WorkOrderHandler) Create(c *fiber.Ctx) error {
 			$6,$7,$8,$9,$10,
 			$11,$12,$13,$14,
 			COALESCE($15,7.00), COALESCE($16,3.00), COALESCE($17,0), COALESCE($18,0), $19,
-			COALESCE($20,5.00), COALESCE($21,0), $22,
+			COALESCE($20,0), COALESCE($21,0), $22,
 			$23,$24,$25, COALESCE($26,0), COALESCE($27,1),
 			$28,$29,'DRAFT',
 			$30,NOW(),$31,$32,$33,
@@ -1187,7 +1187,7 @@ func (h *WorkOrderHandler) update(c *fiber.Ctx, editApproved bool) error {
 			advance_pct          = COALESCE($16,0),
 			advance_amount       = COALESCE($17,0),
 			progress_payment_note = $18,
-			retention_pct        = COALESCE($19,5.00),
+			retention_pct        = COALESCE($19, retention_pct),
 			advance_deduct_pct   = COALESCE($20,0),
 			other_deduction_note = $21,
 			start_date           = $22,
@@ -1658,6 +1658,16 @@ func (h *WorkOrderHandler) UpdatePaymentConditions(c *fiber.Ctx) error {
 				return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("retentions[%d]: insert error: %s", i, err.Error()))
 			}
 		}
+	}
+
+	// work_order.retention_pct is what GET /work-order/:id (detail page, print) shows as 7.3. The form no longer sends
+	// it, so keep it equal to the first retention row (the one the form shows); none = 0 = "ไม่มี".
+	if _, err := tx.Exec(ctx, `
+		UPDATE work_order
+		SET retention_pct = COALESCE((SELECT percent_of_contract FROM work_order_retention WHERE wo_id=$1 ORDER BY id ASC LIMIT 1), 0)
+		WHERE id=$1`, woID,
+	); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "retention_pct sync error: "+err.Error())
 	}
 
 	// ── penalties ──
