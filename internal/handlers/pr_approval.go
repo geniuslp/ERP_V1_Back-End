@@ -347,6 +347,7 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		ApproverID         *int64                    `json:"approver_id"`
 		ApproverName       *string                   `json:"approver_name"`
 		RejectReason       *string                   `json:"reject_reason"` // remarks of the latest REJECTED status-log row
+		ApprovedAt         *string                   `json:"approved_at,omitempty"` // time of the LATEST approval (to_status COMPLETED in pr_status_log); only while the PR is approved
 		LocationText       string                    `json:"location_text"`
 		ProjectCode        *string                   `json:"project_code"`
 		DeptCode           *string                   `json:"dept_code,omitempty"`
@@ -385,6 +386,8 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		       END AS po_conversion_status,
 		       (SELECT l.remarks FROM pr_status_log l WHERE l.pr_id = pr.id AND l.to_status = 'REJECTED'
 		         ORDER BY l.changed_at DESC, l.id DESC LIMIT 1) AS reject_reason,
+		       (SELECT l.changed_at::text FROM pr_status_log l WHERE l.pr_id = pr.id AND l.to_status = 'COMPLETED'
+		         ORDER BY l.changed_at DESC, l.id DESC LIMIT 1) AS approved_at,
 		       u1.signature_path, u1.signature_mime
 		FROM purchase_request pr
 		LEFT JOIN users u1 ON u1.id = pr.requested_by
@@ -411,10 +414,15 @@ func (h *PRApprovalHandler) GetDetail(c *fiber.Ctx) error {
 		&pr.ID, &pr.PRNo, &pr.Status, &pr.RequestedBy, &pr.RequesterUsername, &pr.RequesterID,
 		&pr.ApproverID, &pr.ApproverName, &pr.LocationText, &pr.ProjectCode, &pr.DeptCode, &pr.DeptName,
 		&pr.WarehouseCode, &pr.WarehouseName, &pr.Remarks, &pr.PRDate, &pr.RequiredDate, &pr.CreatedAt, &pr.PRType, &pr.OrderType, &pr.JobCode, &pr.JobName, &pr.ProjectName, &pr.MemoID, &pr.MemoNo,
-		&pr.PoConversionStatus, &pr.RejectReason, &requesterSigPath, &requesterSigMime,
+		&pr.PoConversionStatus, &pr.RejectReason, &pr.ApprovedAt, &requesterSigPath, &requesterSigMime,
 	); err != nil {
 		log.Printf("❌ header scan error: %v", err)
 		return fiber.NewError(fiber.StatusNotFound, "PR not found")
+	}
+	// An approval date only means something while the PR is approved: a PR sent back for approval, rejected or still a
+	// draft has no current approval.
+	if pr.Status == "DRAFT" || pr.Status == "PENDING_APPROVAL" || pr.Status == "REJECTED" || pr.Status == "CANCELLED" {
+		pr.ApprovedAt = nil
 	}
 
 	// (PR approval exists since 2026-10-26, but) requester_signature is the only signature this endpoint ever

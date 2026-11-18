@@ -812,6 +812,10 @@ func (h *MemoHandler) Delete(c *fiber.Ctx) error {
 	if result.RowsAffected() == 0 {
 		return fiber.NewError(fiber.StatusNotFound, "memo not found")
 	}
+	// Without this commit the deferred Rollback undid the delete and the API still answered "memo deleted".
+	if err := delTx.Commit(ctx); err != nil {
+		return err
+	}
 
 	return c.JSON(fiber.Map{"success": true, "message": "memo deleted"})
 }

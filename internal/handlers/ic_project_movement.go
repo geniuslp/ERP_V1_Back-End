@@ -568,7 +568,7 @@ func (h *IcProjectMovementHandler) availableMaterials(c *fiber.Ctx, projectCode,
 	if jc := c.Query("job_code"); jc != "" {
 		args = append(args, jc)
 		// Match on the job part only; M (Material), S (Subcontract) and L (Labour) are all cost codes of the same job.
-		where += fmt.Sprintf(" AND csub.subject_code IN ('M','S','L') AND cj.job_code = SUBSTRING(job_cost_key($%d::text) FROM 2)", len(args))
+		where += " AND " + sqlJobCostMatch(len(args))
 	}
 	if v := c.QueryInt("subgroup_id", 0); v > 0 {
 		args = append(args, v)
@@ -1814,6 +1814,16 @@ func (h *IcProjectMovementHandler) ListCostTransactions(c *fiber.Ctx) error {
 
 // ─── Project stock balance ──────────────────────────────────────────────────
 
+// sqlJobCostMatch is the "this cost code belongs to the selected job" condition for the IC pickers / stock lists
+// (aliases csub = cost_subject, cj = cost_job; paramIdx = placeholder holding the project job code, e.g. "MS" or "G").
+// A trade job (MS, EE ...) matches by its job part under Material / Subcontract / Labour. General Code ('G') has no
+// trade key: its cost codes live under subject OH, job G (same rule as ListProjectCostCodes), so it needs its own branch
+// — without it a G movement could never list a G item.
+func sqlJobCostMatch(paramIdx int) string {
+	return fmt.Sprintf("((csub.subject_code IN ('M','S','L') AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)) "+
+		"OR (job_cost_key($%[1]d::text) = 'G' AND csub.subject_code = 'OH' AND cj.job_code = 'G'))", paramIdx)
+}
+
 // sqlProjectStockBase is the project's real stock per (material, cost code): what is left in the PO receipt pool
 // (received - issued) plus what sits in the cost item (goods transferred in). ISSUE no longer credits the cost item
 // (it consumes the goods), so reading ic_project_cost_item alone would hide everything received and not yet issued.
@@ -1895,7 +1905,7 @@ func (h *IcProjectMovementHandler) ListProjectStock(c *fiber.Ctx) error {
 	}
 	if jobCode != "" {
 		args = append(args, jobCode)
-		where = append(where, fmt.Sprintf("csub.subject_code IN ('M','S','L') AND cj.job_code = SUBSTRING(job_cost_key($%[1]d::text) FROM 2)", len(args)))
+		where = append(where, sqlJobCostMatch(len(args)))
 	}
 	if search != "" {
 		args = append(args, "%"+search+"%")
