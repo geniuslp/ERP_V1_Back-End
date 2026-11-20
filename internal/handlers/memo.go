@@ -645,9 +645,13 @@ func (h *MemoHandler) Update(c *fiber.Ctx) error {
 		}
 		return err
 	}
-	// Everyone can see every memo on the status page; only its owner (or an admin) may change it.
+	// Everyone can see every memo on the status page; only its owner, an admin, or — while the memo is
+	// waiting for approval — the approver it is assigned to may change it.
 	if claims != nil && claims.UserID != ownerID && !slices.Contains(claims.Roles, "ADMIN_CENTER") {
-		return fiber.NewError(fiber.StatusForbidden, "only the memo owner can edit this memo")
+		isAssignedApprover := currentStatus == "PENDING_APPROVAL" && oldApproverID != nil && *oldApproverID == claims.UserID
+		if !isAssignedApprover {
+			return fiber.NewError(fiber.StatusForbidden, "only the memo owner or its assigned approver can edit this memo")
+		}
 	}
 	if currentStatus == "APPROVED" || currentStatus == "CANCELLED" {
 		return fiber.NewError(fiber.StatusBadRequest, "cannot edit memo in this status")

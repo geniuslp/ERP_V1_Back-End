@@ -185,6 +185,7 @@ func requireWOLinesForSubmit(ctx context.Context, db interface {
 const sqlWOEligiblePR = `pr.deleted_at IS NULL
 	AND pr.status = 'COMPLETED'
 	AND pr.pr_type IN ('PO_WO','WO_ONLY')
+	AND EXISTS (SELECT 1 FROM purchase_request_line prl_q WHERE prl_q.pr_id = pr.id AND prl_q.qty_requested > 0)
 	AND NOT EXISTS (SELECT 1 FROM (` + sqlActivePOLinks + `) po_lk WHERE po_lk.pr_id = pr.id)
 	AND NOT EXISTS (
 		SELECT 1 FROM work_order w

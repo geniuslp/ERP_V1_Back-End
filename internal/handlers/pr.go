@@ -1218,7 +1218,8 @@ func (h *PRHandler) Update(c *fiber.Ctx) error {
 		if l.MatCode == "" {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: mat_code is required", i))
 		}
-		if l.QtyRequested <= 0 {
+		// A line that already exists may sit at 0 (fully reduced from the PR-reduce report); new lines need > 0.
+		if l.QtyRequested < 0 || (l.QtyRequested == 0 && l.ID == nil) {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("lines[%d]: qty_requested must be > 0", i))
 		}
 	}

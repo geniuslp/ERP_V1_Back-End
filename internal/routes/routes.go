@@ -185,6 +185,14 @@ func Register(app *fiber.App, db *pgxpool.Pool, cfg *config.Config) {
 
 	RegisterPRApprovalRoutes(pr, db)
 
+	// OF reports (submenu "รายงาน OF"): PR quantity reduction. Gated by menu permission, not by role.
+	ofReportH := handlers.NewOFReportHandler(db)
+	ofReport := api.Group("/reports/of")
+	ofReport.Use(jwt)
+	ofReport.Get("/pr-reduce/prs", middleware.RequireMenuPermission(db, "MENU_OF_RPT_PR_REDUCE", "read"), ofReportH.ListPRs)
+	ofReport.Get("/pr-reduce/prs/:id/lines", middleware.RequireMenuPermission(db, "MENU_OF_RPT_PR_REDUCE", "read"), ofReportH.ListLines)
+	ofReport.Post("/pr-reduce/prs/:id/reduce", middleware.RequireMenuPermission(db, "MENU_OF_RPT_PR_REDUCE", "update"), ofReportH.Reduce)
+
 	// Purchase Order
 	po := api.Group("/po")
 	po.Use(jwt)

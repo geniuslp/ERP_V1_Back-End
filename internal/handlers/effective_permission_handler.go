@@ -74,9 +74,19 @@ func (h *EffectivePermissionHandler) GetEffective(c *fiber.Ctx) error {
 		LEFT JOIN users usr ON usr.id = $1
 		LEFT JOIN dept_menu_permissions d
 			ON d.dept_code = usr.dept_code AND d.menu_id = m.id
-		LEFT JOIN user_roles ur ON ur.user_id = $1
-		LEFT JOIN role_menu_permissions r
-			ON r.role_id = ur.role_id AND r.menu_id = m.id
+		-- One row per menu: a user with several roles used to produce one row per role, so the frontend's
+		-- find()-first-row check read an arbitrary role (a role without a row for the menu fell through to
+		-- the department and the menu vanished) and the permission matrix listed every menu twice.
+		-- OR across the user's roles, exactly like RequireMenuPermission / menuPermQuery.
+		LEFT JOIN LATERAL (
+			SELECT BOOL_OR(rmp.can_read)   AS can_read,
+			       BOOL_OR(rmp.can_write)  AS can_write,
+			       BOOL_OR(rmp.can_update) AS can_update,
+			       BOOL_OR(rmp.can_delete) AS can_delete
+			FROM user_roles ur
+			JOIN role_menu_permissions rmp ON rmp.role_id = ur.role_id AND rmp.menu_id = m.id
+			WHERE ur.user_id = $1
+		) r ON TRUE
 		LEFT JOIN user_menu_permissions u
 			ON u.user_id = $1 AND u.menu_id = m.id
 		WHERE m.is_active = true
